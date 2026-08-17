@@ -1,0 +1,5 @@
+Visual route: bundled Codex Grid layout library.
+Selected composition references: slide-08 (cover image field), slide-10 (paired narrative), slide-17 (three-step timeline), slide-20 (evidence chart plus interpretation rail).
+System: white canvas, black ink, pale gray structural panels, light-blue and blue accents, Helvetica Neue.
+Visible plots are embedded notebook outputs or editable native PowerPoint charts. No single-unit RF panels are included.
+Speaker notes include [Sources] blocks for every quantitative claim and embedded source asset.

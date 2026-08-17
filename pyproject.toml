@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfmapping-analysis"
+version = "0.1.0"
+description = "RF mapping analysis models, detection, and raw-trial reconstruction"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2,<3",
+  "scipy>=1.14,<2",
+  "tqdm>=4.66,<5",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+analysis = [
+  "matplotlib>=3.9,<4",
+  "pandas>=2.2,<4",
+  "pynapple>=0.9,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["Utils*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

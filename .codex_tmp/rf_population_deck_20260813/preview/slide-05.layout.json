@@ -1,0 +1,933 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/ti32ky",
+    "id": "ti32ky",
+    "slide": 5,
+    "layoutId": "ce56fc0a-3238-43b8-9360-c8ef15284eef",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "47ed65d6-298a-4316-8549-1cb5c63114ed",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "Helvetica Neue"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "ce56fc0a-3238-43b8-9360-c8ef15284eef",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "47ed65d6-298a-4316-8549-1cb5c63114ed",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "47ed65d6-298a-4316-8549-1cb5c63114ed",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4rad0rmx",
+      "id": "1",
+      "name": "section-5",
+      "bbox": [
+        52,
+        28,
+        470,
+        22
+      ],
+      "geometry": "rect",
+      "text": "RF LOCALIZATION",
+      "textPreview": "RF LOCALIZATION",
+      "resolvedFontSize": 14.67,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 14.67,
+        "typeface": "Helvetica Neue",
+        "color": "#5B6472",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "none",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "RF LOCALIZATION"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "RF LOCALIZATION",
+          "resolvedTextStyle": {
+            "fontSize": 14.67,
+            "typeface": "Helvetica Neue",
+            "color": "#5B6472",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "RF LOCALIZATION",
+              "fontSize": 14.67,
+              "typeface": "Helvetica Neue",
+              "color": "#5B6472",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/jq1w7mls",
+      "id": "2",
+      "name": "title-5",
+      "bbox": [
+        52,
+        56,
+        1176,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Detected RFs form a structured population map",
+      "textPreview": "Detected RFs form a structured population map",
+      "resolvedFontSize": 46.67,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 46.67,
+        "typeface": "Helvetica Neue",
+        "color": "#000000",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Detected RFs form a structured population map"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Detected RFs form a structured population map",
+          "resolvedTextStyle": {
+            "fontSize": 46.67,
+            "typeface": "Helvetica Neue",
+            "color": "#000000",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Detected RFs form a structured population map",
+              "fontSize": 46.67,
+              "typeface": "Helvetica Neue",
+              "color": "#000000",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ipsvyh47",
+      "id": "3",
+      "bbox": [
+        52,
+        666,
+        1176,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#B8BCC4",
+      "lineWidth": 1
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tg3exw3u",
+      "id": "4",
+      "name": "footer-5",
+      "bbox": [
+        52,
+        677,
+        700,
+        18
+      ],
+      "geometry": "rect",
+      "text": "m15 · session 260630 · aggregate population analysis",
+      "textPreview": "m15 · session 260630 · aggregate population analysis",
+      "resolvedFontSize": 13.33,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 13.33,
+        "typeface": "Helvetica Neue",
+        "color": "#8A929F",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "none",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "m15 · session 260630 · aggregate population analysis"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "m15 · session 260630 · aggregate population analysis",
+          "resolvedTextStyle": {
+            "fontSize": 13.33,
+            "typeface": "Helvetica Neue",
+            "color": "#8A929F",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "m15 · session 260630 · aggregate population analysis",
+              "fontSize": 13.33,
+              "typeface": "Helvetica Neue",
+              "color": "#8A929F",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/sfux4r29",
+      "id": "5",
+      "name": "page-5",
+      "bbox": [
+        1178,
+        677,
+        50,
+        18
+      ],
+      "geometry": "rect",
+      "text": "5",
+      "textPreview": "5",
+      "resolvedFontSize": 13.33,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 13.33,
+        "typeface": "Helvetica Neue",
+        "color": "#8A929F",
+        "alignment": "right",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "none",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "5"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "5",
+          "resolvedTextStyle": {
+            "fontSize": 13.33,
+            "typeface": "Helvetica Neue",
+            "color": "#8A929F",
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "5",
+              "fontSize": 13.33,
+              "typeface": "Helvetica Neue",
+              "color": "#8A929F",
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/relwbmlo",
+      "id": "6",
+      "bbox": [
+        52,
+        138,
+        1120,
+        40
+      ],
+      "geometry": "rect",
+      "text": "Both displays combine Probes A and B. Gaussian smoothing (σ = 1 grid bin) is used only to reveal population structure.",
+      "textPreview": "Both displays combine Probes A and B. Gaussian smoothing (σ = 1 grid bin) is used only to reveal population structure.",
+      "resolvedFontSize": 21.05,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21.33,
+        "typeface": "Helvetica Neue",
+        "color": "#5B6472",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.99,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Both displays combine Probes A and B. Gaussian smoothing (σ = 1 grid bin) is used only to reveal population structure."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Both displays combine Probes A and B. Gaussian smoothing (σ = 1 grid bin) is used only to reveal population structure.",
+          "resolvedTextStyle": {
+            "fontSize": 21.33,
+            "typeface": "Helvetica Neue",
+            "color": "#5B6472",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Both displays combine Probes A and B. Gaussian smoothing (σ = 1 grid bin) is used only to reveal population structure.",
+              "fontSize": 21.33,
+              "typeface": "Helvetica Neue",
+              "color": "#5B6472",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6dcv21k3",
+      "id": "7",
+      "bbox": [
+        52,
+        198,
+        530,
+        34
+      ],
+      "geometry": "rect",
+      "text": "Full significant-mask overlap",
+      "textPreview": "Full significant-mask overlap",
+      "resolvedFontSize": 28,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 28,
+        "typeface": "Helvetica Neue",
+        "color": "#000000",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Full significant-mask overlap"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Full significant-mask overlap",
+          "resolvedTextStyle": {
+            "fontSize": 28,
+            "typeface": "Helvetica Neue",
+            "color": "#000000",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Full significant-mask overlap",
+              "fontSize": 28,
+              "typeface": "Helvetica Neue",
+              "color": "#000000",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1k3e1g3q",
+      "id": "8",
+      "bbox": [
+        52,
+        240,
+        548,
+        272
+      ],
+      "geometry": "rect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#B8BCC4",
+      "lineWidth": 1
+    },
+    {
+      "order": 9,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/xo3e1cf6",
+      "id": "9",
+      "bbox": [
+        52,
+        240,
+        548,
+        272
+      ],
+      "alt": "Smoothed combined population overlap of full significant RF masks",
+      "contentType": "image/png",
+      "imageCrop": {
+        "left": 0.02,
+        "top": 0.27,
+        "right": 0.02,
+        "bottom": 0.25
+      },
+      "imageFit": "cover",
+      "asset": {
+        "assetId": "5caad5ba-471f-4b69-8f5b-ee27553f4d34",
+        "contentType": "image/png",
+        "byteLength": 18432
+      }
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/etkbq94v",
+      "id": "10",
+      "bbox": [
+        52,
+        526,
+        548,
+        42
+      ],
+      "geometry": "rect",
+      "text": "Coverage emphasizes the spatial extent shared by detected RF masks.",
+      "textPreview": "Coverage emphasizes the spatial extent shared by detected RF masks.",
+      "resolvedFontSize": 17.5,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 20,
+        "typeface": "Helvetica Neue",
+        "color": "#5B6472",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.88,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Coverage emphasizes the spatial extent shared by detected RF"
+          },
+          {
+            "index": 2,
+            "text": "masks."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Coverage emphasizes the spatial extent shared by detected RF masks.",
+          "resolvedTextStyle": {
+            "fontSize": 20,
+            "typeface": "Helvetica Neue",
+            "color": "#5B6472",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Coverage emphasizes the spatial extent shared by detected RF masks.",
+              "fontSize": 20,
+              "typeface": "Helvetica Neue",
+              "color": "#5B6472",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/futsje5g",
+      "id": "11",
+      "bbox": [
+        52,
+        584,
+        548,
+        32
+      ],
+      "geometry": "rect",
+      "text": "Peak raw overlap: 18 units",
+      "textPreview": "Peak raw overlap: 18 units",
+      "resolvedFontSize": 26.67,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 26.67,
+        "typeface": "Helvetica Neue",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Peak raw overlap: 18 units"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Peak raw overlap: 18 units",
+          "resolvedTextStyle": {
+            "fontSize": 26.67,
+            "typeface": "Helvetica Neue",
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Peak raw overlap: 18 units",
+              "fontSize": 26.67,
+              "typeface": "Helvetica Neue",
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0v2tsjm1",
+      "id": "12",
+      "bbox": [
+        680,
+        198,
+        548,
+        34
+      ],
+      "geometry": "rect",
+      "text": "Response-weighted RF-center density",
+      "textPreview": "Response-weighted RF-center density",
+      "resolvedFontSize": 28,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 28,
+        "typeface": "Helvetica Neue",
+        "color": "#000000",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Response-weighted RF-center density"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Response-weighted RF-center density",
+          "resolvedTextStyle": {
+            "fontSize": 28,
+            "typeface": "Helvetica Neue",
+            "color": "#000000",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Response-weighted RF-center density",
+              "fontSize": 28,
+              "typeface": "Helvetica Neue",
+              "color": "#000000",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1wbalonm",
+      "id": "13",
+      "bbox": [
+        680,
+        240,
+        548,
+        272
+      ],
+      "geometry": "rect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#B8BCC4",
+      "lineWidth": 1
+    },
+    {
+      "order": 14,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/lkr6hcre",
+      "id": "14",
+      "bbox": [
+        680,
+        240,
+        548,
+        272
+      ],
+      "alt": "Smoothed combined density of one response-weighted RF center per detected unit",
+      "contentType": "image/png",
+      "imageCrop": {
+        "left": 0.02,
+        "top": 0.27,
+        "right": 0.02,
+        "bottom": 0.25
+      },
+      "imageFit": "cover",
+      "asset": {
+        "assetId": "9520371a-b4fb-484b-9f09-6ac6115c2360",
+        "contentType": "image/png",
+        "byteLength": 18343
+      }
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/nytsne5s",
+      "id": "15",
+      "bbox": [
+        680,
+        526,
+        548,
+        42
+      ],
+      "geometry": "rect",
+      "text": "Centers collapse every detected unit to one discrete grid bin and expose multiple modes.",
+      "textPreview": "Centers collapse every detected unit to one discrete grid bin and expose multiple modes.",
+      "resolvedFontSize": 17.5,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 20,
+        "typeface": "Helvetica Neue",
+        "color": "#5B6472",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.88,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Centers collapse every detected unit to one discrete grid bin and"
+          },
+          {
+            "index": 2,
+            "text": "expose multiple modes."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Centers collapse every detected unit to one discrete grid bin and expose multiple modes.",
+          "resolvedTextStyle": {
+            "fontSize": 20,
+            "typeface": "Helvetica Neue",
+            "color": "#5B6472",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Centers collapse every detected unit to one discrete grid bin and expose multiple modes.",
+              "fontSize": 20,
+              "typeface": "Helvetica Neue",
+              "color": "#5B6472",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ozmtwjmx",
+      "id": "16",
+      "bbox": [
+        680,
+        584,
+        548,
+        32
+      ],
+      "geometry": "rect",
+      "text": "Peak raw center bin: 6 units",
+      "textPreview": "Peak raw center bin: 6 units",
+      "resolvedFontSize": 26.67,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 26.67,
+        "typeface": "Helvetica Neue",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Peak raw center bin: 6 units"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Peak raw center bin: 6 units",
+          "resolvedTextStyle": {
+            "fontSize": 26.67,
+            "typeface": "Helvetica Neue",
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Peak raw center bin: 6 units",
+              "fontSize": 26.67,
+              "typeface": "Helvetica Neue",
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}
