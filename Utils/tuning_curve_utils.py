@@ -542,7 +542,7 @@ def tuning_curve(
                 / "data"
                 / "tuning_curves"
                 / f"Probe{probe_name}"
-                / "tuning_curves.json"
+                / "tuning_curves.tc"
             )
         else:
             save_path = Path(save_path)

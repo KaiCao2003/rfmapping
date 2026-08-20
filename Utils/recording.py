@@ -1,9 +1,17 @@
 # Import necessary libraries
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 from typing import Union
+
+import pandas as pd
 from tqdm import tqdm
+
+from Utils.Sessions import Session
+from Utils.json_tools import read_formatted_json, write_formatted_json
+from Utils.load_files import load_binary
 
 try:
     import torch
@@ -109,7 +117,6 @@ def detect_exposure_time(time: np.ndarray,
     """
     detection_target_label = "" if detection_target_label is None else f"{detection_target_label} "
 
-
     # Create a boolean mask for when the signal is at or above the threshold
     with tqdm(total=6 if time_interval else 5, desc=f"Processing {detection_target_label}files", unit="%",
               bar_format="{l_bar}{bar}| {n}/{total} [{percentage:3.0f}%]") as pbar:
@@ -132,7 +139,6 @@ def detect_exposure_time(time: np.ndarray,
         # Stack start and end indices into a 2D array
         idx_intervals = np.column_stack([starts, ends]).astype(np.int64)
         pbar.update(1)
-
 
         if starts.size == 0:
             print(f"{detection_target_label}No recording detected based on the provided signal and threshold.")
@@ -343,10 +349,10 @@ def reorder_subcycles(data):
 
 
 def interp_replace(
-    target: list | np.ndarray,
-    start: int,
-    end: int,
-    new_length: int,
+        target: list | np.ndarray,
+        start: int,
+        end: int,
+        new_length: int,
 ) -> np.ndarray:
     """
     Replace target[start:end+1] with linear interpolation of new_length.
@@ -373,6 +379,199 @@ def interp_replace(
         [
             target[:start],
             interpolated,
-            target[end + 1 :],
+            target[end + 1:],
         ]
     )
+
+
+def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
+                                 camera_input_channel: int = 1, is_overwrite_interval_table: bool = False,
+                                 is_overwrite_session_file: bool = False,
+                                 is_overwrite_sync_file: bool = False,
+                                 session_info_filename: str = "session_info",
+                                 sync_data_filename: str = "sync_data", interval_table_filename: str = "interval_table",
+                                 _threshold: int = 14000, _is_signal_inverted: bool = True,
+                                 _recording_interval_min_len: int = 300
+                                 ) -> tuple[bool, str]:
+
+   if (interval_table_path:= Path(f"{base_dir}/data/{interval_table_filename}.csv")).is_file() and not is_overwrite_interval_table:
+        if (session_info_file := Path(
+                    f"{base_dir}/data/{session_info_filename}.json")).is_file() and not is_overwrite_session_file:
+
+            print("Session Info exists, loading...")
+            session_info = read_formatted_json(session_info_file)["session_info"]
+
+        # ----------------------------------------------------------------------
+        else:
+            oebin_file_dir = next(Path(base_dir).glob("**/structure.oebin"))
+
+            session = Session(oebin_file_dir)
+            session_info = session.get_session_info()
+
+            write_formatted_json(
+                ["session_info", "multi_recording"],
+                [session_info, [str(multi_recording)]],
+                filename=session_info_filename,
+                path=f"{base_dir}/data",
+            )
+
+        base_data_dir = session_info["base_path"]
+        record_nodes: str = session_info["record_nodes"]
+        recording_name: str = session_info["recording_name"]
+        experiment_id: str = session_info["experiment_id"]
+
+        path_between = f"/{record_nodes}/{experiment_id}/"
+
+        continuous_folder = (
+                base_data_dir
+                + path_between
+                + recording_name
+                + "/continuous/"
+        )
+
+        ADC_name: str = session_info["continuous_ADC_folder"]
+        analogue_input_channel_number: int = session_info["ADC_input_channel"]
+
+        ADC_datafile = (
+                continuous_folder
+                + ADC_name
+                + "/continuous.dat"
+        )
+
+        # ======================================================================
+        # Load existing sync data if available
+        # ======================================================================
+
+        if (sync_file := Path(f"{base_dir}/data/{sync_data_filename}.json")).is_file() and not is_overwrite_sync_file:
+            print("Sync Info exists, loading...")
+            sync_data = read_formatted_json(sync_file)
+
+        # ======================================================================
+        # Generate camera sync data
+        # ======================================================================
+
+        else:
+            print("Loading camera TTL binary data...")
+
+            camera_data = load_binary(
+                ADC_datafile,
+                analogue_input_channel_number,
+                camera_input_channel,
+            )
+
+            print("==============================")
+            print("Loading ADC timestamps...")
+
+            ADC_continuous_timestamp_file = (
+                f"{continuous_folder}/{ADC_name}/timestamps.npy"
+            )
+
+            ADC_continuous_timestamp_data_raw = np.load(
+                ADC_continuous_timestamp_file,
+                mmap_mode="r",
+            )
+
+            ADC_continuous_timestamp_data = (
+                    ADC_continuous_timestamp_data_raw
+                    - ADC_continuous_timestamp_data_raw[0]
+            )
+
+            print(
+                f"ADC_continuous_timestamp_data: "
+                f"{ADC_continuous_timestamp_data.shape}"
+            )
+
+            # ------------------------------------------------------------------
+            # Detect camera recording interval from TTL
+            # ------------------------------------------------------------------
+
+            print("Detecting camera recording interval...")
+
+            recording_interval_indices = detect_recording(
+                camera_data,
+                threshold=_threshold,
+                is_inverted=_is_signal_inverted,
+                min_len=_recording_interval_min_len,
+            )
+
+            recording_interval = (
+                ADC_continuous_timestamp_data[
+                    recording_interval_indices
+                ]
+                .tolist()
+            )
+
+            # ------------------------------------------------------------------
+            # Save only what is required for interval_table
+            # ------------------------------------------------------------------
+
+            write_formatted_json(
+                [
+                    "recording_interval",
+                    "recording_interval_indices",
+                ],
+                [
+                    recording_interval,
+                    recording_interval_indices,
+                ],
+                filename=sync_data_filename,
+                path=f"{base_dir}/data",
+            )
+
+            sync_data = read_formatted_json(
+                f"{base_dir}/data/{sync_data_filename}.json"
+            )
+
+        # ======================================================================
+        # Build interval table from camera TTL
+        # ======================================================================
+
+        recording_interval = np.asarray(
+            sync_data["recording_interval"],
+            dtype=float,
+        )
+
+        recording_interval_indices = np.fromstring(
+            sync_data["recording_interval_indices"].strip("[]"),
+            sep=" ",
+            dtype=int,
+        ).tolist()
+
+        raw_interval_table = pd.DataFrame(
+            {
+                "start_frame": recording_interval_indices[0],
+                "end_frame": recording_interval_indices[1],
+                "start": recording_interval[:, 0],
+                "end": recording_interval[:, 1],
+            }
+        )
+
+        raw_interval_table["duration_frames"] = (
+                raw_interval_table["end_frame"]
+                - raw_interval_table["start_frame"]
+        )
+
+        raw_interval_table["duration_s"] = (
+                raw_interval_table["end"]
+                - raw_interval_table["start"]
+        )
+
+        raw_interval_table["interval_type"] = "baseline"
+
+        if raw_interval_table.empty:
+            return(False,
+                "\033[91mValue Error\033[0m: Could not build a non-empty raw_interval_table from camera TTL pulses."
+            )
+
+        interval_table = raw_interval_table.copy()
+
+        if len(interval_table) == 1:
+            interval_table.to_csv(
+                interval_table_path,
+                index=False,
+            )
+            return (True, f"Interval table generated and saved to {interval_table_path}.")
+        else:
+            return(False,
+                "\033[91mToo many intervals\033[0m:Multiple recording intervals detected. Manually run it to fix."
+            )

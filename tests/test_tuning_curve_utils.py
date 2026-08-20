@@ -102,7 +102,7 @@ def test_tuning_curve_writes_exact_columnar_contract(tmp_path, monkeypatch) -> N
         lambda *_args: np.asarray([0.0]),
     )
 
-    save_path = tmp_path / "tuning_curves.json"
+    save_path = base_dir / "data" / "tuning_curves" / "ProbeA" / "tuning_curves.tc"
     result = tuning_curve_utils.tuning_curve(
         base_dir=base_dir,
         kilosort_dir=kilosort_dir,
@@ -115,7 +115,6 @@ def test_tuning_curve_writes_exact_columnar_contract(tmp_path, monkeypatch) -> N
         num_shuffle=1,
         shuffle_seed=42,
         is_save=True,
-        save_path=save_path,
         metadata={"epoch": "arena"},
     )
 
