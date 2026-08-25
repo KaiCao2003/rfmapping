@@ -30,8 +30,8 @@ EXPECTED_KEYS = {
 }
 
 
-def test_module_exposes_one_plain_function_and_no_result_wrappers() -> None:
-    assert rf_detection.__all__ == ["detect_rf"]
+def test_internal_engine_has_no_public_exports_or_result_wrappers() -> None:
+    assert rf_detection.__all__ == []
     assert inspect.isfunction(detect_rf)
     for removed_name in (
         "RFClusterConfig",
@@ -54,6 +54,7 @@ def test_analytic_null_moments_and_uniform_batch_shapes() -> None:
         (1, 2),
         unit_ids=[7],
         is_shuffle=False,
+        drop_bins=0,
     )
 
     assert set(result) == EXPECTED_KEYS
@@ -89,6 +90,67 @@ def test_analytic_null_moments_and_uniform_batch_shapes() -> None:
     assert not result["significant_mask"].any()
     assert not result["filled_mask"].any()
     assert np.isnan(result["cluster_pvalues"][0]).all()
+
+
+def test_no_shuffle_drop_bins_filters_components_by_inclusive_size() -> None:
+    # The high bins form components of sizes one, two, and three.
+    high_positions = {0, 2, 3, 10, 11, 12}
+    responses = [
+        10.0 if position in high_positions else 0.0
+        for position in range(15)
+    ]
+    common = {
+        "responses": [responses],
+        "position_ids": np.arange(15),
+        "shape": (3, 5),
+        "is_shuffle": False,
+        "cluster_forming_z": 1.0,
+    }
+
+    keep_all = detect_rf(drop_bins=0, **common)
+    default = detect_rf(**common)
+    drop_one = detect_rf(drop_bins=1, **common)
+    drop_two = detect_rf(drop_bins=2, **common)
+    drop_three = detect_rf(drop_bins=3, **common)
+
+    expected_candidate = np.zeros((1, 3, 5), dtype=bool)
+    expected_candidate.ravel()[list(high_positions)] = True
+    np.testing.assert_array_equal(keep_all["candidate_mask"], expected_candidate)
+    np.testing.assert_array_equal(keep_all["final_mask"], expected_candidate)
+    np.testing.assert_array_equal(default["final_mask"], drop_one["final_mask"])
+
+    expected_after_one = expected_candidate.copy()
+    expected_after_one[0, 0, 0] = False
+    np.testing.assert_array_equal(drop_one["final_mask"], expected_after_one)
+
+    expected_after_two = np.zeros_like(expected_candidate)
+    expected_after_two[0, 2, :3] = True
+    np.testing.assert_array_equal(drop_two["final_mask"], expected_after_two)
+    assert not drop_three["final_mask"].any()
+
+    for result in (default, drop_one, drop_two, drop_three):
+        np.testing.assert_array_equal(result["candidate_mask"], expected_candidate)
+
+
+def test_no_shuffle_drop_bins_counts_wrap_x_seam_as_one_component() -> None:
+    responses = [[10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+    common = {
+        "position_ids": np.arange(10),
+        "shape": (2, 5),
+        "is_shuffle": False,
+        "drop_bins": 1,
+    }
+
+    plain = detect_rf(responses, wrap_x=False, **common)
+    wrapped = detect_rf(responses, wrap_x=True, **common)
+
+    assert plain["cluster_labels"].max() == 2
+    assert not plain["final_mask"].any()
+    assert wrapped["cluster_labels"].max() == 1
+    np.testing.assert_array_equal(
+        wrapped["final_mask"],
+        [[[True, False, False, False, True], [False] * 5]],
+    )
 
 
 def test_all_output_arrays_are_read_only() -> None:
@@ -277,6 +339,38 @@ def _permutation_fixture() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     first = np.tile([9.0, 7.0, 1.0, 0.0], 4)
     second = np.tile([0.0, 1.0, 7.0, 9.0], 4)
     return np.stack([first, second]), positions, strata
+
+
+def test_shuffle_output_is_unchanged_by_drop_bins() -> None:
+    responses, positions, strata = _permutation_fixture()
+    common = {
+        "position_ids": positions,
+        "shape": (2, 2),
+        "stratum_ids": strata,
+        "cluster_forming_z": 0.5,
+        "n_permutations": 17,
+        "random_seed": 41,
+        "batch_size": 5,
+        "n_jobs": 1,
+        "show_progress": False,
+    }
+    no_drop = detect_rf(responses, drop_bins=0, **common)
+    drop_every_candidate = detect_rf(responses, drop_bins=10_000, **common)
+
+    for key in EXPECTED_KEYS:
+        no_drop_value = no_drop[key]
+        drop_value = drop_every_candidate[key]
+        if isinstance(no_drop_value, tuple):
+            for no_drop_unit, drop_unit in zip(
+                no_drop_value,
+                drop_value,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(no_drop_unit, drop_unit)
+        elif isinstance(no_drop_value, np.ndarray):
+            np.testing.assert_array_equal(no_drop_value, drop_value)
+        else:
+            assert no_drop_value == drop_value
 
 
 def test_fixed_seed_is_exact_across_batch_size_and_worker_count(
@@ -535,6 +629,7 @@ def test_unpresented_positions_remain_invalid() -> None:
         {"alpha": 0},
         {"alpha": 1},
         {"n_permutations": -1},
+        {"drop_bins": -1},
         {"alternative": "two-sided"},
         {"batch_size": 0},
         {"min_hole_neighbors": 5},
@@ -553,6 +648,24 @@ def test_rejects_invalid_parameters(kwargs: dict[str, object]) -> None:
             (1, 2),
             is_shuffle=False,
             **kwargs,
+        )
+
+
+@pytest.mark.parametrize("is_shuffle", [False, True])
+@pytest.mark.parametrize("drop_bins", [True, np.bool_(False), 1.0, "1"])
+def test_drop_bins_requires_a_non_bool_integer_in_all_modes(
+    is_shuffle: bool,
+    drop_bins: object,
+) -> None:
+    with pytest.raises(ValueError, match="drop_bins"):
+        detect_rf(
+            [[1.0, 2.0]],
+            [0, 1],
+            (1, 2),
+            is_shuffle=is_shuffle,
+            drop_bins=drop_bins,
+            n_permutations=1,
+            show_progress=False,
         )
 
 

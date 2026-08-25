@@ -532,3 +532,31 @@ def fill_short_gaps(mask, min_gap=600):
         out[start:end] = True
 
     return out
+
+def gen_delete_by_range_index(abnormal_index_list: list[int], on_list_time: list) -> tuple[int, int | None]:
+    start, end = 0, None
+
+    consecutive_abnormal_groups = []
+
+    for index in abnormal_index_list:
+        starts_new_group = (
+                not consecutive_abnormal_groups
+                or index != consecutive_abnormal_groups[-1][-1] + 1)
+
+        if starts_new_group:
+            consecutive_abnormal_groups.append([index])
+        else:
+            consecutive_abnormal_groups[-1].append(index)
+
+    if consecutive_abnormal_groups:
+        first_group = consecutive_abnormal_groups[0]
+        last_group = consecutive_abnormal_groups[-1]
+
+        if first_group[0] == 0:
+            start = first_group[-1] + 1
+
+        if last_group[-1] == len(on_list_time) - 2:
+            end = -len(last_group)
+
+    print(f"Start index: {start}, End index: {end}")
+    return start, end

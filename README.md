@@ -7,26 +7,31 @@ The Python/Tk, SwiftUI, and Web viewers now live in the sibling
 
 ## Python RFMap API
 
-`Utils/rfmap.py` loads one JSON file into an ordered `RFMapList` containing one
-`RFMap` per recorded unit. Array-index lookup and recorded unit-ID lookup are
-deliberately separate.
+`Utils/rfmap.py` loads one pooled RF source into an ordered `RFMapList`
+containing one `RFMap` per recorded unit. Array-index lookup and recorded
+unit-ID lookup are deliberately separate.
 
 ```python
+from pathlib import Path
+
 import numpy as np
 
 from Utils.rfmap import asrfmap, load_rf_maps
 from Utils.rf_trials import load_regular_rf_trials
 
-session = "/mnt/senzailab/Kai/#Recording/m15/260630/260630_3"
-rf_json = (
-    f"{session}/data/rfmapping/good/-100_400_1ms/ProbeA/"
-    "regular_unitsSpikeCounts_260630_3.json"
+session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
+rf_source = (
+    session
+    / "data/rfmapping/good/-100_400_1ms/ProbeA"
+    / "regular_unitsSpikeCounts_260630_3.json"
 )
 
-raw = load_rf_maps(rf_json)
+raw = load_rf_maps(rf_source)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(session, "A", summed)
-result = summed._detect_rf(
+
+result_path = rf_source.with_suffix(".npz")
+rf_masks_2d = summed.rf_2d(
     trials,
     is_shuffle=True,
     cluster_forming_z=1.5,
@@ -34,18 +39,21 @@ result = summed._detect_rf(
     n_permutations=10_000,
     random_seed=0,
     wrap_x=True,
-    n_jobs=None,
+    result_path=result_path,
     show_progress=True,
 )
-
-rf_masks_2d = result["final_mask"]
-rf_masks_x = np.any(rf_masks_2d, axis=1).astype(np.uint8)
+rf_masks_x = summed.rf_1d(trials, axis="x", result_path=result_path)
+rf_centers_2d = summed.rf_2d(
+    trials,
+    is_center=True,
+    result_path=result_path,
+)
 
 unit_by_source_index = summed.by_index(5)
 the_same_unit = summed.by_unit_id(unit_by_source_index.unit_id)
 
-zero_unit_offsets = np.unique(summed.where(0)[0])
-zero_unit_ids = np.asarray(summed.unit_ids)[zero_unit_offsets]
+units_with_any_zero_bin = np.unique(summed.where(0)[0])
+unit_ids_with_any_zero_bin = np.asarray(summed.unit_ids)[units_with_any_zero_bin]
 
 array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 ```
@@ -55,12 +63,12 @@ array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 within `1e-12` seconds. Equal edges produce a valid zero-valued singleton time
 axis; reversed intervals are invalid.
 
-Formal `detect_rf()`, `rf_2d()`, and `rf_1d()` operate on a single-bin summed
-object and matching trial data. A pooled JSON does not contain a trial axis and
-is insufficient for label permutation. The regular-data loader reconstructs
-per-trial responses from the authoritative MAT, onset, spike-time, cluster, and
-good-unit files. Permutations keep responses fixed and shuffle the joint
-`(x, y)` label within verified exchangeability blocks after ON/OFF filtering.
+`rf_2d()` and `rf_1d()` operate on a single-bin summed object and matching
+trial data. A pooled source does not contain a trial axis and is insufficient
+for label permutation. The regular-data loader reconstructs per-trial
+responses from the authoritative MAT, onset, spike-time, cluster, and good-unit
+files. Permutations keep responses fixed and shuffle the joint `(x, y)` label
+within verified exchangeability blocks after ON/OFF filtering.
 
 Candidate pixels use the configured cluster-forming z threshold. Significance
 comes from the null distribution of the maximum 4-connected cluster mass. The
@@ -68,9 +76,23 @@ comes from the null distribution of the maximum 4-connected cluster mass. The
 within a unit and does not correct across units, polarities, or separately run
 analyses.
 
-Batch work can show `Sum`, `Detecting RF`, and `Center` progress bars. Calling
-`rf_2d(..., return_center=True)` reduces each non-empty mask to one
-response-weighted RF bin. Pass `show_progress=False` for silent library use.
+Batch work can show `Sum`, `Detecting RF`, and `Center` progress bars.
+`is_center=False` returns the complete mask; `is_center=True` returns one
+response-weighted RF bin for each non-empty mask. Pass `show_progress=False`
+for silent library use.
+
+`result_path` is an optional, versioned `.npz` result sidecar. One
+successful run stores both the mask and center, together with enough input and
+parameter identity to reject a stale result. Later center or 1-D calls can
+reuse it without rerunning the permutation. Do not use `.rfmap` for this:
+`.rfmap` remains a raw-source extension (JSON text for regular maps and HDF5
+for free-moving maps). Regular JSON-text sources may end in either `.json` or
+`.rfmap`.
+
+With `is_shuffle=False`, `drop_bins=1` removes every 4-connected candidate
+component containing one bin; in general, components with size less than or
+equal to `drop_bins` are removed. `is_shuffle=True` retains the existing
+permutation behavior and ignores `drop_bins`.
 
 See [docs/rfmap.md](docs/rfmap.md) for the complete data contract, array shapes,
 permutation semantics, and troubleshooting guide.
@@ -85,7 +107,8 @@ ssh hhw9l84 'cd ~/Developer/rfmapping && \
 
 ssh hhw9l84 'cd ~/Developer/rfmapping && \
   PYTHONDONTWRITEBYTECODE=1 ~/.virtualenvs/rfmapping/bin/python -m pytest -q \
-  tests/test_rfmap.py tests/test_rf_detection.py tests/test_rf_trials.py'
+  tests/test_rfmap.py tests/test_rf_detection.py tests/test_rf_trials.py \
+  tests/test_rf_cache.py'
 ```
 
 The optional `analysis` dependency group covers plotting/tuning helpers:
@@ -102,7 +125,7 @@ The active data-generation pipeline remains:
 ```text
 ~/Developer/sync/matlab.ipynb
 -> /mnt/ssd4.1/Matlab/RFmapping.m
--> generated RF JSON
+-> generated RF source (`.json` or regular JSON-text `.rfmap`)
 -> ~/Developer/rfmapping_gui/{python,swift,web}
 ```
 

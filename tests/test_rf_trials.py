@@ -36,6 +36,7 @@ def _write_regular_fixture(
     pooled_delta: int = 0,
     corrupt_last_block: bool = False,
     n_time_bins: int = 1,
+    source_suffix: str = ".json",
 ) -> _SyntheticRegularRF:
     session = tmp_path / "260101_3"
     spike_dir = session / "data" / "probeA"
@@ -155,9 +156,9 @@ def _write_regular_fixture(
         "timeBinEdges": time_edges,
         "stimulusPresentationCounts": np.full((2, 2), n_blocks).tolist(),
     }
-    json_path = session / "regular_unitsSpikeCounts_260101_3.json"
-    json_path.write_text(json.dumps(payload), encoding="utf-8")
-    rf_maps = load_rf_maps(json_path)
+    source_path = session / f"regular_unitsSpikeCounts_260101_3{source_suffix}"
+    source_path.write_text(json.dumps(payload), encoding="utf-8")
+    rf_maps = load_rf_maps(source_path)
     return _SyntheticRegularRF(
         session=session,
         rf_maps=rf_maps,
@@ -190,6 +191,25 @@ def test_loader_resolves_canonical_regular_rf_paths(tmp_path: Path) -> None:
         fixture.session
         / "kilosort/ProbeA/kilosort_3/spike_clusters.npy"
     )
+
+
+def test_loader_accepts_json_text_rfmap_source(tmp_path: Path) -> None:
+    fixture = _write_regular_fixture(tmp_path, source_suffix=".rfmap")
+
+    trial_data = load_regular_rf_trials(fixture.session, "A", fixture.rf_maps)
+
+    assert trial_data["provenance"]["pooled_rf_json"] == str(
+        fixture.session / "regular_unitsSpikeCounts_260101_3.rfmap"
+    )
+
+
+def test_loader_rejects_regular_source_with_unrelated_suffix(
+    tmp_path: Path,
+) -> None:
+    fixture = _write_regular_fixture(tmp_path, source_suffix=".txt")
+
+    with pytest.raises(ValueError, match=r"\.json or \.rfmap"):
+        load_regular_rf_trials(fixture.session, "A", fixture.rf_maps)
 
 
 @pytest.mark.parametrize("probe", ["", "C", "Probe1", 1])

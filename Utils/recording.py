@@ -394,7 +394,7 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
                                  _recording_interval_min_len: int = 300
                                  ) -> tuple[bool, str]:
 
-   if (interval_table_path:= Path(f"{base_dir}/data/{interval_table_filename}.csv")).is_file() and not is_overwrite_interval_table:
+   if not (interval_table_path := Path(f"{base_dir}/data/{interval_table_filename}.csv")).is_file() or is_overwrite_interval_table:
         if (session_info_file := Path(
                     f"{base_dir}/data/{session_info_filename}.json")).is_file() and not is_overwrite_session_file:
 
@@ -575,3 +575,5 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
             return(False,
                 "\033[91mToo many intervals\033[0m:Multiple recording intervals detected. Manually run it to fix."
             )
+
+

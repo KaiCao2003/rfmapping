@@ -1,4 +1,4 @@
-"""Object model for per-unit RF mapping JSON data."""
+"""Object model for per-unit regular RF mapping source data."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import math
 import operator
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
-from numbers import Real
+from dataclasses import dataclass, field
+from numbers import Integral, Real
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, overload
@@ -348,6 +348,223 @@ def _single_detection_result(batch: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+_RF_DETECTION_OPTION_DEFAULTS: dict[str, Any] = {
+    "cluster_forming_z": 1.5,
+    "alpha": 0.05,
+    "n_permutations": 10_000,
+    "alternative": "greater",
+    "wrap_x": True,
+    "fill_single_holes": False,
+    "min_hole_neighbors": 3,
+    "random_seed": 0,
+    "batch_size": 64,
+    "n_jobs": None,
+}
+_RF_RESULT_EXECUTION_OPTIONS = {"batch_size", "n_jobs"}
+
+
+def _bounded_integer(value: Any, label: str, *, minimum: int) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{label} must be an integer")
+    parsed = int(value)
+    if parsed < minimum:
+        raise ValueError(f"{label} must be at least {minimum}")
+    return parsed
+
+
+def _nonnegative_integer(value: Any, label: str) -> int:
+    return _bounded_integer(value, label, minimum=0)
+
+
+def _json_scalar(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _rf_detection_parameters(
+    *,
+    is_shuffle: bool,
+    drop_bins: int,
+    options: Mapping[str, Any],
+) -> dict[str, Any]:
+    unknown = sorted(set(options).difference(_RF_DETECTION_OPTION_DEFAULTS))
+    if unknown:
+        labels = ", ".join(repr(name) for name in unknown)
+        raise TypeError(f"unexpected RF detection option(s): {labels}")
+
+    _bounded_integer(
+        options.get("batch_size", _RF_DETECTION_OPTION_DEFAULTS["batch_size"]),
+        "batch_size",
+        minimum=1,
+    )
+    n_jobs = options.get("n_jobs", _RF_DETECTION_OPTION_DEFAULTS["n_jobs"])
+    if n_jobs is not None:
+        _bounded_integer(n_jobs, "n_jobs", minimum=1)
+
+    parameters = {
+        name: _json_scalar(options.get(name, default))
+        for name, default in _RF_DETECTION_OPTION_DEFAULTS.items()
+        if name not in _RF_RESULT_EXECUTION_OPTIONS
+    }
+    parameters["is_shuffle"] = is_shuffle
+    # A no-shuffle size cutoff is deliberately absent from shuffled-result
+    # identity because shuffled output must not depend on it.
+    parameters["drop_bins"] = None if is_shuffle else drop_bins
+    return parameters
+
+
+def _rf_result_manifest(
+    maps: Sequence["RFMap"],
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    first = maps[0]
+    return {
+        "schema_name": "rfmapping-rf-result",
+        "detector_algorithm": "cluster-permutation-v1",
+        "center_algorithm": "response-weighted-medoid-v1",
+        "nonshuffle_filter": "drop-small-components-inclusive-v1",
+        "grid_shape": [first.n_y, first.n_x],
+        "storage_shape": [len(maps), first.n_y, first.n_x],
+        "time_range_s": list(first.time_window_s),
+        "parameters": dict(parameters),
+    }
+
+
+def _rf_result_key_arrays(aligned: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "responses": aligned["responses"],
+        "position_ids": aligned["position_ids"],
+        "stratum_ids": aligned.get("stratum_ids"),
+        "unit_ids": aligned["unit_ids"],
+        "x_positions": aligned["x_positions"],
+        "y_positions": aligned["y_positions"],
+    }
+
+
+def _rf_output_arrays(
+    *,
+    cache: dict[str, Any],
+    maps: Sequence["RFMap"],
+    is_batch: bool,
+    trials: Mapping[str, Any],
+    detect: Any,
+    is_shuffle: bool,
+    drop_bins: int,
+    result_path: str | Path | None,
+    show_progress: bool,
+    center_progress: bool,
+    options: Mapping[str, Any],
+) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+    """Return one reusable mask-center result for the public RF views."""
+
+    run_shuffle = _bool_value(is_shuffle, "is_shuffle")
+    parsed_drop_bins = _nonnegative_integer(drop_bins, "drop_bins")
+    parameters = _rf_detection_parameters(
+        is_shuffle=run_shuffle,
+        drop_bins=parsed_drop_bins,
+        options=options,
+    )
+
+    target: Path | None = None
+    if result_path is not None:
+        target = Path(result_path)
+        if target.suffix.lower() != ".npz":
+            raise ValueError("result_path must end with '.npz'")
+
+    # Hash the aligned detector inputs even for the in-memory fast path.  That
+    # prevents a caller mutating a trials array in place from receiving a stale
+    # result merely because the outer mapping is still the same object.
+    aligned = _aligned_trial_mapping(trials, maps)
+    manifest = _rf_result_manifest(maps, parameters)
+    from Utils.rf_cache import build_rf_result_cache_key, load_rf_result
+
+    result_key = build_rf_result_cache_key(
+        arrays=_rf_result_key_arrays(aligned),
+        manifest=manifest,
+    )
+    memory_hit = (
+        cache.get("result_key") == result_key
+        and "mask_2d" in cache
+        and "center_2d" in cache
+    )
+    mask: NDArray[np.uint8] | None = (
+        cache["mask_2d"] if memory_hit else None
+    )
+    center: NDArray[np.uint8] | None = (
+        cache["center_2d"] if memory_hit else None
+    )
+
+    if memory_hit and target is None:
+        assert mask is not None and center is not None
+        return mask, center
+
+    disk_hit = False
+    if target is not None:
+        stored = load_rf_result(target, expected_cache_key=result_key)
+        if stored is not None:
+            expected_unit_ids = np.asarray(
+                [rf_map.unit_id for rf_map in maps],
+                dtype=np.int64,
+            )
+            if not np.array_equal(stored["unit_ids"], expected_unit_ids):
+                raise RuntimeError(
+                    "RF result unit IDs do not match the requested maps"
+                )
+            expected_shape = (len(maps), maps[0].n_y, maps[0].n_x)
+            stored_mask = stored["mask_2d"]
+            stored_center = stored["center_2d"]
+            if stored_mask.shape != expected_shape:
+                raise RuntimeError(
+                    "RF result shape does not match the requested maps"
+                )
+            mask = stored_mask if is_batch else stored_mask[0]
+            center = stored_center if is_batch else stored_center[0]
+            disk_hit = True
+
+    if mask is None or center is None:
+        result = detect(
+            trials,
+            is_shuffle=run_shuffle,
+            drop_bins=parsed_drop_bins,
+            show_progress=show_progress,
+            **options,
+        )
+        mask = _readonly_array(result["final_mask"], dtype=np.uint8)
+        center = _readonly_array(
+            _center_only_mask(
+                result,
+                alternative=options.get("alternative", "greater"),
+                wrap_x=bool(options.get("wrap_x", True)),
+                show_progress=center_progress,
+            ),
+            dtype=np.uint8,
+        )
+
+    cache.clear()
+    cache.update(
+        {
+            "result_key": result_key,
+            "parameters": parameters,
+            "mask_2d": mask,
+            "center_2d": center,
+        }
+    )
+
+    if target is not None and not disk_hit:
+        from Utils.rf_cache import save_rf_result
+
+        save_rf_result(
+            target,
+            mask_2d=mask if is_batch else mask[np.newaxis, ...],
+            center_2d=center if is_batch else center[np.newaxis, ...],
+            unit_ids=[rf_map.unit_id for rf_map in maps],
+            manifest=manifest,
+            cache_key=result_key,
+        )
+    return mask, center
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class RFMap:
     """RF mapping data for one unit.
@@ -365,6 +582,12 @@ class RFMap:
     presentation_counts: NDArray[np.float64] | None
     metadata: Mapping[str, Any]
     source_path: Path
+    _rf_result_cache: dict[str, Any] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __repr__(self) -> str:
         return (
@@ -615,15 +838,16 @@ class RFMap:
 
     # RF detection
 
-    def detect_rf(
+    def _detect_rf(
         self,
         trials: Mapping[str, Any],
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         show_progress: bool = True,
         **options: Any,
     ) -> dict[str, Any]:
-        """Return plain cluster-permutation result arrays for this unit."""
+        """Return internal cluster result arrays for this unit."""
 
         from Utils.rf_detection import detect_rf
 
@@ -636,6 +860,7 @@ class RFMap:
             stratum_ids=aligned.get("stratum_ids"),
             unit_ids=aligned["unit_ids"],
             is_shuffle=is_shuffle,
+            drop_bins=drop_bins,
             show_progress=progress,
             **options,
         )
@@ -646,32 +871,38 @@ class RFMap:
         trials: Mapping[str, Any],
         *,
         is_shuffle: bool = True,
-        return_center: bool = False,
+        drop_bins: int = 1,
+        is_center: bool = False,
+        result_path: str | Path | None = None,
         show_progress: bool = True,
         **options: Any,
     ) -> NDArray[np.uint8]:
-        """Return the final 2-D RF mask or its discrete weighted center."""
+        """Return the final 2-D RF mask or its discrete weighted center.
 
-        center_only = _bool_value(return_center, "return_center")
+        ``is_center=False`` returns the complete mask; ``True`` returns one
+        response-weighted bin for each non-empty RF.  A ``.npz``
+        ``result_path`` persists both views, so switching ``is_center`` later
+        does not repeat detection.  ``drop_bins`` is used only by exploratory
+        ``is_shuffle=False`` runs and removes connected components whose size
+        is less than or equal to the cutoff.
+        """
+
+        center_only = _bool_value(is_center, "is_center")
         progress = _bool_value(show_progress, "show_progress")
-        result = self.detect_rf(
-            trials,
+        mask, center = _rf_output_arrays(
+            cache=self._rf_result_cache,
+            maps=(self,),
+            is_batch=False,
+            trials=trials,
+            detect=self._detect_rf,
             is_shuffle=is_shuffle,
+            drop_bins=drop_bins,
+            result_path=result_path,
             show_progress=progress,
-            **options,
+            center_progress=progress and center_only,
+            options=options,
         )
-        mask = result["final_mask"]
-        if center_only:
-            mask = _center_only_mask(
-                result,
-                alternative=options.get("alternative", "greater"),
-                wrap_x=bool(options.get("wrap_x", True)),
-                show_progress=progress,
-            )
-        return _readonly_array(
-            mask,
-            dtype=np.uint8,
-        )
+        return center if center_only else mask
 
     def rf_1d(
         self,
@@ -679,17 +910,21 @@ class RFMap:
         axis: str = "x",
         *,
         is_shuffle: bool = True,
-        return_center: bool = False,
+        drop_bins: int = 1,
+        is_center: bool = False,
+        result_path: str | Path | None = None,
         show_progress: bool = True,
         **options: Any,
     ) -> NDArray[np.uint8]:
-        """Project this unit's final 2-D RF mask onto x or y."""
+        """Project the same computed 2-D mask or center onto x or y."""
 
         normalized_axis = _axis_name(axis)
         matrix = self.rf_2d(
             trials,
             is_shuffle=is_shuffle,
-            return_center=return_center,
+            drop_bins=drop_bins,
+            is_center=is_center,
+            result_path=result_path,
             show_progress=show_progress,
             **options,
         )
@@ -707,11 +942,13 @@ class RFMapList(Sequence[RFMap]):
         "_maps",
         "_maps_by_unit_id",
         "_maps_by_unit_index",
+        "_rf_result_cache",
         "source_path",
     )
 
     def __init__(self, maps: Sequence[RFMap], source_path: str | Path):
         self._maps = list(maps)
+        self._rf_result_cache: dict[str, Any] = {}
         if not self._maps:
             raise ValueError("RFMapList requires at least one RFMap")
         self.source_path = Path(source_path)
@@ -765,7 +1002,7 @@ class RFMapList(Sequence[RFMap]):
         return self._maps[index]
 
     def by_index(self, unit_index: int) -> RFMap:
-        """Return a unit by its original index in the JSON file."""
+        """Return a unit by its original index in the source file."""
 
         index = _coerce_lookup_integer(unit_index, "unit_index")
         try:
@@ -870,6 +1107,7 @@ class RFMapList(Sequence[RFMap]):
         trials: Mapping[str, Any],
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         show_progress: bool = True,
         **options: Any,
     ) -> dict[str, Any]:
@@ -887,6 +1125,7 @@ class RFMapList(Sequence[RFMap]):
             stratum_ids=aligned.get("stratum_ids"),
             unit_ids=aligned["unit_ids"],
             is_shuffle=is_shuffle,
+            drop_bins=drop_bins,
             show_progress=progress,
             **options,
         )
@@ -895,33 +1134,39 @@ class RFMapList(Sequence[RFMap]):
         self,
         trials: Mapping[str, Any],
         *,
-        is_shuffle: bool = True,
-        return_center: bool = False,
+        is_shuffle: bool = False,
+        drop_bins: int = 2,
+        is_center: bool = False,
+        result_path: str | Path | None = None,
         show_progress: bool = True,
         **options: Any,
     ) -> NDArray[np.uint8]:
-        """Stack final 2-D RF masks or discrete centers by unit."""
+        """Stack final 2-D RF masks or discrete centers by unit.
 
-        center_only = _bool_value(return_center, "return_center")
+        ``is_center=False`` returns complete masks; ``True`` returns one
+        response-weighted bin for each non-empty RF.  A ``.npz``
+        ``result_path`` persists both views, so switching ``is_center`` later
+        does not repeat detection.  ``drop_bins`` is used only by exploratory
+        ``is_shuffle=False`` runs and removes connected components whose size
+        is less than or equal to the cutoff.
+        """
+
+        center_only = _bool_value(is_center, "is_center")
         progress = _bool_value(show_progress, "show_progress")
-        result = self._detect_rf(
-            trials,
+        mask, center = _rf_output_arrays(
+            cache=self._rf_result_cache,
+            maps=self._maps,
+            is_batch=True,
+            trials=trials,
+            detect=self._detect_rf,
             is_shuffle=is_shuffle,
+            drop_bins=drop_bins,
+            result_path=result_path,
             show_progress=progress,
-            **options,
+            center_progress=progress and center_only,
+            options=options,
         )
-        mask = result["final_mask"]
-        if center_only:
-            mask = _center_only_mask(
-                result,
-                alternative=options.get("alternative", "greater"),
-                wrap_x=bool(options.get("wrap_x", True)),
-                show_progress=progress,
-            )
-        return _readonly_array(
-            mask,
-            dtype=np.uint8,
-        )
+        return center if center_only else mask
 
     def rf_1d(
         self,
@@ -929,17 +1174,21 @@ class RFMapList(Sequence[RFMap]):
         axis: str = "x",
         *,
         is_shuffle: bool = True,
-        return_center: bool = False,
+        drop_bins: int = 1,
+        is_center: bool = False,
+        result_path: str | Path | None = None,
         show_progress: bool = True,
         **options: Any,
     ) -> NDArray[np.uint8]:
-        """Project the same final 2-D RF results onto x or y."""
+        """Project the same computed 2-D masks or centers onto x or y."""
 
         normalized_axis = _axis_name(axis)
         matrix = self.rf_2d(
             trials,
             is_shuffle=is_shuffle,
-            return_center=return_center,
+            drop_bins=drop_bins,
+            is_center=is_center,
+            result_path=result_path,
             show_progress=show_progress,
             **options,
         )
@@ -1084,7 +1333,7 @@ def asrfmap(
 
 
 def load_rf_maps(path: str | Path) -> RFMapList:
-    """Load one RF mapping JSON file into ordered, per-unit RFMap objects."""
+    """Load one regular RF JSON-text source into ordered RFMap objects."""
 
     source_path = Path(path)
     raw = read_formatted_json(source_path)

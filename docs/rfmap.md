@@ -1,69 +1,105 @@
 # RFMap Python API
 
-This guide covers the Python RF analysis interface: loading pooled JSON maps,
-summing a response window, rebuilding raw regular trials, and detecting a
-spatial RF with a trial-label cluster permutation test.
+This guide covers the public Python RF analysis interface: loading a pooled
+regular RF source, summing a response window, rebuilding aligned raw trials,
+and returning a 2-D mask, its discrete center, or a 1-D projection.
 
-The analysis-facing imports are intentionally small:
+Analysis code only needs these imports:
 
 ```python
 from Utils.rfmap import RFMap, RFMapList, asrfmap, load_rf_maps
 from Utils.rf_trials import load_regular_rf_trials
 ```
 
-`load_regular_rf_trials()` returns an ordinary dictionary. `detect_rf()` also
-returns an ordinary dictionary, so analysis code does not need configuration,
-trial-container, or result-wrapper objects.
+RF detection is exposed through `RFMap.rf_2d()`, `RFMap.rf_1d()`,
+`RFMapList.rf_2d()`, and `RFMapList.rf_1d()`. The caller chooses between the
+complete mask and its center with one boolean: `is_center=False` returns the
+mask and `is_center=True` returns the center.
 
 ## Quick start
 
 ```python
 from pathlib import Path
 
-import numpy as np
-
 from Utils.rfmap import load_rf_maps
 from Utils.rf_trials import load_regular_rf_trials
 
 session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
-rf_json = (
-        session
-        / "data/rfmapping/good/-100_400_1ms/ProbeA"
-        / "regular_unitsSpikeCounts_260630_3.json"
+rf_source = (
+    session
+    / "data/rfmapping/good/-100_400_1ms/ProbeA"
+    / "regular_unitsSpikeCounts_260630_3.json"
 )
 
-raw = load_rf_maps(rf_json)
+raw = load_rf_maps(rf_source)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(session, "A", summed)
+result_path = rf_source.with_suffix(".npz")
 
-result = summed._detect_rf(
-    trials,
-    is_shuffle=True,
-    cluster_forming_z=1.5,
-    alpha=0.05,
-    n_permutations=10_000,
-    random_seed=0,
-    wrap_x=True,
-    n_jobs=None,
-    show_progress=True,
-)
+options = {
+    "is_shuffle": True,
+    "cluster_forming_z": 1.5,
+    "alpha": 0.05,
+    "n_permutations": 10_000,
+    "random_seed": 0,
+    "wrap_x": True,
+    "result_path": result_path,
+    "show_progress": True,
+}
 
-rf_2d = result["final_mask"]
-rf_1d_x = np.any(rf_2d, axis=1).astype(np.uint8)
-rf_1d_y = np.any(rf_2d, axis=2).astype(np.uint8)
-
-print("2-D shape:", rf_2d.shape)
-print("x projection shape:", rf_1d_x.shape)
-print("workers used:", result["n_workers"])
+mask_2d = summed.rf_2d(trials, **options)
+center_2d = summed.rf_2d(trials, is_center=True, **options)
+mask_x = summed.rf_1d(trials, axis="x", **options)
+mask_y = summed.rf_1d(trials, axis="y", **options)
 ```
 
-For an `RFMapList`, the shapes above are `(unit, y, x)`, `(unit, x)`, and
-`(unit, y)`. For one `RFMap`, omit the unit axis and collapse y with `axis=0`
-or x with `axis=1`.
+The first call computes the statistical mask and its center and writes both to
+`result_path`. The later calls validate and reuse that result; changing
+`is_center` or the projection axis does not rerun the permutation.
+
+For an `RFMapList`, the four output shapes above are `(unit, y, x)`,
+`(unit, y, x)`, `(unit, x)`, and `(unit, y)`. A single `RFMap` has no leading
+unit axis.
+
+## Source files and result files
+
+`.rfmap` is a source-data extension, not a result or cache extension:
+
+- A regular pooled map is JSON text and may end in `.json` or `.rfmap`.
+- A free-moving `.rfmap` is HDF5 and follows its own source schema.
+- A reusable detection result ends in `.npz`.
+
+Do not write a result over a `.rfmap` source. `result_path` deliberately
+requires the distinct `.npz` suffix.
+
+The result sidecar is versioned and contains both binary arrays needed by the
+public API: the complete 2-D mask and the discrete 2-D center. It also records
+the aligned trial inputs, unit/grid identity, response window, and statistical
+parameters through a validation key. Reuse occurs only when that identity
+matches. A missing, stale, or mismatched result is recomputed instead of being
+silently accepted.
+
+On disk, both arrays always use canonical `(unit, y, x)` shape. A single
+`RFMap` still returns `(y, x)` through the public methods; the leading unit axis
+is removed only when that view is requested.
+
+This is best thought of as a persisted analysis result, not another RF source.
+It solves the common sequence “generate the mask now, request its center
+later”: the first call has already saved both, so the second call reads the
+validated center without another permutation.
+
+`result_path` is optional. Without it, repeated compatible calls on the same
+in-memory `RFMap` or `RFMapList` still reuse their result. Supplying a path also
+allows reuse after restarting Python or reloading the source.
+
+Keep the semantic arguments the same when reusing a result. For example, if
+the first call used `alpha=0.01`, pass `alpha=0.01` to the center and 1-D calls
+as well. A different trial dictionary, response window, unit set, grid, or
+statistical parameter describes a different result.
 
 ## Object model and shapes
 
-One pooled RF JSON has count data in this order:
+One pooled regular RF source stores counts in this order:
 
 ```text
 (unit, y, x, time)
@@ -72,34 +108,29 @@ One pooled RF JSON has count data in this order:
 `load_rf_maps()` returns an ordered `RFMapList`. Each item is one `RFMap` with
 shape `(y, x, time)`.
 
-| Value | Shape | Meaning |
-| --- | --- | --- |
-| `raw.shape` | `(unit, y, x, time)` | Logical batch shape |
-| `raw.to_4d_array()` | `(unit, y, x, time)` | Stacked pooled counts |
-| `summed.shape` | `(unit, y, x, 1)` | One summed response bin per unit |
-| `summed.to_2d_array()` | `(unit, y, x)` | Summed response counts |
-| `result["final_mask"]` | `(unit, y, x)` | Final binary RF masks |
-| `np.any(mask, axis=1)` | `(unit, x)` | Projection along x |
-| `np.any(mask, axis=2)` | `(unit, y)` | Projection along y |
+| Value | `RFMapList` shape | One `RFMap` shape | Meaning |
+| --- | --- | --- | --- |
+| `raw.shape` | `(unit, y, x, time)` | `(y, x, time)` | Pooled count timeline |
+| `summed.shape` | `(unit, y, x, 1)` | `(y, x, 1)` | One response bin |
+| `rf_2d(..., is_center=False)` | `(unit, y, x)` | `(y, x)` | Complete binary RF mask |
+| `rf_2d(..., is_center=True)` | `(unit, y, x)` | `(y, x)` | At most one selected bin per unit |
+| `rf_1d(..., axis="x")` | `(unit, x)` | `(x,)` | Collapse y |
+| `rf_1d(..., axis="y")` | `(unit, y)` | `(y,)` | Collapse x |
 
-For one `RFMap`, the same arrays have no leading unit dimension.
-
-Use `where(value)` to locate exact values on the object's native count axes.
-It follows `numpy.where` tuple ordering: `(y, x, time)` for one `RFMap` and
-`(unit, y, x, time)` for an `RFMapList`. The unit result contains list offsets,
-not recorded unit IDs, and repeats an offset when several bins match:
+Use `where(value)` to locate exact values on the native count axes. It follows
+NumPy tuple ordering: `(y, x, time)` for one map and
+`(unit, y, x, time)` for a list. The unit result contains list offsets, not
+recorded unit IDs:
 
 ```python
+import numpy as np
+
 zero_locations = summed.where(0)
-zero_unit_offsets = np.unique(zero_locations[0])
-zero_unit_ids = np.asarray(summed.unit_ids)[zero_unit_offsets]
+units_with_any_zero_bin = np.unique(zero_locations[0])
+unit_ids_with_any_zero_bin = np.asarray(summed.unit_ids)[units_with_any_zero_bin]
 ```
 
-A summed map retains a singleton time axis, so the final index array returned
-by `where()` contains zeros. Use `np.unique()` on the first array when the goal
-is one entry per matching unit.
-
-Unit list position and recorded unit ID are separate concepts:
+List position, source index, and recorded unit ID are separate concepts:
 
 ```python
 by_position = summed[5]
@@ -108,40 +139,40 @@ by_recorded_id = summed.by_unit_id(127)
 ```
 
 Use `by_unit_id()` when the number comes from cluster labels or another data
-source. Do not assume that a recorded unit ID is a Python list index.
+source. Do not assume a recorded unit ID is a Python list index.
 
 ## Summing the response window
 
-RF detection accepts exactly one time bin. If the JSON contains a timeline,
+The RF methods accept exactly one time bin. If the source contains a timeline,
 sum the desired half-open interval first:
 
 ```python
 summed = raw.sum(0.0, 0.2, show_progress=True)
 ```
 
-The operation includes bins in `[0.0, 0.2)` and returns another `RFMap` or
-`RFMapList` whose time axis has length one. Both endpoints must match actual
-`timeBinEdges` values. Times are seconds.
+This includes bins in `[0.0, 0.2)` and returns another `RFMap` or `RFMapList`
+with a singleton time axis. Both endpoints must match actual `timeBinEdges`
+values, in seconds, within `1e-12` seconds. Equal endpoints produce a valid
+zero-valued singleton time axis; reversed intervals are invalid.
 
-For an `RFMapList`, `show_progress=True` displays the `Sum` bar once per unit.
+For an `RFMapList`, `show_progress=True` displays one `Sum` update per unit.
 Pass `show_progress=False` for silent execution. A single `RFMap.sum()` is one
 array reduction and does not create a progress bar.
 
-If the loaded map already has one bin, use it directly:
+If the source already has one bin, use it directly:
 
 ```python
 summed = raw if raw[0].n_time_bins == 1 else raw.sum(0.0, 0.2)
 ```
 
-There is deliberately no `time_range` argument on `detect_rf()`, `rf_2d()`, or
-`rf_1d()`. The single-bin object is the response window, which prevents the
-pooled map and reconstructed trial responses from silently using different
-windows.
+There is deliberately no `time_range` argument on `rf_2d()` or `rf_1d()`.
+The singleton-bin object is the response window, which prevents pooled counts
+and reconstructed trial responses from silently using different windows.
 
 ## Loading regular trials
 
-The pooled JSON has no trial axis, so it cannot support a label-permutation
-test by itself. Rebuild the matching regular sparse-noise trials from the raw
+The pooled source has no trial axis, so it cannot support a label-permutation
+test by itself. Rebuild matching regular sparse-noise trials from the raw
 session:
 
 ```python
@@ -149,68 +180,60 @@ trials = load_regular_rf_trials(session, "A", summed)
 ```
 
 The loader resolves and validates the session MAT file, stimulus onsets, probe
-spike times, and Kilosort cluster labels. It checks the grid, unit IDs, response
-window, repeat structure, and pooled counts against `summed`. It returns a
-dictionary containing the aligned trial responses, joint spatial labels,
+spike times, Kilosort cluster labels, and good-unit labels. It checks the grid,
+unit IDs, response window, repeat structure, and pooled counts against
+`summed`. It returns aligned trial responses, joint spatial labels,
 exchangeability strata, positions, unit IDs, and provenance.
 
 Positions are shuffled as one joint `(x, y)` label. Responses are never
 shuffled. The loader first filters the requested ON or OFF polarity, then uses
-repeat blocks as strata so each permutation changes only the position-response
-relationship that the null hypothesis is meant to destroy.
+repeat blocks as strata so each permutation changes only the
+position-response relationship described by the null hypothesis.
 
-The loader is intentionally for regular one-position-per-trial sparse noise.
-Pixel-bin, rotation, egocentric, or transformed maps need different label
-semantics and must not be passed through this loader.
+This loader is for regular one-position-per-trial sparse noise. Pixel-bin,
+rotation, egocentric, or transformed maps need different label semantics and
+must not be passed through it.
 
-## Detecting an RF
+## RF method arguments
 
-`detect_rf()` exposes ordinary keyword arguments:
-
-```python
-result = summed._detect_rf(
-    trials,
-    is_shuffle=True,
-    cluster_forming_z=1.5,
-    alpha=0.05,
-    n_permutations=10_000,
-    random_seed=0,
-    wrap_x=True,
-    n_jobs=None,
-    show_progress=True,
-)
-```
-
-The important arguments are:
+Both `rf_2d()` and `rf_1d()` accept the same statistical arguments; `rf_1d()`
+also takes `axis="x"` or `axis="y"`.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `is_shuffle` | `True` | Run the permutation significance test |
+| `is_center` | `False` | Return the complete mask; `True` returns its discrete center |
+| `is_shuffle` | `True` | Run cluster-permutation significance testing |
+| `drop_bins` | `1` | No-shuffle only: remove components of this size or smaller |
 | `cluster_forming_z` | `1.5` | Select pixels allowed to form candidate clusters |
 | `alpha` | `0.05` | Cluster-level significance cutoff |
 | `n_permutations` | `10_000` | Number of shuffled null maps |
-| `random_seed` | `0` | Reproducible permutation seed; `None` is nondeterministic |
+| `alternative` | `"greater"` | Test increased response; `"less"` tests decreased response |
 | `wrap_x` | `True` | Treat the first and last x columns as adjacent |
-| `n_jobs` | `None` | Auto: one worker for one unit; up to two across multiple units |
-| `show_progress` | `True` | Show permutation progress; use `False` for silent execution |
+| `fill_single_holes` | `False` | Fill eligible one-bin holes inside significant clusters |
+| `min_hole_neighbors` | `3` | Required 4-connected significant neighbors for hole filling |
+| `random_seed` | `0` | Reproducible permutation seed; `None` is nondeterministic |
+| `batch_size` | `64` | Permutation chunk size; does not change result identity |
+| `n_jobs` | `None` | Worker limit; does not change result identity |
+| `result_path` | `None` | Optional validated `.npz` result |
+| `show_progress` | `True` | Show applicable progress; use `False` for silent execution |
 
-Use `wrap_x=True` only when the x grid is genuinely periodic, such as the
-360-degree regular RF display. It changes cluster connectivity at the left and
-right borders.
+Use `wrap_x=True` only when the x grid is genuinely periodic, such as a
+360-degree display. It changes both candidate connectivity and center distance
+at the left/right seam.
 
-`cluster_forming_z=1.5` is not a `p < 0.05` pixel threshold. It only determines
-which neighboring pixels can enter a candidate cluster. Significance comes
-from comparing a real cluster mass with the shuffled maximum-cluster-mass
+`cluster_forming_z=1.5` is not a pixelwise `p < 0.05` threshold. It only
+determines which neighboring pixels can enter candidate clusters.
+Significance is determined at the cluster level by the shuffled maximum-mass
 distribution.
 
-### What the shuffle tests
+## What `is_shuffle=True` tests
 
 For every retained trial, the spike response stays fixed. Within each allowed
 stratum, the joint spatial label is randomly permuted. Each permutation then:
 
 1. Recomputes mean response by position.
 2. Applies the same z transform and cluster-forming threshold.
-3. Finds 4-connected clusters.
+3. Finds 4-connected clusters, respecting `wrap_x`.
 4. Sums z values within each cluster.
 5. Stores the largest cluster mass from that permutation.
 
@@ -224,143 +247,81 @@ The empirical cluster p-value uses the plus-one rule:
 
 Using the maximum cluster from every shuffle controls spatial family-wise
 error within one unit. It does not additionally correct across units, probes,
-or separately analyzed stimulus conditions.
+stimulus polarities, or separately run analyses.
 
-### Result dictionary
+The returned mask contains clusters whose empirical p-value is no greater
+than `alpha`. The 1-D result is a projection of this final 2-D mask, not an
+independent 1-D significance test.
 
-The final 2-D output is always:
+When `is_shuffle=True`, `drop_bins` is deliberately ignored. The permutation
+result therefore remains identical to the existing significance procedure,
+regardless of the supplied `drop_bins` value.
 
-```python
-mask = result["final_mask"]
-```
+## What `is_shuffle=False` returns
 
-The dictionary also retains the statistical diagnostic arrays produced by the
-detector, including the response and z maps, candidate and significant masks,
-cluster labels and masses, empirical p-values, and null maxima. Use the keys
-directly rather than wrapping the dictionary in another container.
-
-The actual worker count is:
-
-```python
-result["n_workers"]
-```
-
-This makes automatic thread selection observable and makes performance reports
-reproducible.
-
-### `is_shuffle=False`
+No-shuffle mode is exploratory. It skips the null distribution and begins
+with the cluster-forming candidate pixels. `drop_bins` then filters whole
+candidate components:
 
 ```python
-exploratory = summed._detect_rf(
+mask = summed.rf_2d(
     trials,
     is_shuffle=False,
+    drop_bins=1,
     cluster_forming_z=1.5,
 )
-candidate_mask = exploratory["final_mask"]
 ```
 
-This skips the shuffled null and returns the cluster-forming candidate mask. It
-is useful for exploration, but it is not a significant RF and has no valid
-permutation p-value.
+Components use 4-connectivity and respect `wrap_x`. Every component containing
+`drop_bins` bins or fewer is removed:
 
-## Automatic threading
+- `drop_bins=0` keeps every candidate component.
+- `drop_bins=1` removes isolated one-bin components.
+- `drop_bins=2` removes one- and two-bin components.
 
-Permutation work is distributed across units for an `RFMapList`. A one-unit
-`RFMap` can also split permutation chunks when `n_jobs > 1`. The default is
-automatic:
+The value must be a non-negative integer. Filtering is component-based; it
+does not sort pixels globally and does not remove an arbitrary number of the
+weakest bins. A retained no-shuffle mask is not permutation-significant and
+must not be reported as such.
+
+## Complete masks, centers, and 1-D projections
+
+The normal output is the complete binary area:
 
 ```python
-result = summed._detect_rf(trials, n_jobs=None)
-print(result["n_workers"])
+mask_2d = summed.rf_2d(trials, is_center=False)
+mask_x = summed.rf_1d(trials, axis="x", is_center=False)
+mask_y = summed.rf_1d(trials, axis="y", is_center=False)
 ```
 
-Automatic mode respects the CPUs available to the process and applies an
-internal safety cap. It uses one worker for a single RFMap and up to two for an
-RFMapList. This is deliberate: real 7 x 30 single-unit benchmarks made two
-threads about 3--6% slower, while the multi-unit workload benefits from two.
-
-For an explicit serial run:
+Select the center through the same public methods:
 
 ```python
-serial = summed._detect_rf(trials, n_jobs=1)
+center_2d = summed.rf_2d(trials, is_center=True)
+center_x = summed.rf_1d(trials, axis="x", is_center=True)
+center_y = summed.rf_1d(trials, axis="y", is_center=True)
 ```
 
-For an explicit upper bound:
+Mask calculation is required before center calculation. The implementation
+therefore obtains both as one reusable result rather than running the detector
+again for `is_center=True`. Units with an empty mask remain all zero. Every
+non-empty mask contributes exactly one selected center bin.
 
-```python
-parallel = summed._detect_rf(trials, n_jobs=4)
-```
-
-With the same data, seed, and statistical arguments, serial and threaded runs
-produce the same masks and null results. Parallelism changes scheduling, not
-the permutation sequence.
-
-## Getting 2-D and 1-D masks
-
-If diagnostic statistics are needed, call `detect_rf()` once and reuse its
-mask:
-
-```python
-result = summed._detect_rf(trials)
-rf_2d = result["final_mask"]
-rf_x = np.any(rf_2d, axis=1).astype(np.uint8)  # RFMapList: collapse y
-rf_y = np.any(rf_2d, axis=2).astype(np.uint8)  # RFMapList: collapse x
-```
-
-For a single `RFMap`:
-
-```python
-unit = summed.by_unit_id(127)
-unit_result = unit._detect_rf(trials)
-unit_2d = unit_result["final_mask"]
-unit_x = np.any(unit_2d, axis=0).astype(np.uint8)
-unit_y = np.any(unit_2d, axis=1).astype(np.uint8)
-```
-
-If only the binary output is needed, convenience methods are available:
-
-```python
-rf_2d = summed.rf_2d(trials)
-rf_x = summed.rf_1d(trials, axis="x")
-rf_y = summed.rf_1d(trials, axis="y")
-```
-
-To return one discrete, response-weighted center bin per unit instead of the
-complete RF area:
-
-```python
-center_2d = summed.rf_2d(
-    trials,
-    return_center=True,
-    show_progress=True,
-)
-center_x = np.any(center_2d, axis=1).astype(np.uint8)
-center_y = np.any(center_2d, axis=2).astype(np.uint8)
-```
-
-The detector always computes `final_mask` first. Units whose mask is empty stay
-all zero and are skipped by the `Center` bar; if every unit is empty, no center
-bar is created. For a non-empty RF, define the response-effect weight inside
-the final mask as:
+For a non-empty RF, the response-effect weight within the final mask is:
 
 ```text
 greater: w[y, x] = max(response_map[y, x] - null_mean_map[y, x], 0)
 less:    w[y, x] = max(null_mean_map[y, x] - response_map[y, x], 0)
 ```
 
-The returned center is the RF-positive bin `p` minimizing
+The center is the RF-positive bin `p` minimizing
 `sum_q w[q] * distance(p, q)^2`. This discrete weighted medoid cannot fall
-between bins or outside `final_mask`. With `wrap_x=True`, horizontal distance
+between bins or outside the final mask. With `wrap_x=True`, horizontal distance
 is circular. A zero total weight falls back to equal RF-bin weights; remaining
 ties prefer the higher local weight and then row-major order.
 
-The 1-D methods are logical projections of the final 2-D mask. They are not
-independent 1-D significance tests.
-
-Do not call `detect_rf()` and then call `rf_2d()` with the same inputs: the
-second call runs the permutations again. Reuse `result["final_mask"]` instead.
-Likewise, derive both 1-D projections from that stored mask when both are
-needed.
+The 1-D methods use logical projection of the selected 2-D output. They never
+run separate 1-D statistics.
 
 ## Batch workflow
 
@@ -368,57 +329,55 @@ An `RFMapList` runs one aligned batch and returns arrays with a leading unit
 axis:
 
 ```python
-result = summed._detect_rf(
+masks = summed.rf_2d(
     trials,
     n_permutations=10_000,
-    n_jobs=None,
+    result_path=result_path,
 )
 
-masks = result["final_mask"]
 for unit_id, mask in zip(summed.unit_ids, masks):
     print(unit_id, int(mask.sum()))
 ```
 
-The trial loader and detector align responses by recorded unit ID. The returned
-array order is the `RFMapList` order.
+The trial loader and RF methods align responses by recorded unit ID. Output
+array order follows `RFMapList.unit_ids`.
 
-Probe identity must remain separate because unit IDs can overlap between
-probes:
+Keep probe identity separate because unit IDs can overlap between probes:
 
 ```python
 results_by_probe = {}
 
 for probe in ("A", "B"):
-    probe_json = (
-            session
-            / "data/rfmapping/good/-100_400_1ms"
-            / f"Probe{probe}"
-            / f"regular_unitsSpikeCounts_260630_3.json"
+    source = (
+        session
+        / "data/rfmapping/good/-100_400_1ms"
+        / f"Probe{probe}"
+        / "regular_unitsSpikeCounts_260630_3.json"
     )
-    raw = load_rf_maps(probe_json)
+    raw = load_rf_maps(source)
     summed = raw.sum(0.0, 0.2)
     trials = load_regular_rf_trials(session, probe, summed)
-    results_by_probe[probe] = summed._detect_rf(
+    results_by_probe[probe] = summed.rf_2d(
         trials,
         n_permutations=10_000,
         wrap_x=True,
-        n_jobs=None,
+        result_path=source.with_suffix(".npz"),
     )
 ```
 
 ## Plotting with physical positions
 
-Array indices are not necessarily visual degrees. Use the positions attached to
-the `RFMap` when setting plot extents:
+Array indices are not necessarily visual degrees. Use the positions attached
+to an `RFMap` when setting plot extents:
 
 ```python
 import matplotlib.pyplot as plt
 
 unit = summed.by_unit_id(127)
-unit_result = unit._detect_rf(trials, wrap_x=True)
+unit_mask = unit.rf_2d(trials, wrap_x=True)
 
 plt.imshow(
-    unit_result["final_mask"],
+    unit_mask,
     origin="lower",
     aspect="auto",
     extent=(
@@ -448,9 +407,9 @@ single_frame = asrfmap(
 )
 ```
 
-A 2-D input receives a singleton time axis. A 3-D input must use `(y, x, time)`
-axis order. `asrfmap()` validates numeric values, timing, and geometry and keeps
-the stored arrays read-only.
+A 2-D input receives a singleton time axis. A 3-D input must use
+`(y, x, time)` axis order. `asrfmap()` validates numeric values, timing, and
+geometry and keeps stored arrays read-only.
 
 An array-created map has no corresponding raw-session trial dictionary unless
 the caller supplies matching trial data. Pooled spatial values alone cannot be
@@ -462,7 +421,7 @@ In the regular session used by `locate_rf.ipynb`, stimuli are spaced about
 100 ms apart. A `[0.0, 0.2)` response window therefore overlaps the next
 stimulus. Negative bins can likewise overlap the previous stimulus.
 
-The permutation test answers whether response is associated with the assigned
+The permutation test asks whether response is associated with the assigned
 position under the chosen trial construction. It does not repair temporal
 overlap or prove that every spike in a long window was caused only by the
 current stimulus. Inspect the full `timeBinEdges` and timeline before giving a
@@ -472,13 +431,12 @@ causal interpretation to the detected RF.
 
 ### Detection requires exactly one time bin
 
-Call `sum()` first:
+Call `sum()` first, then build trials for that exact object:
 
 ```python
 summed = raw.sum(0.0, 0.2)
-result = summed._detect_rf(
-    load_regular_rf_trials(session, "A", summed)
-)
+trials = load_regular_rf_trials(session, "A", summed)
+mask = summed.rf_2d(trials)
 ```
 
 ### A requested endpoint is not in `timeBinEdges`
@@ -493,19 +451,25 @@ The API does not snap an arbitrary time to the nearest bin.
 
 ### Trial geometry or response window does not match
 
-Build trials from the exact `summed` object passed to detection. Do not reuse a
-trial dictionary made for another probe, time window, grid, or unit set.
+Build trials from the exact `summed` object passed to `rf_2d()` or `rf_1d()`.
+Do not reuse a trial dictionary made for another probe, time window, grid, or
+unit set.
 
-### Raw trial totals disagree with pooled JSON
+### Raw trial totals disagree with the pooled source
 
 Treat this as a data-alignment failure. Check the selected session and probe,
 MAT trial count, onset edges, spike-time array, cluster-label array, response
 window, and unit IDs. Do not disable validation merely to obtain a mask.
 
-### Invalid `n_jobs`
+### A result is not reused
 
-Use `None` for automatic selection or a positive integer. `n_jobs=1` is the
-explicit serial setting.
+Confirm that the path ends in `.npz` and that the same aligned trials,
+unit set, grid, response window, and statistical parameters are being used.
+`is_center` and `rf_1d()`'s axis choose a view of the stored result; they do not
+make a new statistical result.
+
+Never rename a result to `.rfmap`. The latter identifies source data and has a
+different contract.
 
 ### Candidate pixels exist but no significant RF remains
 
@@ -514,36 +478,38 @@ permissive; the shuffled maximum-cluster distribution decides significance.
 
 ### `is_shuffle=False` returns a mask
 
-That mask is exploratory. It is the candidate layer and must not be reported as
-a permutation-significant RF.
+That mask is exploratory. It contains candidate components larger than
+`drop_bins` and is not a permutation-significant RF.
 
 ### The output cannot be modified
 
 Analysis arrays are read-only to prevent accidental mutation. Make an explicit
-copy when an independent writable array is required:
+copy when a writable array is required:
 
 ```python
-writable = np.array(result["final_mask"], copy=True)
+import numpy as np
+
+writable = np.array(mask_2d, copy=True)
 ```
 
 ## Compact API reference
 
 | API | Returns | Purpose |
 | --- | --- | --- |
-| `load_rf_maps(path)` | `RFMapList` | Load and validate one pooled RF JSON |
+| `load_rf_maps(path)` | `RFMapList` | Load a regular pooled JSON-text `.json` or `.rfmap` source |
 | `asrfmap(array, ...)` | `RFMap` | Validate one standalone array |
 | `rf_map.sum(start, end)` | `RFMap` | Sum a half-open response window |
 | `rf_maps.sum(start, end, show_progress=...)` | `RFMapList` | Sum the same window for all units |
-| `load_regular_rf_trials(session, probe, summed)` | `dict` | Reconstruct aligned raw regular trials |
-| `summed.detect_rf(trials, ...)` | `dict` | Run cluster detection and retain statistics |
-| `summed.rf_2d(trials, return_center=..., show_progress=..., ...)` | `uint8` array | Return the final 2-D mask or one center bin |
-| `summed.rf_1d(trials, axis=..., return_center=..., show_progress=..., ...)` | `uint8` array | Project the same final 2-D mask or center |
-| `rf_maps.by_index(index)` | `RFMap` | Select by original JSON unit index |
+| `load_regular_rf_trials(session, probe, summed)` | `dict` | Reconstruct aligned regular trials |
+| `summed.rf_2d(trials, is_center=..., result_path=..., ...)` | read-only `uint8` array | Return the full 2-D mask or center |
+| `summed.rf_1d(trials, axis=..., is_center=..., result_path=..., ...)` | read-only `uint8` array | Project the same 2-D mask or center |
+| `rf_maps.by_index(index)` | `RFMap` | Select by original source unit index |
 | `rf_maps.by_unit_id(unit_id)` | `RFMap` | Select by recorded unit or cluster ID |
 | `rf_maps.to_4d_array()` | array | Stack pooled count timelines |
 | `summed.to_2d_array()` | array | Return singleton-bin count maps |
 | `rf_map.where(value)` | index tuple | Locate matches as `(y, x, time)` |
 | `rf_maps.where(value)` | index tuple | Locate matches as `(unit, y, x, time)` |
 
-The authoritative 2-D significance output is `result["final_mask"]`. Derive
-downstream views from that one mask so 2-D and 1-D analyses cannot drift apart.
+The authoritative statistical object is the final 2-D mask. Centers and 1-D
+arrays are deterministic views of that mask and share the same validated
+result.

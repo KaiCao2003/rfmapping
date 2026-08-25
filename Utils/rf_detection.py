@@ -1,8 +1,8 @@
 """Trial-label cluster-permutation detection for two-dimensional RF maps.
 
 Responses remain fixed while the joint spatial labels are permuted within
-``stratum_ids``.  The public API is intentionally one function operating on
-plain arrays and returning a plain dictionary of read-only NumPy arrays.
+``stratum_ids``.  This module is the internal engine used by
+``RFMap.rf_2d()`` and ``RFMap.rf_1d()``; analysis code should use those views.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 
-__all__ = ["detect_rf"]
+__all__: list[str] = []
 
 
 Alternative = Literal["greater", "less"]
@@ -451,6 +451,7 @@ def detect_rf(
     stratum_ids: Any | None = None,
     unit_ids: Any | None = None,
     is_shuffle: bool = True,
+    drop_bins: int = 1,
     cluster_forming_z: float = 1.5,
     alpha: float = 0.05,
     n_permutations: int = 10_000,
@@ -484,14 +485,18 @@ def detect_rf(
         Show a ``Detecting RF`` permutation progress bar in an interactive
         terminal or notebook. Redirected and test output stays silent. No bar
         is created when ``is_shuffle=False``.
+    drop_bins
+        In exploratory ``is_shuffle=False`` mode, remove candidate components
+        containing this many bins or fewer. Components use four-connectivity
+        and respect ``wrap_x``. The value is ignored when ``is_shuffle=True``.
 
     Returns
     -------
     dict
         Batch-shaped read-only arrays. Variable-length per-unit cluster masses
         and p-values are tuples of read-only arrays. ``is_shuffle=False`` is
-        exploratory: ``final_mask`` equals ``candidate_mask`` and no cluster is
-        represented as permutation-significant.
+        exploratory: ``final_mask`` contains candidate components larger than
+        ``drop_bins`` and no cluster is represented as permutation-significant.
     """
 
     response_values = _validate_responses(responses)
@@ -514,6 +519,7 @@ def detect_rf(
     if not isinstance(is_shuffle, (bool, np.bool_)):
         raise ValueError("is_shuffle must be bool")
     run_shuffle = bool(is_shuffle)
+    parsed_drop_bins = _integer(drop_bins, "drop_bins", minimum=0)
     if not isinstance(show_progress, (bool, np.bool_)):
         raise ValueError("show_progress must be bool")
     display_progress = bool(show_progress)
@@ -797,7 +803,11 @@ def detect_rf(
             )
         else:
             pvalues = np.full(masses.shape, np.nan, dtype=np.float64)
-            final_mask[unit_index] = candidate_mask[unit_index]
+            labels = cluster_labels[unit_index]
+            component_sizes = np.bincount(labels.ravel())
+            final_mask[unit_index] = candidate_mask[unit_index] & (
+                component_sizes[labels] > parsed_drop_bins
+            )
         cluster_pvalue_list.append(pvalues)
 
     cluster_masses = tuple(_freeze(item) for item in cluster_mass_list)

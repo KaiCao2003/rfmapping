@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import Utils.rf_detection as rf_detection_module
 import Utils.rfmap as rfmap_module
 from Utils.rfmap import RFMap, RFMapList, asrfmap, load_rf_maps
 
@@ -568,6 +570,22 @@ def _formal_trial_data(
     }
 
 
+def _trial_data_for_maps(rf_maps: RFMap | RFMapList) -> dict[str, object]:
+    maps = [rf_maps] if isinstance(rf_maps, RFMap) else list(rf_maps)
+    first = maps[0]
+    position_ids = np.repeat(np.arange(first.n_y * first.n_x), 2)
+    return {
+        "responses": np.zeros((len(maps), position_ids.size)),
+        "position_ids": position_ids,
+        "stratum_ids": np.zeros(position_ids.size, dtype=np.int64),
+        "shape": (first.n_y, first.n_x),
+        "unit_ids": np.asarray([rf_map.unit_id for rf_map in maps]),
+        "x_positions": first.x_positions,
+        "y_positions": first.y_positions,
+        "time_range_s": first.time_window_s,
+    }
+
+
 def _center_detection_result(
     final_mask: object,
     response_map: object,
@@ -596,32 +614,34 @@ def test_rf_center_uses_effect_weight_and_projects_the_same_2d_bin(
         trials: object,
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         **options: object,
     ) -> dict[str, np.ndarray]:
-        forwarded_options.append(options)
+        forwarded_options.append({"drop_bins": drop_bins, **options})
         return details
 
-    monkeypatch.setattr(RFMap, "detect_rf", fake_detect_rf)
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+    trials = _trial_data_for_maps(rf_map)
 
     full_mask = rf_map.rf_2d(
-        {},
+        trials,
         show_progress=False,
     )
     center_2d = rf_map.rf_2d(
-        {},
-        return_center=True,
+        trials,
+        is_center=True,
         show_progress=False,
     )
     center_x = rf_map.rf_1d(
-        {},
+        trials,
         axis="x",
-        return_center=True,
+        is_center=True,
         show_progress=False,
     )
     center_y = rf_map.rf_1d(
-        {},
+        trials,
         axis="y",
-        return_center=True,
+        is_center=True,
         show_progress=False,
     )
 
@@ -632,7 +652,10 @@ def test_rf_center_uses_effect_weight_and_projects_the_same_2d_bin(
     np.testing.assert_array_equal(center_y, [1])
     assert center_2d.dtype == np.uint8
     assert not center_2d.flags.writeable
-    assert all(options == {"show_progress": False} for options in forwarded_options)
+    assert all(
+        options == {"drop_bins": 1, "show_progress": False}
+        for options in forwarded_options
+    )
 
 
 def test_rf_center_respects_less_tail_and_horizontal_wrap(
@@ -650,21 +673,23 @@ def test_rf_center_respects_less_tail_and_horizontal_wrap(
         trials: object,
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         **options: object,
     ) -> dict[str, np.ndarray]:
         return details
 
-    monkeypatch.setattr(RFMap, "detect_rf", fake_detect_rf)
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+    trials = _trial_data_for_maps(rf_map)
 
     plain = rf_map.rf_2d(
-        {},
-        return_center=True,
+        trials,
+        is_center=True,
         show_progress=False,
         wrap_x=False,
     )
     wrapped = rf_map.rf_2d(
-        {},
-        return_center=True,
+        trials,
+        is_center=True,
         show_progress=False,
         wrap_x=True,
     )
@@ -683,14 +708,16 @@ def test_rf_center_respects_less_tail_and_horizontal_wrap(
         trials: object,
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         **options: object,
     ) -> dict[str, np.ndarray]:
         return less_details
 
-    monkeypatch.setattr(RFMap, "detect_rf", fake_less_detect_rf)
-    less_center = asrfmap(np.zeros((1, 3))).rf_2d(
-        {},
-        return_center=True,
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_less_detect_rf)
+    less_map = asrfmap(np.zeros((1, 3)))
+    less_center = less_map.rf_2d(
+        _trial_data_for_maps(less_map),
+        is_center=True,
         show_progress=False,
         alternative="less",
         wrap_x=False,
@@ -727,6 +754,7 @@ def test_rf_center_batch_skips_empty_units_and_uses_equal_weight_fallback(
         trials: object,
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         **options: object,
     ) -> dict[str, np.ndarray]:
         assert options == {"show_progress": True}
@@ -739,8 +767,9 @@ def test_rf_center_batch_skips_empty_units_and_uses_equal_weight_fallback(
 
     monkeypatch.setattr(RFMapList, "_detect_rf", fake_detect_rf)
     monkeypatch.setattr(rfmap_module, "tqdm", fake_tqdm)
+    trials = _trial_data_for_maps(maps)
 
-    centers = maps.rf_2d({}, return_center=True, show_progress=True)
+    centers = maps.rf_2d(trials, is_center=True, show_progress=True)
 
     np.testing.assert_array_equal(
         centers,
@@ -767,12 +796,18 @@ def test_rf_center_batch_skips_empty_units_and_uses_equal_weight_fallback(
         trials: object,
         *,
         is_shuffle: bool = True,
+        drop_bins: int = 1,
         **options: object,
     ) -> dict[str, np.ndarray]:
         return empty_details
 
     monkeypatch.setattr(RFMapList, "_detect_rf", fake_empty_detect_rf)
-    empty_centers = maps.rf_2d({}, return_center=True, show_progress=True)
+    empty_centers = maps.rf_2d(
+        trials,
+        is_center=True,
+        show_progress=True,
+        wrap_x=False,
+    )
     np.testing.assert_array_equal(empty_centers, np.zeros((3, 1, 3)))
     assert progress_calls == []
 
@@ -801,8 +836,16 @@ def test_rf_map_list_sum_progress_is_one_optional_unit_bar(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"return_center": 1}, "return_center"),
+        ({"is_center": 1}, "is_center"),
         ({"show_progress": 1}, "show_progress"),
+        ({"drop_bins": True}, "drop_bins"),
+        ({"drop_bins": 1.0}, "drop_bins"),
+        ({"drop_bins": np.asarray(1)}, "drop_bins"),
+        ({"drop_bins": -1}, "drop_bins"),
+        ({"batch_size": 0}, "batch_size"),
+        ({"batch_size": np.asarray(1)}, "batch_size"),
+        ({"n_jobs": 0}, "n_jobs"),
+        ({"n_jobs": np.asarray(1)}, "n_jobs"),
     ],
 )
 def test_rf_output_rejects_non_boolean_controls_before_detection(
@@ -815,9 +858,318 @@ def test_rf_output_rejects_non_boolean_controls_before_detection(
     def unexpected_detection(*_args: object, **_options: object) -> None:
         pytest.fail("invalid output controls must fail before RF detection")
 
-    monkeypatch.setattr(RFMap, "detect_rf", unexpected_detection)
+    monkeypatch.setattr(RFMap, "_detect_rf", unexpected_detection)
     with pytest.raises(ValueError, match=message):
         rf_map.rf_2d({}, **kwargs)  # type: ignore[arg-type]
+
+
+def test_mask_then_center_reuses_one_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rf_map = asrfmap(np.zeros((1, 3)))
+    trials = _trial_data_for_maps(rf_map)
+    details = _center_detection_result(
+        [[True, True, True]],
+        [[4.0, 1.0, 1.0]],
+        [[0.0, 0.0, 0.0]],
+    )
+    calls: list[tuple[object, bool, int]] = []
+
+    def fake_detect_rf(
+        self: RFMap,
+        received_trials: object,
+        *,
+        is_shuffle: bool = True,
+        drop_bins: int = 1,
+        **options: object,
+    ) -> dict[str, np.ndarray]:
+        calls.append((received_trials, is_shuffle, drop_bins))
+        return details
+
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+
+    mask = rf_map.rf_2d(trials, show_progress=False)
+    center = rf_map.rf_2d(trials, is_center=True, show_progress=False)
+
+    np.testing.assert_array_equal(mask, [[1, 1, 1]])
+    np.testing.assert_array_equal(center, [[1, 0, 0]])
+    assert calls == [(trials, True, 1)]
+
+
+def test_in_place_trial_change_invalidates_in_memory_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rf_map = asrfmap(np.zeros((1, 2)))
+    trials = _trial_data_for_maps(rf_map)
+    details = _center_detection_result(
+        [[True, False]],
+        [[1.0, 0.0]],
+        [[0.0, 0.0]],
+    )
+    call_count = 0
+
+    def fake_detect_rf(
+        self: RFMap,
+        received_trials: object,
+        *,
+        is_shuffle: bool = True,
+        drop_bins: int = 1,
+        **options: object,
+    ) -> dict[str, np.ndarray]:
+        nonlocal call_count
+        call_count += 1
+        return details
+
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+
+    rf_map.rf_2d(trials, show_progress=False)
+    responses = np.asarray(trials["responses"])
+    responses[0, 0] = 1.0
+    rf_map.rf_2d(trials, is_center=True, show_progress=False)
+
+    assert call_count == 2
+
+
+def test_rf_1d_reuses_the_same_2d_computation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rf_map = asrfmap(np.zeros((2, 2)))
+    trials = _trial_data_for_maps(rf_map)
+    details = _center_detection_result(
+        [[True, False], [True, True]],
+        [[3.0, 0.0], [1.0, 2.0]],
+        np.zeros((2, 2)),
+    )
+    call_count = 0
+
+    def fake_detect_rf(
+        self: RFMap,
+        received_trials: object,
+        *,
+        is_shuffle: bool = True,
+        drop_bins: int = 1,
+        **options: object,
+    ) -> dict[str, np.ndarray]:
+        nonlocal call_count
+        call_count += 1
+        return details
+
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+
+    mask_2d = rf_map.rf_2d(trials, show_progress=False)
+    mask_x = rf_map.rf_1d(trials, axis="x", show_progress=False)
+    mask_y = rf_map.rf_1d(trials, axis="y", show_progress=False)
+
+    np.testing.assert_array_equal(mask_2d, [[1, 0], [1, 1]])
+    np.testing.assert_array_equal(mask_x, [1, 1])
+    np.testing.assert_array_equal(mask_y, [1, 1])
+    assert call_count == 1
+
+
+def test_result_path_reuses_mask_for_fresh_objects_center_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+    second = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+    trials = _formal_trial_data()
+    result_path = tmp_path / "session.npz"
+    details = _center_detection_result(
+        [[True, True]],
+        [[1.0, 4.0]],
+        [[0.0, 0.0]],
+    )
+    call_count = 0
+
+    def fake_detect_rf(
+        self: RFMap,
+        received_trials: object,
+        *,
+        is_shuffle: bool = True,
+        drop_bins: int = 1,
+        **options: object,
+    ) -> dict[str, np.ndarray]:
+        nonlocal call_count
+        call_count += 1
+        return details
+
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+
+    mask = first.rf_2d(
+        trials,
+        result_path=result_path,
+        n_jobs=1,
+        batch_size=8,
+        show_progress=False,
+    )
+    center = second.rf_2d(
+        trials,
+        is_center=True,
+        result_path=result_path,
+        n_jobs=4,
+        batch_size=32,
+        show_progress=False,
+    )
+
+    np.testing.assert_array_equal(mask, [[1, 1]])
+    np.testing.assert_array_equal(center, [[0, 1]])
+    assert result_path.is_file()
+    assert call_count == 1
+
+
+def test_result_path_uses_canonical_unit_axis_for_single_and_list_views(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    single = asrfmap(
+        np.zeros((1, 2)),
+        start_time=0.0,
+        end_time=0.1,
+    )
+    batch = RFMapList([single], Path("<array>"))
+    trials = _formal_trial_data()
+    result_path = tmp_path / "shared.npz"
+
+    single_mask = single.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        result_path=result_path,
+        show_progress=False,
+    )
+
+    def unexpected_detection(*_args: object, **_options: object) -> None:
+        pytest.fail("one-unit RFMapList should reuse the canonical result")
+
+    monkeypatch.setattr(RFMapList, "_detect_rf", unexpected_detection)
+    batch_center = batch.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        is_center=True,
+        result_path=result_path,
+        show_progress=False,
+    )
+
+    assert single_mask.shape == (1, 2)
+    assert batch_center.shape == (1, 1, 2)
+    with np.load(result_path, allow_pickle=False) as archive:
+        assert archive["mask_2d"].shape == (1, 1, 2)
+        assert archive["center_2d"].shape == (1, 1, 2)
+
+
+def test_memory_result_restores_a_sidecar_overwritten_by_another_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+    second = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+    fresh = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+    trials = _formal_trial_data()
+    result_path = tmp_path / "latest.npz"
+
+    kept = first.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        result_path=result_path,
+        show_progress=False,
+    )
+    dropped = second.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=1,
+        result_path=result_path,
+        show_progress=False,
+    )
+    restored = first.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        result_path=result_path,
+        show_progress=False,
+    )
+
+    def unexpected_detection(*_args: object, **_options: object) -> None:
+        pytest.fail("fresh object should read the restored RF result")
+
+    monkeypatch.setattr(RFMap, "_detect_rf", unexpected_detection)
+    reloaded = fresh.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        result_path=result_path,
+        show_progress=False,
+    )
+
+    np.testing.assert_array_equal(kept, [[0, 1]])
+    np.testing.assert_array_equal(dropped, [[0, 0]])
+    np.testing.assert_array_equal(restored, kept)
+    np.testing.assert_array_equal(reloaded, kept)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["session.json", "session.rfmap", "session.txt", "session"],
+)
+def test_result_path_requires_npz_before_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+) -> None:
+    rf_map = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
+
+    def unexpected_detection(*_args: object, **_options: object) -> None:
+        pytest.fail("a source .rfmap path must not be used for an RF result")
+
+    monkeypatch.setattr(RFMap, "_detect_rf", unexpected_detection)
+    result_path = tmp_path / filename
+    with pytest.raises(ValueError, match=r"\.npz"):
+        rf_map.rf_2d(
+            _formal_trial_data(),
+            result_path=result_path,
+            show_progress=False,
+        )
+    assert not result_path.exists()
+
+
+def test_drop_bins_only_separates_no_shuffle_memory_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rf_map = asrfmap(np.zeros((1, 1)))
+    trials = _trial_data_for_maps(rf_map)
+    details = _center_detection_result([[True]], [[1.0]], [[0.0]])
+    calls: list[tuple[bool, int]] = []
+
+    def fake_detect_rf(
+        self: RFMap,
+        received_trials: object,
+        *,
+        is_shuffle: bool = True,
+        drop_bins: int = 1,
+        **options: object,
+    ) -> dict[str, np.ndarray]:
+        calls.append((is_shuffle, drop_bins))
+        return details
+
+    monkeypatch.setattr(RFMap, "_detect_rf", fake_detect_rf)
+
+    rf_map.rf_2d(trials, is_shuffle=True, drop_bins=0, show_progress=False)
+    rf_map.rf_2d(trials, is_shuffle=True, drop_bins=99, show_progress=False)
+    rf_map.rf_2d(trials, is_shuffle=False, drop_bins=0, show_progress=False)
+    rf_map.rf_2d(trials, is_shuffle=False, drop_bins=0, show_progress=False)
+    rf_map.rf_2d(trials, is_shuffle=False, drop_bins=1, show_progress=False)
+
+    assert calls == [(True, 0), (False, 0), (False, 1)]
+
+
+def test_persisted_result_option_defaults_match_detector_signature() -> None:
+    detector_parameters = inspect.signature(
+        rf_detection_module.detect_rf
+    ).parameters
+
+    for name, expected in rfmap_module._RF_DETECTION_OPTION_DEFAULTS.items():
+        assert detector_parameters[name].default == expected
 
 
 def test_rf_map_list_sum_rejects_non_boolean_progress_control(
@@ -837,20 +1189,23 @@ def test_formal_rf_detection_uses_the_summed_objects_only_time_bin() -> None:
     )
     trials = _formal_trial_data()
 
-    details = rf_map.detect_rf(
+    details = rf_map._detect_rf(
         trials,
         is_shuffle=False,
+        drop_bins=0,
         cluster_forming_z=1.5,
     )
     mask_2d = rf_map.rf_2d(
         trials,
         is_shuffle=False,
+        drop_bins=0,
         cluster_forming_z=1.5,
     )
     center_2d = rf_map.rf_2d(
         trials,
         is_shuffle=False,
-        return_center=True,
+        drop_bins=0,
+        is_center=True,
         show_progress=False,
         cluster_forming_z=1.5,
     )
@@ -858,12 +1213,14 @@ def test_formal_rf_detection_uses_the_summed_objects_only_time_bin() -> None:
         trials,
         axis="x",
         is_shuffle=False,
+        drop_bins=0,
         cluster_forming_z=1.5,
     )
     mask_y = rf_map.rf_1d(
         trials,
         axis="y",
         is_shuffle=False,
+        drop_bins=0,
         cluster_forming_z=1.5,
     )
 
@@ -895,13 +1252,13 @@ def test_formal_rf_detection_rejects_unsummed_or_mismatched_windows() -> None:
         summed.rf_2d(_formal_trial_data(time_range_s=(0.1, 0.2)))
 
 
-def test_formal_rf_defaults_to_shuffle_and_exposes_cluster_details() -> None:
+def test_private_rf_detection_defaults_to_shuffle_and_exposes_cluster_details() -> None:
     rf_map = asrfmap(
         np.zeros((1, 2)),
         start_time=0.0,
         end_time=0.1,
     )
-    details = rf_map.detect_rf(
+    details = rf_map._detect_rf(
         _formal_trial_data(),
         cluster_forming_z=1.5,
         n_permutations=19,
@@ -943,6 +1300,7 @@ def test_rf_map_list_aligns_formal_trial_rows_by_unit_id(tmp_path: Path) -> None
     result = rf_maps._detect_rf(
         trials,
         is_shuffle=False,
+        drop_bins=0,
         cluster_forming_z=1.5,
     )
 
@@ -952,14 +1310,15 @@ def test_rf_map_list_aligns_formal_trial_rows_by_unit_id(tmp_path: Path) -> None
         [[False, True], [True, False]],
     )
 
-    masks_2d = rf_maps.rf_2d(trials, is_shuffle=False)
+    masks_2d = rf_maps.rf_2d(trials, is_shuffle=False, drop_bins=0)
     centers_2d = rf_maps.rf_2d(
         trials,
         is_shuffle=False,
-        return_center=True,
+        drop_bins=0,
+        is_center=True,
         show_progress=False,
     )
-    masks_1d = rf_maps.rf_1d(trials, is_shuffle=False)
+    masks_1d = rf_maps.rf_1d(trials, is_shuffle=False, drop_bins=0)
     assert masks_2d.shape == (2, 1, 2)
     assert masks_1d.shape == (2, 2)
     assert masks_2d.dtype == np.uint8
@@ -975,6 +1334,8 @@ def test_removed_spatial_sd_helpers_are_not_part_of_the_api() -> None:
     rf_map = asrfmap(np.zeros((1, 1)))
     rf_maps = RFMapList([rf_map], Path("<array>"))
 
+    assert not hasattr(rf_map, "detect_rf")
+    assert not hasattr(rf_maps, "detect_rf")
     assert not hasattr(rf_map, "spatial_sd_2d")
     assert not hasattr(rf_map, "spatial_sd_1d")
     assert not hasattr(rf_maps, "spatial_sd_2d")

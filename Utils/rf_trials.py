@@ -1,8 +1,9 @@
 """Strict raw-trial loading for regular sparse-noise RF maps.
 
-The pooled ``regular_unitsSpikeCounts`` JSON files do not retain the trial
-axis needed by permutation-based RF detection.  This module reconstructs
-that axis from the original MATLAB trial table and aligned Kilosort spikes.
+The pooled JSON-text ``regular_unitsSpikeCounts`` source files do not retain
+the trial axis needed by permutation-based RF detection.  This module
+reconstructs that axis from the original MATLAB trial table and aligned
+Kilosort spikes.
 It intentionally supports only the regular (one position per trial) mapping
 mode; transformed pixel-bin, rotation, and egocentric maps require different
 label semantics and are rejected.
@@ -27,7 +28,9 @@ __all__ = ["load_regular_rf_trials"]
 
 
 _SESSION_NAME = re.compile(r"^(?P<date>\d{6})_(?P<recording>\d+)$")
-_REGULAR_JSON_NAME = re.compile(r"^regular_unitsSpikeCounts_.+\.json$")
+_REGULAR_RF_SOURCE_NAME = re.compile(
+    r"^regular_unitsSpikeCounts_.+\.(?:json|rfmap)$"
+)
 _SYNTHETIC_EDGE_INTERVAL_S = 0.1
 _EDGE_ATOL_S = 1e-9
 
@@ -173,9 +176,10 @@ def _validate_rf_maps(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], tuple[float, float]]:
     if not isinstance(rf_maps, RFMapList):
         raise TypeError("rf_maps must be an RFMapList")
-    if _REGULAR_JSON_NAME.fullmatch(rf_maps.source_path.name) is None:
+    if _REGULAR_RF_SOURCE_NAME.fullmatch(rf_maps.source_path.name) is None:
         raise ValueError(
-            "raw trial loading supports only regular_unitsSpikeCounts JSON data"
+            "raw trial loading requires a JSON-text regular RF source named "
+            "regular_unitsSpikeCounts_* with a .json or .rfmap suffix"
         )
     if not rf_maps:
         raise ValueError("rf_maps must contain at least one unit")

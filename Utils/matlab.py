@@ -848,3 +848,4 @@ def build_annotated_interval_table(
     ]
 
     return export[export_columns], corrected, expected_protocol_table, phase_list
+
