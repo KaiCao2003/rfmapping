@@ -33,7 +33,13 @@ rf_source = (
 
 raw = load_rf_maps(rf_source)
 summed = raw.sum(0.0, 0.2, show_progress=True)
-trials = load_regular_rf_trials(session, "A", summed)
+trials = load_regular_rf_trials(
+    session,
+    "A",
+    summed,
+    on=True,
+    off=False,
+)
 result_path = rf_source.with_suffix(".npz")
 
 options = {
@@ -176,7 +182,13 @@ test by itself. Rebuild matching regular sparse-noise trials from the raw
 session:
 
 ```python
-trials = load_regular_rf_trials(session, "A", summed)
+trials = load_regular_rf_trials(
+    session,
+    "A",
+    summed,
+    on=True,
+    off=False,
+)
 ```
 
 The loader resolves and validates the session MAT file, stimulus onsets, probe
@@ -185,10 +197,17 @@ unit IDs, response window, repeat structure, and pooled counts against
 `summed`. It returns aligned trial responses, joint spatial labels,
 exchangeability strata, positions, unit IDs, and provenance.
 
+Exactly one polarity flag must be true. `on=True, off=False` selects
+`Square_Luminance == 1`; `on=False, off=True` selects
+`Square_Luminance == 0`. The default is ON. The supplied pooled RF source must
+match the selected polarity when `validate_pooled=True`.
+
 Positions are shuffled as one joint `(x, y)` label. Responses are never
-shuffled. The loader first filters the requested ON or OFF polarity, then uses
-repeat blocks as strata so each permutation changes only the
-position-response relationship described by the null hypothesis.
+shuffled. The loader first filters the requested polarity, then uses repeat
+blocks as strata so each permutation changes only the position-response
+relationship described by the null hypothesis. Each repeat is validated
+against the luminances actually present in the session, so ON-only, OFF-only,
+and ON+OFF designs use different valid block sizes.
 
 This loader is for regular one-position-per-trial sparse noise. Pixel-bin,
 rotation, egocentric, or transformed maps need different label semantics and
@@ -500,7 +519,7 @@ writable = np.array(mask_2d, copy=True)
 | `asrfmap(array, ...)` | `RFMap` | Validate one standalone array |
 | `rf_map.sum(start, end)` | `RFMap` | Sum a half-open response window |
 | `rf_maps.sum(start, end, show_progress=...)` | `RFMapList` | Sum the same window for all units |
-| `load_regular_rf_trials(session, probe, summed)` | `dict` | Reconstruct aligned regular trials |
+| `load_regular_rf_trials(session, probe, summed, on=..., off=...)` | `dict` | Reconstruct aligned ON or OFF regular trials |
 | `summed.rf_2d(trials, is_center=..., result_path=..., ...)` | read-only `uint8` array | Return the full 2-D mask or center |
 | `summed.rf_1d(trials, axis=..., is_center=..., result_path=..., ...)` | read-only `uint8` array | Project the same 2-D mask or center |
 | `rf_maps.by_index(index)` | `RFMap` | Select by original source unit index |

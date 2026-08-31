@@ -1062,28 +1062,25 @@ def test_memory_result_restores_a_sidecar_overwritten_by_another_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
-    second = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
-    fresh = asrfmap(np.zeros((1, 2)), start_time=0.0, end_time=0.1)
-    trials = _formal_trial_data()
+    pooled = np.asarray([[0.0, 0.0, 10.0, 0.0, 0.0]])
+    first = asrfmap(pooled, start_time=0.0, end_time=0.1)
+    second = asrfmap(pooled, start_time=0.0, end_time=0.1)
+    fresh = asrfmap(pooled, start_time=0.0, end_time=0.1)
     result_path = tmp_path / "latest.npz"
 
     kept = first.rf_2d(
-        trials,
         is_shuffle=False,
         drop_bins=0,
         result_path=result_path,
         show_progress=False,
     )
     dropped = second.rf_2d(
-        trials,
         is_shuffle=False,
         drop_bins=1,
         result_path=result_path,
         show_progress=False,
     )
     restored = first.rf_2d(
-        trials,
         is_shuffle=False,
         drop_bins=0,
         result_path=result_path,
@@ -1095,15 +1092,14 @@ def test_memory_result_restores_a_sidecar_overwritten_by_another_result(
 
     monkeypatch.setattr(RFMap, "_detect_rf", unexpected_detection)
     reloaded = fresh.rf_2d(
-        trials,
         is_shuffle=False,
         drop_bins=0,
         result_path=result_path,
         show_progress=False,
     )
 
-    np.testing.assert_array_equal(kept, [[0, 1]])
-    np.testing.assert_array_equal(dropped, [[0, 0]])
+    np.testing.assert_array_equal(kept, [[0, 0, 1, 0, 0]])
+    np.testing.assert_array_equal(dropped, [[0, 0, 0, 0, 0]])
     np.testing.assert_array_equal(restored, kept)
     np.testing.assert_array_equal(reloaded, kept)
 
@@ -1181,9 +1177,56 @@ def test_rf_map_list_sum_rejects_non_boolean_progress_control(
         rf_maps.sum(-0.1, 0.0, show_progress=1)  # type: ignore[arg-type]
 
 
+def test_no_shuffle_uses_only_the_pooled_map() -> None:
+    rf_map = asrfmap([[0.0, 0.0, 10.0, 0.0, 0.0]])
+
+    mask = rf_map.rf_2d(
+        is_shuffle=False,
+        drop_bins=0,
+        show_progress=False,
+    )
+    ignored_trials = rf_map.rf_2d(
+        {"this": "is not trial data"},
+        is_shuffle=False,
+        drop_bins=0,
+        show_progress=False,
+    )
+
+    np.testing.assert_array_equal(mask, [[0, 0, 1, 0, 0]])
+    np.testing.assert_array_equal(ignored_trials, mask)
+
+
+def test_no_shuffle_divides_pooled_counts_by_presentations(tmp_path: Path) -> None:
+    counts = np.asarray([[[[0.0], [0.0], [100.0], [20.0], [0.0]]]])
+    payload = _payload(
+        counts,
+        unit_pool=[11],
+        time_bin_edges=[0.0, 0.1],
+    )
+    payload["xPositions"] = [0.0, 1.0, 2.0, 3.0, 4.0]
+    payload["yPositions"] = [0.0]
+    payload["stimulusPresentationCounts"] = [[1, 1, 100, 1, 1]]
+    rf_maps = load_rf_maps(_write_payload(tmp_path, payload))
+
+    mask = rf_maps.rf_2d(
+        is_shuffle=False,
+        drop_bins=0,
+        show_progress=False,
+    )
+
+    np.testing.assert_array_equal(mask, [[[0, 0, 0, 1, 0]]])
+
+
+def test_shuffle_requires_trials() -> None:
+    rf_map = asrfmap([[0.0, 1.0]])
+
+    with pytest.raises(ValueError, match="trials.*is_shuffle=True"):
+        rf_map.rf_2d(is_shuffle=True, show_progress=False)
+
+
 def test_formal_rf_detection_uses_the_summed_objects_only_time_bin() -> None:
     rf_map = asrfmap(
-        np.zeros((1, 2)),
+        [[0.0, 10.0]],
         start_time=0.0,
         end_time=0.1,
     )
@@ -1193,13 +1236,13 @@ def test_formal_rf_detection_uses_the_summed_objects_only_time_bin() -> None:
         trials,
         is_shuffle=False,
         drop_bins=0,
-        cluster_forming_z=1.5,
+        cluster_forming_z=0.5,
     )
     mask_2d = rf_map.rf_2d(
         trials,
         is_shuffle=False,
         drop_bins=0,
-        cluster_forming_z=1.5,
+        cluster_forming_z=0.5,
     )
     center_2d = rf_map.rf_2d(
         trials,
@@ -1207,21 +1250,21 @@ def test_formal_rf_detection_uses_the_summed_objects_only_time_bin() -> None:
         drop_bins=0,
         is_center=True,
         show_progress=False,
-        cluster_forming_z=1.5,
+        cluster_forming_z=0.5,
     )
     mask_x = rf_map.rf_1d(
         trials,
         axis="x",
         is_shuffle=False,
         drop_bins=0,
-        cluster_forming_z=1.5,
+        cluster_forming_z=0.5,
     )
     mask_y = rf_map.rf_1d(
         trials,
         axis="y",
         is_shuffle=False,
         drop_bins=0,
-        cluster_forming_z=1.5,
+        cluster_forming_z=0.5,
     )
 
     assert not details["is_significance_tested"]
@@ -1274,6 +1317,8 @@ def test_private_rf_detection_defaults_to_shuffle_and_exposes_cluster_details() 
 
 def test_rf_map_list_aligns_formal_trial_rows_by_unit_id(tmp_path: Path) -> None:
     counts = np.zeros((2, 1, 2, 1), dtype=float)
+    counts[0, 0, 1, 0] = 10.0
+    counts[1, 0, 0, 0] = 10.0
     payload = _payload(
         counts,
         unit_pool=[11, 22],
@@ -1310,15 +1355,26 @@ def test_rf_map_list_aligns_formal_trial_rows_by_unit_id(tmp_path: Path) -> None
         [[False, True], [True, False]],
     )
 
-    masks_2d = rf_maps.rf_2d(trials, is_shuffle=False, drop_bins=0)
+    masks_2d = rf_maps.rf_2d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        cluster_forming_z=0.5,
+    )
     centers_2d = rf_maps.rf_2d(
         trials,
         is_shuffle=False,
         drop_bins=0,
         is_center=True,
         show_progress=False,
+        cluster_forming_z=0.5,
     )
-    masks_1d = rf_maps.rf_1d(trials, is_shuffle=False, drop_bins=0)
+    masks_1d = rf_maps.rf_1d(
+        trials,
+        is_shuffle=False,
+        drop_bins=0,
+        cluster_forming_z=0.5,
+    )
     assert masks_2d.shape == (2, 1, 2)
     assert masks_1d.shape == (2, 2)
     assert masks_2d.dtype == np.uint8

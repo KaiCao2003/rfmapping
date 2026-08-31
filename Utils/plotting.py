@@ -869,3 +869,137 @@ def plot_head_turn_bar_from_intervals(
     )
     summary["phase_trial_values"] = plotted_values
     return summary
+
+
+def _plot_heatmap(
+    axis,
+    horizontal_edges,
+    vertical_edges,
+    values,
+    title,
+    colorbar_label,
+    *,
+    cmap="viridis",
+):
+    image = axis.pcolormesh(
+        horizontal_edges,
+        vertical_edges,
+        values,
+        shading="auto",
+        cmap=cmap,
+    )
+    axis.set_title(title)
+    axis.figure.colorbar(image, ax=axis, label=colorbar_label)
+    return image
+
+
+def plot_egocentric_heatmap(
+    axis,
+    distance_edges,
+    theta_edges,
+    values,
+    title,
+    colorbar_label,
+    *,
+    cmap="viridis",
+):
+    display_distance_edges = distance_edges.copy()
+    display_distance_edges[0] = distance_edges[1] / 2
+    image = _plot_heatmap(
+        axis,
+        display_distance_edges,
+        theta_edges,
+        values,
+        title,
+        colorbar_label,
+        cmap=cmap,
+    )
+    axis.set_xscale("log")
+    axis.set_xlabel("Distance to boundary (cm)")
+    axis.set_ylabel("Egocentric theta")
+    axis.set_yticks([0, 90, 180, 270, 360])
+    axis.set_yticklabels(
+        ["0°", "90°", "180°", "270°", "360°"]
+    )
+    return image
+
+
+def plot_allocentric_heatmap(
+    axis,
+    x_edges,
+    y_edges,
+    values,
+    title,
+    colorbar_label,
+    *,
+    cmap="viridis",
+):
+    image = _plot_heatmap(
+        axis,
+        x_edges,
+        y_edges,
+        values.T,
+        title,
+        colorbar_label,
+        cmap=cmap,
+    )
+    axis.set_xlabel("x (cm)")
+    axis.set_ylabel("y (cm)")
+    axis.set_aspect("equal")
+    axis.invert_yaxis()
+    return image
+
+
+def plot_trajectory_spikes(
+    axis,
+    trajectory_x_cm,
+    trajectory_y_cm,
+    spike_x_cm,
+    spike_y_cm,
+):
+    axis.plot(
+        trajectory_x_cm,
+        trajectory_y_cm,
+        color="0.65",
+        linewidth=0.35,
+        label="Trajectory",
+    )
+    axis.scatter(
+        spike_x_cm,
+        spike_y_cm,
+        s=2,
+        color="red",
+        alpha=0.3,
+        linewidths=0,
+        label="Spikes",
+    )
+    axis.set_xlim(0, 41) #rig is 41cm to 41cm
+    axis.set_ylim(0, 41)
+    axis.set_xlabel("x (cm)")
+    axis.set_ylabel("y (cm)")
+    axis.set_aspect("equal")
+    axis.invert_yaxis()
+    axis.set_title("Trajectory and spike positions")
+    axis.legend(loc="upper right")
+
+
+def plot_egocentric_polar(
+    axis,
+    theta_edges,
+    distance_edges,
+    rate_map,
+):
+    image = axis.pcolormesh(
+        np.deg2rad(theta_edges),
+        distance_edges,
+        rate_map.T,
+        shading="auto",
+        cmap="viridis",
+    )
+    axis.set_theta_zero_location("N")
+    axis.set_theta_direction(1)
+    axis.set_xticks(np.deg2rad([0, 90, 180, 270]))
+    axis.set_xticklabels(["0", "90", "180", "270"])
+    axis.set_title("Egocentric firing-rate map (polar)")
+    axis.figure.colorbar(image, ax=axis, label="Hz", pad=0.12)
+    return image

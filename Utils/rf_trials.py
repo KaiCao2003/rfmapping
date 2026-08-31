@@ -282,8 +282,7 @@ def _raw_trial_geometry(
         raise ValueError("raw trial x positions do not match pooled RF x positions")
     if not np.array_equal(raw_y_positions, y_positions):
         raise ValueError("raw trial y positions do not match pooled RF y positions")
-    if not np.array_equal(np.unique(polarities), np.asarray([0, 1])):
-        raise ValueError("regular RF trials must contain both OFF=0 and ON=1")
+    observed_polarities = np.unique(polarities)
 
     x_indices = np.searchsorted(x_positions, raw_x)
     y_indices = np.searchsorted(y_positions, raw_y)
@@ -292,7 +291,7 @@ def _raw_trial_geometry(
     ).astype(np.int64, copy=False)
 
     n_positions = x_positions.size * y_positions.size
-    block_size = n_positions * 2
+    block_size = n_positions * observed_polarities.size
     if len(trials) % block_size:
         raise ValueError(
             "regular RF trial count is not divisible by the complete "
@@ -300,7 +299,10 @@ def _raw_trial_geometry(
         )
     n_blocks = len(trials) // block_size
     strata = np.repeat(np.arange(n_blocks, dtype=np.int64), block_size)
-    expected = np.arange(block_size, dtype=np.int64)
+    expected = (
+        observed_polarities.astype(np.int64)[:, np.newaxis] * n_positions
+        + np.arange(n_positions, dtype=np.int64)
+    ).reshape(-1)
     encoded = position_ids + polarities.astype(np.int64) * n_positions
     for block in range(n_blocks):
         block_values = np.sort(encoded[strata == block])
@@ -425,33 +427,34 @@ def load_regular_rf_trials(
     probe: str,
     rf_maps: RFMapList,
     *,
-    polarity: str = "on",
+    on: bool = True,
+    off: bool = False,
     validate_pooled: bool = True,
 ) -> dict[str, Any]:
     """Load trial responses aligned to an already-summed regular RFMapList.
 
-    The sole RFMap time bin defines the half-open response window.  ON and OFF
-    trials are selected independently, and `(x, y)` is encoded as one joint
+    The sole RFMap time bin defines the half-open response window.  Exactly one
+    of ``on`` and ``off`` must be true; ON selects ``Square_Luminance == 1`` and
+    OFF selects ``Square_Luminance == 0``.  `(x, y)` is encoded as one joint
     position label.  The returned strata are empirically verified repeat-block
-    indices.  Existing pooled JSON files contain ON responses only, so OFF
-    loading requires ``validate_pooled=False``.
+    indices.  When ``validate_pooled`` is true, the selected trials must match
+    the supplied pooled RF source, including its polarity.
     """
 
     paths = _regular_source_paths(session, probe)
     x_positions, y_positions, time_range_s = _validate_rf_maps(rf_maps)
 
-    if not isinstance(polarity, str):
-        raise ValueError("polarity must be 'on' or 'off'")
-    normalized_polarity = polarity.strip().lower()
-    if normalized_polarity not in {"on", "off"}:
-        raise ValueError("polarity must be 'on' or 'off'")
+    for label, value in (("on", on), ("off", off)):
+        if not isinstance(value, (bool, np.bool_)):
+            raise TypeError(f"{label} must be bool")
+    on_value = bool(on)
+    off_value = bool(off)
+    if on_value == off_value:
+        raise ValueError("exactly one of on and off must be True")
+    selected_polarity = "on" if on_value else "off"
+
     if not isinstance(validate_pooled, (bool, np.bool_)):
         raise TypeError("validate_pooled must be bool")
-    if normalized_polarity == "off" and validate_pooled:
-        raise ValueError(
-            "regular pooled JSON contains ON counts only; use "
-            "validate_pooled=False when loading OFF trials"
-        )
 
     trials = _trial_records(paths["trials_mat"])
     onsets = _aligned_onsets(paths, len(trials))
@@ -461,13 +464,13 @@ def load_regular_rf_trials(
         y_positions,
     )
 
-    polarity_value = 1 if normalized_polarity == "on" else 0
+    polarity_value = int(on_value)
     selected = polarities == polarity_value
     selected_position_ids = all_position_ids[selected]
     selected_strata = all_strata[selected]
     selected_onsets = onsets[selected]
     if not np.any(selected):
-        raise ValueError(f"regular RF trials contain no {normalized_polarity} trials")
+        raise ValueError(f"regular RF trials contain no {selected_polarity} trials")
 
     unit_ids = np.asarray(rf_maps.unit_ids, dtype=np.int64)
     responses = _unit_trial_counts(
@@ -508,6 +511,6 @@ def load_regular_rf_trials(
         **arrays,
         "shape": (int(y_positions.size), int(x_positions.size)),
         "time_range_s": time_range_s,
-        "polarity": normalized_polarity,
+        "polarity": selected_polarity,
         "provenance": provenance,
     }

@@ -28,7 +28,13 @@ rf_source = (
 
 raw = load_rf_maps(rf_source)
 summed = raw.sum(0.0, 0.2, show_progress=True)
-trials = load_regular_rf_trials(session, "A", summed)
+trials = load_regular_rf_trials(
+    session,
+    "A",
+    summed,
+    on=True,
+    off=False,
+)
 
 result_path = rf_source.with_suffix(".npz")
 rf_masks_2d = summed.rf_2d(
@@ -67,8 +73,12 @@ axis; reversed intervals are invalid.
 trial data. A pooled source does not contain a trial axis and is insufficient
 for label permutation. The regular-data loader reconstructs per-trial
 responses from the authoritative MAT, onset, spike-time, cluster, and good-unit
-files. Permutations keep responses fixed and shuffle the joint `(x, y)` label
-within verified exchangeability blocks after ON/OFF filtering.
+files. Set exactly one of `on` and `off`: ON selects
+`Square_Luminance == 1`, while OFF selects `Square_Luminance == 0`.
+Permutations keep responses fixed and shuffle the joint `(x, y)` label within
+verified exchangeability blocks after polarity filtering. Repeat blocks are
+validated against the luminances actually present, including ON-only and
+OFF-only sessions.
 
 Candidate pixels use the configured cluster-forming z threshold. Significance
 comes from the null distribution of the maximum 4-connected cluster mass. The

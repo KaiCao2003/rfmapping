@@ -37,6 +37,8 @@ def _write_regular_fixture(
     corrupt_last_block: bool = False,
     n_time_bins: int = 1,
     source_suffix: str = ".json",
+    trial_polarities: tuple[int, ...] = (0, 1),
+    pooled_polarity: int = 1,
 ) -> _SyntheticRegularRF:
     session = tmp_path / "260101_3"
     spike_dir = session / "data" / "probeA"
@@ -47,15 +49,21 @@ def _write_regular_fixture(
     x_positions = np.asarray([-10.0, 10.0])
     y_positions = np.asarray([-5.0, 5.0])
     n_positions = x_positions.size * y_positions.size
-    block_size = n_positions * 2
+    observed_polarities = np.asarray(trial_polarities, dtype=int)
+    assert np.array_equal(observed_polarities, np.unique(observed_polarities))
+    assert set(observed_polarities.tolist()).issubset({0, 1})
+    assert pooled_polarity in {0, 1}
+    block_size = n_positions * observed_polarities.size
     n_blocks = 2
 
     # Each block is a randomized permutation of the complete
-    # position-by-polarity factorial.
-    block_orders = [
-        np.asarray([5, 0, 3, 6, 2, 7, 1, 4]),
-        np.asarray([2, 7, 4, 1, 6, 3, 0, 5]),
-    ]
+    # position-by-observed-polarity factorial.
+    conditions = (
+        observed_polarities[:, np.newaxis] * n_positions
+        + np.arange(n_positions)
+    ).reshape(-1)
+    rng = np.random.default_rng(12345)
+    block_orders = [rng.permutation(conditions) for _ in range(n_blocks)]
     encoded = np.concatenate(block_orders)
     position_ids = encoded % n_positions
     polarities = encoded // n_positions
@@ -128,12 +136,12 @@ def _write_regular_fixture(
         np.asarray([event[1] for event in spike_events], dtype=np.int32),
     )
 
-    on_trials = polarities == 1
+    pooled_trials = polarities == pooled_polarity
     pooled = np.zeros((unit_ids.size, 2, 2), dtype=np.int64)
     for unit_index in range(unit_ids.size):
         pooled[unit_index].flat[:] = np.bincount(
-            position_ids[on_trials],
-            weights=all_responses[unit_index, on_trials],
+            position_ids[pooled_trials],
+            weights=all_responses[unit_index, pooled_trials],
             minlength=n_positions,
         )
     pooled[0, 0, 0] += pooled_delta
@@ -154,9 +162,15 @@ def _write_regular_fixture(
         "xPositions": x_positions.tolist(),
         "yPositions": y_positions.tolist(),
         "timeBinEdges": time_edges,
-        "stimulusPresentationCounts": np.full((2, 2), n_blocks).tolist(),
+        "stimulusPresentationCounts": np.full(
+            (2, 2),
+            n_blocks if pooled_polarity in observed_polarities else 0,
+        ).tolist(),
     }
-    source_path = session / f"regular_unitsSpikeCounts_260101_3{source_suffix}"
+    polarity_suffix = "_off" if pooled_polarity == 0 else ""
+    source_path = session / (
+        f"regular_unitsSpikeCounts_260101_3{polarity_suffix}{source_suffix}"
+    )
     source_path.write_text(json.dumps(payload), encoding="utf-8")
     rf_maps = load_rf_maps(source_path)
     return _SyntheticRegularRF(
@@ -263,6 +277,108 @@ def test_load_builds_unit_by_on_trial_data_and_excludes_terminal_edge(
             assert not value.flags.writeable
 
 
+def test_load_supports_on_only_repeat_blocks(tmp_path: Path) -> None:
+    fixture = _write_regular_fixture(tmp_path, trial_polarities=(1,))
+
+    trial_data = load_regular_rf_trials(
+        fixture.session,
+        "A",
+        fixture.rf_maps,
+        on=True,
+        off=False,
+    )
+
+    np.testing.assert_array_equal(
+        trial_data["responses"],
+        fixture.expected_responses,
+    )
+    np.testing.assert_array_equal(
+        trial_data["position_ids"],
+        fixture.position_ids,
+    )
+    np.testing.assert_array_equal(trial_data["stratum_ids"], fixture.strata)
+    assert trial_data["polarity"] == "on"
+    assert trial_data["provenance"]["n_repeat_blocks"] == 2
+
+    with pytest.raises(ValueError, match="no off trials"):
+        load_regular_rf_trials(
+            fixture.session,
+            "A",
+            fixture.rf_maps,
+            on=False,
+            off=True,
+            validate_pooled=False,
+        )
+
+
+def test_load_supports_off_only_repeat_blocks(tmp_path: Path) -> None:
+    fixture = _write_regular_fixture(
+        tmp_path,
+        trial_polarities=(0,),
+        pooled_polarity=0,
+    )
+
+    with pytest.raises(ValueError, match="no on trials"):
+        load_regular_rf_trials(fixture.session, "A", fixture.rf_maps)
+
+    trial_data = load_regular_rf_trials(
+        fixture.session,
+        "A",
+        fixture.rf_maps,
+        on=False,
+        off=True,
+    )
+
+    np.testing.assert_array_equal(
+        trial_data["responses"],
+        fixture.expected_responses,
+    )
+    np.testing.assert_array_equal(
+        trial_data["position_ids"],
+        fixture.position_ids,
+    )
+    np.testing.assert_array_equal(trial_data["stratum_ids"], fixture.strata)
+    assert trial_data["polarity"] == "off"
+    assert trial_data["provenance"]["n_repeat_blocks"] == 2
+
+
+@pytest.mark.parametrize("on, off", [(True, True), (False, False)])
+def test_load_requires_exactly_one_polarity_flag(
+    tmp_path: Path,
+    on: bool,
+    off: bool,
+) -> None:
+    fixture = _write_regular_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="exactly one"):
+        load_regular_rf_trials(
+            fixture.session,
+            "A",
+            fixture.rf_maps,
+            on=on,
+            off=off,
+        )
+
+
+def test_load_requires_boolean_polarity_flags(tmp_path: Path) -> None:
+    fixture = _write_regular_fixture(tmp_path)
+
+    with pytest.raises(TypeError, match="on must be bool"):
+        load_regular_rf_trials(
+            fixture.session,
+            "A",
+            fixture.rf_maps,
+            on=1,  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="off must be bool"):
+        load_regular_rf_trials(
+            fixture.session,
+            "A",
+            fixture.rf_maps,
+            off=0,  # type: ignore[arg-type]
+        )
+
+
 def test_half_open_counts_match_pooled_json_despite_stop_edge_spikes(
     tmp_path: Path,
 ) -> None:
@@ -277,26 +393,29 @@ def test_half_open_counts_match_pooled_json_despite_stop_edge_spikes(
     )
 
 
-def test_off_loading_is_explicitly_unvalidated_against_on_json(
+def test_off_loading_validates_the_supplied_pooled_polarity(
     tmp_path: Path,
 ) -> None:
-    fixture = _write_regular_fixture(tmp_path)
-    off_trials = fixture.polarities == 0
+    on_fixture = _write_regular_fixture(tmp_path / "on")
 
-    with pytest.raises(ValueError, match="ON counts only"):
+    with pytest.raises(ValueError, match="raw trial counts do not match"):
         load_regular_rf_trials(
-            fixture.session,
+            on_fixture.session,
             "A",
-            fixture.rf_maps,
-            polarity="off",
+            on_fixture.rf_maps,
+            on=False,
+            off=True,
         )
+
+    fixture = _write_regular_fixture(tmp_path / "off", pooled_polarity=0)
+    off_trials = fixture.polarities == 0
 
     trial_data = load_regular_rf_trials(
         fixture.session,
         "A",
         fixture.rf_maps,
-        polarity="OFF",
-        validate_pooled=False,
+        on=False,
+        off=True,
     )
 
     assert trial_data["polarity"] == "off"
@@ -317,14 +436,29 @@ def test_load_rejects_unsummed_multi_bin_rf_maps(tmp_path: Path) -> None:
         load_regular_rf_trials(fixture.session, "A", fixture.rf_maps)
 
 
-def test_load_rejects_incomplete_factorial_repeat_block(tmp_path: Path) -> None:
-    fixture = _write_regular_fixture(tmp_path, corrupt_last_block=True)
+@pytest.mark.parametrize(
+    "trial_polarities, pooled_polarity",
+    [((0,), 0), ((1,), 1), ((0, 1), 1)],
+)
+def test_load_rejects_incomplete_factorial_repeat_block(
+    tmp_path: Path,
+    trial_polarities: tuple[int, ...],
+    pooled_polarity: int,
+) -> None:
+    fixture = _write_regular_fixture(
+        tmp_path,
+        corrupt_last_block=True,
+        trial_polarities=trial_polarities,
+        pooled_polarity=pooled_polarity,
+    )
 
     with pytest.raises(ValueError, match="factorial"):
         load_regular_rf_trials(
             fixture.session,
             "A",
             fixture.rf_maps,
+            on=pooled_polarity == 1,
+            off=pooled_polarity == 0,
             validate_pooled=False,
         )
 

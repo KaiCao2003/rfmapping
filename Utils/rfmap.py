@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from Utils.json_tools import read_formatted_json
 
-__all__ = ["RFMap", "RFMapList", "asrfmap", "load_rf_maps"]
+__all__ = ["RFMap", "RFMapList", "asrfmap", "load_rf_maps", "plot_2d_rfmap", "plot_1d_rfmap"]
 
 
 _EDGE_ATOL_S = 1e-12
@@ -421,7 +421,11 @@ def _rf_result_manifest(
     first = maps[0]
     return {
         "schema_name": "rfmapping-rf-result",
-        "detector_algorithm": "cluster-permutation-v1",
+        "detector_algorithm": (
+            "cluster-permutation-v1"
+            if parameters["is_shuffle"]
+            else "pooled-spatial-z-v1"
+        ),
         "center_algorithm": "response-weighted-medoid-v1",
         "nonshuffle_filter": "drop-small-components-inclusive-v1",
         "grid_shape": [first.n_y, first.n_x],
@@ -447,7 +451,7 @@ def _rf_output_arrays(
     cache: dict[str, Any],
     maps: Sequence["RFMap"],
     is_batch: bool,
-    trials: Mapping[str, Any],
+    trials: Mapping[str, Any] | None,
     detect: Any,
     is_shuffle: bool,
     drop_bins: int,
@@ -472,10 +476,66 @@ def _rf_output_arrays(
         if target.suffix.lower() != ".npz":
             raise ValueError("result_path must end with '.npz'")
 
-    # Hash the aligned detector inputs even for the in-memory fast path.  That
-    # prevents a caller mutating a trials array in place from receiving a stale
-    # result merely because the outer mapping is still the same object.
-    aligned = _aligned_trial_mapping(trials, maps)
+    if run_shuffle:
+        if trials is None:
+            raise ValueError("trials are required when is_shuffle=True")
+        detector_input = trials
+        aligned = _aligned_trial_mapping(trials, maps)
+    else:
+        first = maps[0]
+        pooled = np.stack(
+            [np.asarray(rf_map.to_2d_array(), dtype=np.float64) for rf_map in maps]
+        )
+        presentation_counts = first.presentation_counts
+        for rf_map in maps[1:]:
+            if (
+                (rf_map.presentation_counts is None)
+                != (presentation_counts is None)
+                or (
+                    presentation_counts is not None
+                    and not np.array_equal(
+                        rf_map.presentation_counts,
+                        presentation_counts,
+                    )
+                )
+            ):
+                raise ValueError(
+                    "all RFMaps must share stimulus presentation counts"
+                )
+
+        if presentation_counts is None:
+            position_ids = np.arange(first.n_y * first.n_x, dtype=np.int64)
+            responses = pooled.reshape(len(maps), -1)
+        else:
+            valid_positions = np.asarray(presentation_counts) > 0
+            position_ids = np.flatnonzero(valid_positions).astype(
+                np.int64,
+                copy=False,
+            )
+            if position_ids.size == 0:
+                raise ValueError("pooled RF has no presented spatial positions")
+            responses = (
+                pooled[:, valid_positions]
+                / np.asarray(presentation_counts)[valid_positions]
+            )
+
+        aligned = {
+            "responses": responses,
+            "position_ids": position_ids,
+            "stratum_ids": None,
+            "unit_ids": np.asarray(
+                [rf_map.unit_id for rf_map in maps],
+                dtype=np.int64,
+            ),
+            "shape": (first.n_y, first.n_x),
+            "x_positions": first.x_positions,
+            "y_positions": first.y_positions,
+            "time_range_s": first.time_window_s,
+        }
+        detector_input = aligned
+
+    # Hash the inputs even for the in-memory fast path. In no-shuffle mode the
+    # key comes only from the pooled map; a supplied trial mapping is ignored.
     manifest = _rf_result_manifest(maps, parameters)
     from Utils.rf_cache import build_rf_result_cache_key, load_rf_result
 
@@ -524,7 +584,7 @@ def _rf_output_arrays(
 
     if mask is None or center is None:
         result = detect(
-            trials,
+            detector_input,
             is_shuffle=run_shuffle,
             drop_bins=parsed_drop_bins,
             show_progress=show_progress,
@@ -868,7 +928,7 @@ class RFMap:
 
     def rf_2d(
         self,
-        trials: Mapping[str, Any],
+        trials: Mapping[str, Any] | None = None,
         *,
         is_shuffle: bool = True,
         drop_bins: int = 1,
@@ -906,7 +966,7 @@ class RFMap:
 
     def rf_1d(
         self,
-        trials: Mapping[str, Any],
+        trials: Mapping[str, Any] | None = None,
         axis: str = "x",
         *,
         is_shuffle: bool = True,
@@ -1132,7 +1192,7 @@ class RFMapList(Sequence[RFMap]):
 
     def rf_2d(
         self,
-        trials: Mapping[str, Any],
+        trials: Mapping[str, Any] | None = None,
         *,
         is_shuffle: bool = False,
         drop_bins: int = 2,
@@ -1170,7 +1230,7 @@ class RFMapList(Sequence[RFMap]):
 
     def rf_1d(
         self,
-        trials: Mapping[str, Any],
+        trials: Mapping[str, Any] | None = None,
         axis: str = "x",
         *,
         is_shuffle: bool = True,
@@ -1450,3 +1510,100 @@ def load_rf_maps(path: str | Path) -> RFMapList:
         for unit_index, unit_id in enumerate(unit_pool)
     ]
     return RFMapList(maps, source_path)
+
+
+def plot_2d_rfmap(data: np.ndarray, *, cmap: str = "viridis", is_save: bool = False, save_path: str = "rfmap.png"):
+    """Plot a 2D array as a heatmap without changing its orientation.
+
+    The first array dimension is shown vertically (rows), and the second
+    dimension is shown horizontally (columns).
+    """
+    data = np.asarray(data)
+    if data.ndim != 2:
+        raise ValueError("data must be a 2D array.")
+    if 0 in data.shape:
+        raise ValueError("data must not have an empty dimension.")
+
+    n_rows, n_columns = data.shape
+    fig, ax = plt.subplots()
+    image = ax.imshow(
+        data,
+        aspect="equal",
+        cmap=cmap,
+        interpolation="nearest",
+    )
+
+    ax.set_xticks(np.arange(n_columns))
+    ax.set_yticks(np.arange(n_rows))
+    ax.set_xlabel("Column")
+    ax.set_ylabel("Row")
+    fig.colorbar(image, ax=ax)
+    fig.tight_layout()
+
+    if is_save:
+        from pathlib import Path
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.show()
+
+    return fig, ax
+
+
+def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isNormalize: bool = False, isLineplot: bool = False,
+                  isHeatmap: bool = False, offset: float = 1.0, xinDeg: bool = False):
+    # Validation
+    if isLineplot == isHeatmap:
+        raise ValueError("Exactly one of isLineplot or isHeatmap must be True.")
+
+    n_units, n_x = unitsSpikeCounts.shape
+    x_values = np.linspace(0, 360, n_x, endpoint=False) if xinDeg else np.arange(n_x)
+    x_label = "Angle (deg)" if xinDeg else "x"
+
+    if isNormalize:
+        max_per_unit = unitsSpikeCounts.max(axis=1, keepdims=True)
+        unitsSpikeCounts = np.divide(
+            unitsSpikeCounts,
+            max_per_unit,
+            out=np.zeros_like(unitsSpikeCounts, dtype=float),
+            where=max_per_unit != 0,
+        )
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    if isLineplot:
+        yticks_height = []
+
+        for unit_idx, spikeCounts in enumerate(unitsSpikeCounts):
+            y = spikeCounts + (n_units - 1 - unit_idx) * offset
+            yticks_height.append(np.average(y))
+            ax.plot(x_values, y, linewidth=1)
+
+        ax.set_yticks(yticks_height)
+        ax.set_yticklabels(label_list)
+
+    if isHeatmap:
+        imshow_kwargs = dict(
+            aspect="auto",
+            cmap="viridis",
+            interpolation="nearest",
+        )
+        if xinDeg:
+            imshow_kwargs["extent"] = [0, 360, n_units - 0.5, -0.5]
+
+        im = ax.imshow(unitsSpikeCounts, **imshow_kwargs)
+
+        ax.set_yticks(np.arange(n_units))
+        ax.set_yticklabels(label_list)
+        fig.colorbar(im, ax=ax, label="Normalized spikes" if isNormalize else "Spikes")
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Unit ID")
+    if xinDeg:
+        ax.set_xlim(0, 360)
+        ax.set_xticks(np.arange(0, 361, 60))
+
+    plt.tight_layout()
+    plt.show()
