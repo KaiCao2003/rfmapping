@@ -20,7 +20,6 @@ from Utils.json_tools import read_formatted_json
 
 __all__ = ["RFMap", "RFMapList", "asrfmap", "load_rf_maps", "plot_2d_rfmap", "plot_1d_rfmap"]
 
-
 _EDGE_ATOL_S = 1e-12
 _STRUCTURAL_JSON_FIELDS = {
     "unitsSpikeCounts",
@@ -57,7 +56,7 @@ def _integer(value: Any, label: str) -> int:
 
 def _flat_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list) or any(
-        isinstance(item, (list, dict)) for item in value
+            isinstance(item, (list, dict)) for item in value
     ):
         raise ValueError(f"{label} must be a one-dimensional array")
     return value
@@ -163,11 +162,11 @@ _BATCH_MAP_KEYS = {
 
 
 def _center_only_mask(
-    result: Mapping[str, Any],
-    *,
-    alternative: str,
-    wrap_x: bool,
-    show_progress: bool,
+        result: Mapping[str, Any],
+        *,
+        alternative: str,
+        wrap_x: bool,
+        show_progress: bool,
 ) -> NDArray[np.uint8]:
     """Reduce each non-empty final RF to one response-weighted grid bin."""
 
@@ -175,8 +174,8 @@ def _center_only_mask(
     response_map = np.asarray(result["response_map"], dtype=np.float64)
     null_mean_map = np.asarray(result["null_mean_map"], dtype=np.float64)
     if not (
-        final_mask.shape == response_map.shape == null_mean_map.shape
-        and final_mask.ndim in {2, 3}
+            final_mask.shape == response_map.shape == null_mean_map.shape
+            and final_mask.ndim in {2, 3}
     ):
         raise RuntimeError("RF detector returned incompatible center-map arrays")
 
@@ -209,7 +208,7 @@ def _center_only_mask(
         )
 
         effect = direction * (
-            response_batch[unit_index] - null_batch[unit_index]
+                response_batch[unit_index] - null_batch[unit_index]
         )
         effect = np.where(np.isfinite(effect), np.maximum(effect, 0.0), 0.0)
         weights = effect.ravel()[candidate_flat]
@@ -226,9 +225,9 @@ def _center_only_mask(
 
         minimum_cost = float(costs.min())
         tie_tolerance = (
-            16.0
-            * np.finfo(np.float64).eps
-            * max(1.0, abs(minimum_cost))
+                16.0
+                * np.finfo(np.float64).eps
+                * max(1.0, abs(minimum_cost))
         )
         tied = np.flatnonzero(
             np.isclose(costs, minimum_cost, rtol=0.0, atol=tie_tolerance)
@@ -243,8 +242,8 @@ def _center_only_mask(
 
 
 def _aligned_trial_mapping(
-    trials: Mapping[str, Any],
-    maps: Sequence["RFMap"],
+        trials: Mapping[str, Any],
+        maps: Sequence["RFMap"],
 ) -> dict[str, Any]:
     """Validate plain trial arrays and align their rows to RF unit IDs."""
 
@@ -277,10 +276,10 @@ def _aligned_trial_mapping(
         if not np.array_equal(rf_map.y_positions, first.y_positions):
             raise ValueError("all RFMaps must share y positions")
         if not np.allclose(
-            rf_map.time_window_s,
-            first.time_window_s,
-            rtol=0.0,
-            atol=_EDGE_ATOL_S,
+                rf_map.time_window_s,
+                first.time_window_s,
+                rtol=0.0,
+                atol=_EDGE_ATOL_S,
         ):
             raise ValueError("all RFMaps must share one response window")
 
@@ -299,10 +298,10 @@ def _aligned_trial_mapping(
     except (TypeError, ValueError) as exc:
         raise ValueError("trials['time_range_s'] must contain two numbers") from exc
     if trial_window.shape != (2,) or not np.allclose(
-        trial_window,
-        first.time_window_s,
-        rtol=0.0,
-        atol=_EDGE_ATOL_S,
+            trial_window,
+            first.time_window_s,
+            rtol=0.0,
+            atol=_EDGE_ATOL_S,
     ):
         raise ValueError(
             "trial response window does not match this RFMap's sole time bin"
@@ -383,10 +382,10 @@ def _json_scalar(value: Any) -> Any:
 
 
 def _rf_detection_parameters(
-    *,
-    is_shuffle: bool,
-    drop_bins: int,
-    options: Mapping[str, Any],
+        *,
+        is_shuffle: bool,
+        drop_bins: int,
+        options: Mapping[str, Any],
 ) -> dict[str, Any]:
     unknown = sorted(set(options).difference(_RF_DETECTION_OPTION_DEFAULTS))
     if unknown:
@@ -415,8 +414,8 @@ def _rf_detection_parameters(
 
 
 def _rf_result_manifest(
-    maps: Sequence["RFMap"],
-    parameters: Mapping[str, Any],
+        maps: Sequence["RFMap"],
+        parameters: Mapping[str, Any],
 ) -> dict[str, Any]:
     first = maps[0]
     return {
@@ -447,18 +446,18 @@ def _rf_result_key_arrays(aligned: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _rf_output_arrays(
-    *,
-    cache: dict[str, Any],
-    maps: Sequence["RFMap"],
-    is_batch: bool,
-    trials: Mapping[str, Any] | None,
-    detect: Any,
-    is_shuffle: bool,
-    drop_bins: int,
-    result_path: str | Path | None,
-    show_progress: bool,
-    center_progress: bool,
-    options: Mapping[str, Any],
+        *,
+        cache: dict[str, Any],
+        maps: Sequence["RFMap"],
+        is_batch: bool,
+        trials: Mapping[str, Any] | None,
+        detect: Any,
+        is_shuffle: bool,
+        drop_bins: int,
+        result_path: str | Path | None,
+        show_progress: bool,
+        center_progress: bool,
+        options: Mapping[str, Any],
 ) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
     """Return one reusable mask-center result for the public RF views."""
 
@@ -489,15 +488,15 @@ def _rf_output_arrays(
         presentation_counts = first.presentation_counts
         for rf_map in maps[1:]:
             if (
-                (rf_map.presentation_counts is None)
-                != (presentation_counts is None)
-                or (
+                    (rf_map.presentation_counts is None)
+                    != (presentation_counts is None)
+                    or (
                     presentation_counts is not None
                     and not np.array_equal(
-                        rf_map.presentation_counts,
-                        presentation_counts,
-                    )
-                )
+                rf_map.presentation_counts,
+                presentation_counts,
+            )
+            )
             ):
                 raise ValueError(
                     "all RFMaps must share stimulus presentation counts"
@@ -515,8 +514,8 @@ def _rf_output_arrays(
             if position_ids.size == 0:
                 raise ValueError("pooled RF has no presented spatial positions")
             responses = (
-                pooled[:, valid_positions]
-                / np.asarray(presentation_counts)[valid_positions]
+                    pooled[:, valid_positions]
+                    / np.asarray(presentation_counts)[valid_positions]
             )
 
         aligned = {
@@ -544,9 +543,9 @@ def _rf_output_arrays(
         manifest=manifest,
     )
     memory_hit = (
-        cache.get("result_key") == result_key
-        and "mask_2d" in cache
-        and "center_2d" in cache
+            cache.get("result_key") == result_key
+            and "mask_2d" in cache
+            and "center_2d" in cache
     )
     mask: NDArray[np.uint8] | None = (
         cache["mask_2d"] if memory_hit else None
@@ -655,6 +654,43 @@ class RFMap:
             f"shape={self.shape}, dtype={self.dtype}, "
             f"time_window_s={self.time_window_s}, "
             f"source_path={str(self.source_path)!r})"
+        )
+
+    def __sub__(self, other: object) -> RFMap:
+        if not isinstance(other, RFMap):
+            return NotImplemented
+
+        if self.unit_id != other.unit_id:
+            raise ValueError("RFMaps must have the same unit_id")
+        if not np.array_equal(self.x_positions, other.x_positions):
+            raise ValueError("RFMaps must have identical x positions")
+        if not np.array_equal(self.y_positions, other.y_positions):
+            raise ValueError("RFMaps must have identical y positions")
+
+        difference = (
+                self.spike_counts.sum(axis=-1, keepdims=True, dtype=np.float64)
+                - other.spike_counts.sum(axis=-1, keepdims=True, dtype=np.float64)
+        )
+
+        metadata = deepcopy(dict(self.metadata))
+        metadata.update({
+            "operation": "rfmap_subtraction",
+            "lhs_time_window_s": list(self.time_window_s),
+            "rhs_time_window_s": list(other.time_window_s),
+            "rhs_source_path": str(other.source_path),
+        })
+
+        return _make_rf_map(
+            unit_index=self.unit_index,
+            unit_id=self.unit_id,
+            spike_counts=difference,
+            x_positions=self.x_positions,
+            y_positions=self.y_positions,
+            # 一个 bin，代表左侧 RFMap 的整个时间范围
+            time_bin_edges_s=np.asarray(self.time_window_s),
+            presentation_counts=self.presentation_counts,
+            metadata=metadata,
+            source_path=Path("<difference>"),
         )
 
     # Public data and geometry properties
@@ -824,11 +860,11 @@ class RFMap:
         return int(matches[0])
 
     def _time_indices(
-        self,
-        earlier_s: float,
-        later_s: float,
-        *,
-        allow_empty: bool,
+            self,
+            earlier_s: float,
+            later_s: float,
+            *,
+            allow_empty: bool,
     ) -> tuple[int, int, float, float]:
         earlier = self._coerce_time(earlier_s, "earlier_s")
         later = self._coerce_time(later_s, "later_s")
@@ -881,8 +917,8 @@ class RFMap:
             ]
         if "timeBinWidthMs" in summed_metadata:
             summed_metadata["timeBinWidthMs"] = (
-                canonical_stop - canonical_start
-            ) * 1000.0
+                                                        canonical_stop - canonical_start
+                                                ) * 1000.0
 
         return _make_rf_map(
             unit_index=self.unit_index,
@@ -899,13 +935,13 @@ class RFMap:
     # RF detection
 
     def _detect_rf(
-        self,
-        trials: Mapping[str, Any],
-        *,
-        is_shuffle: bool = True,
-        drop_bins: int = 1,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any],
+            *,
+            is_shuffle: bool = True,
+            drop_bins: int = 1,
+            show_progress: bool = True,
+            **options: Any,
     ) -> dict[str, Any]:
         """Return internal cluster result arrays for this unit."""
 
@@ -927,15 +963,15 @@ class RFMap:
         return _single_detection_result(batch)
 
     def rf_2d(
-        self,
-        trials: Mapping[str, Any] | None = None,
-        *,
-        is_shuffle: bool = True,
-        drop_bins: int = 1,
-        is_center: bool = False,
-        result_path: str | Path | None = None,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any] | None = None,
+            *,
+            is_shuffle: bool = True,
+            drop_bins: int = 1,
+            is_center: bool = False,
+            result_path: str | Path | None = None,
+            show_progress: bool = True,
+            **options: Any,
     ) -> NDArray[np.uint8]:
         """Return the final 2-D RF mask or its discrete weighted center.
 
@@ -965,16 +1001,16 @@ class RFMap:
         return center if center_only else mask
 
     def rf_1d(
-        self,
-        trials: Mapping[str, Any] | None = None,
-        axis: str = "x",
-        *,
-        is_shuffle: bool = True,
-        drop_bins: int = 1,
-        is_center: bool = False,
-        result_path: str | Path | None = None,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any] | None = None,
+            axis: str = "x",
+            *,
+            is_shuffle: bool = True,
+            drop_bins: int = 1,
+            is_center: bool = False,
+            result_path: str | Path | None = None,
+            show_progress: bool = True,
+            **options: Any,
     ) -> NDArray[np.uint8]:
         """Project the same computed 2-D mask or center onto x or y."""
 
@@ -1042,13 +1078,16 @@ class RFMapList(Sequence[RFMap]):
         return iter(self._maps)
 
     @overload
-    def __getitem__(self, index: int) -> RFMap: ...
+    def __getitem__(self, index: int) -> RFMap:
+        ...
 
     @overload
-    def __getitem__(self, index: slice) -> list[RFMap]: ...
+    def __getitem__(self, index: slice) -> list[RFMap]:
+        ...
 
     @overload
-    def __getitem__(self, index: str) -> RFMap: ...
+    def __getitem__(self, index: str) -> RFMap:
+        ...
 
     def __getitem__(self, index: int | slice | str) -> RFMap | list[RFMap]:
         if isinstance(index, str):
@@ -1107,11 +1146,11 @@ class RFMapList(Sequence[RFMap]):
     # Time-window and array conversion
 
     def sum(
-        self,
-        earlier_s: float,
-        later_s: float,
-        *,
-        show_progress: bool = True,
+            self,
+            earlier_s: float,
+            later_s: float,
+            *,
+            show_progress: bool = True,
     ) -> RFMapList:
         """Sum the requested time window independently for every unit."""
 
@@ -1163,13 +1202,13 @@ class RFMapList(Sequence[RFMap]):
     # RF detection
 
     def _detect_rf(
-        self,
-        trials: Mapping[str, Any],
-        *,
-        is_shuffle: bool = True,
-        drop_bins: int = 1,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any],
+            *,
+            is_shuffle: bool = True,
+            drop_bins: int = 1,
+            show_progress: bool = True,
+            **options: Any,
     ) -> dict[str, Any]:
         """Return plain cluster-permutation arrays for every unit."""
 
@@ -1191,15 +1230,15 @@ class RFMapList(Sequence[RFMap]):
         )
 
     def rf_2d(
-        self,
-        trials: Mapping[str, Any] | None = None,
-        *,
-        is_shuffle: bool = False,
-        drop_bins: int = 2,
-        is_center: bool = False,
-        result_path: str | Path | None = None,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any] | None = None,
+            *,
+            is_shuffle: bool = False,
+            drop_bins: int = 2,
+            is_center: bool = False,
+            result_path: str | Path | None = None,
+            show_progress: bool = True,
+            **options: Any,
     ) -> NDArray[np.uint8]:
         """Stack final 2-D RF masks or discrete centers by unit.
 
@@ -1229,16 +1268,16 @@ class RFMapList(Sequence[RFMap]):
         return center if center_only else mask
 
     def rf_1d(
-        self,
-        trials: Mapping[str, Any] | None = None,
-        axis: str = "x",
-        *,
-        is_shuffle: bool = True,
-        drop_bins: int = 1,
-        is_center: bool = False,
-        result_path: str | Path | None = None,
-        show_progress: bool = True,
-        **options: Any,
+            self,
+            trials: Mapping[str, Any] | None = None,
+            axis: str = "x",
+            *,
+            is_shuffle: bool = True,
+            drop_bins: int = 1,
+            is_center: bool = False,
+            result_path: str | Path | None = None,
+            show_progress: bool = True,
+            **options: Any,
     ) -> NDArray[np.uint8]:
         """Project the same computed 2-D masks or centers onto x or y."""
 
@@ -1260,16 +1299,16 @@ class RFMapList(Sequence[RFMap]):
 
 
 def _make_rf_map(
-    *,
-    unit_index: int,
-    unit_id: int,
-    spike_counts: Any,
-    x_positions: Any,
-    y_positions: Any,
-    time_bin_edges_s: Any,
-    presentation_counts: NDArray[np.float64] | None,
-    metadata: Mapping[str, Any],
-    source_path: str | Path,
+        *,
+        unit_index: int,
+        unit_id: int,
+        spike_counts: Any,
+        x_positions: Any,
+        y_positions: Any,
+        time_bin_edges_s: Any,
+        presentation_counts: NDArray[np.float64] | None,
+        metadata: Mapping[str, Any],
+        source_path: str | Path,
 ) -> RFMap:
     return RFMap(
         unit_index=int(unit_index),
@@ -1285,11 +1324,11 @@ def _make_rf_map(
 
 
 def asrfmap(
-    array: Any,
-    *,
-    start_time: float = 0.0,
-    end_time: float | None = None,
-    time_bin: float | None = None,
+        array: Any,
+        *,
+        start_time: float = 0.0,
+        end_time: float | None = None,
+        time_bin: float | None = None,
 ) -> RFMap:
     """Convert a 2-D or 3-D numeric array into one :class:`RFMap`.
 
@@ -1316,9 +1355,9 @@ def asrfmap(
     if any(size <= 0 for size in spike_counts.shape):
         raise ValueError("array dimensions must be positive")
     if (
-        np.issubdtype(spike_counts.dtype, np.bool_)
-        or not np.issubdtype(spike_counts.dtype, np.number)
-        or np.issubdtype(spike_counts.dtype, np.complexfloating)
+            np.issubdtype(spike_counts.dtype, np.bool_)
+            or not np.issubdtype(spike_counts.dtype, np.number)
+            or np.issubdtype(spike_counts.dtype, np.complexfloating)
     ):
         raise ValueError("array values must be real numeric values")
     if not np.all(np.isfinite(spike_counts)):
@@ -1356,10 +1395,10 @@ def asrfmap(
             effective_time_bin = parsed_time_bin
             expected_duration = effective_time_bin * n_time_bins
             if not math.isclose(
-                expected_duration,
-                duration,
-                rel_tol=0.0,
-                abs_tol=_EDGE_ATOL_S,
+                    expected_duration,
+                    duration,
+                    rel_tol=0.0,
+                    abs_tol=_EDGE_ATOL_S,
             ):
                 raise ValueError(
                     "time_bin * n_time_bins must equal end_time - start_time; "
