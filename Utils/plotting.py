@@ -903,18 +903,15 @@ def plot_egocentric_heatmap(
     *,
     cmap="viridis",
 ):
-    display_distance_edges = distance_edges.copy()
-    display_distance_edges[0] = distance_edges[1] / 2
     image = _plot_heatmap(
         axis,
-        display_distance_edges,
+        distance_edges,
         theta_edges,
         values,
         title,
         colorbar_label,
         cmap=cmap,
     )
-    axis.set_xscale("log")
     axis.set_xlabel("Distance to boundary (cm)")
     axis.set_ylabel("Egocentric theta")
     axis.set_yticks([0, 90, 180, 270, 360])
@@ -1003,3 +1000,20 @@ def plot_egocentric_polar(
     axis.set_title("Egocentric firing-rate map (polar)")
     axis.figure.colorbar(image, ax=axis, label="Hz", pad=0.12)
     return image
+
+
+def plot_tuning_curve(axis, theta_edges, firing_rate, title):
+    theta_centers = np.deg2rad(
+        (theta_edges[:-1] + theta_edges[1:]) / 2
+    )
+    theta = np.r_[theta_centers, theta_centers[0] + 2 * np.pi]
+    rate = np.r_[firing_rate, firing_rate[0]]
+
+    line = axis.plot(theta, rate, linewidth=2)[0]
+    axis.set_theta_zero_location("N")
+    axis.set_theta_direction(1)
+    axis.set_xticks(np.deg2rad([0, 90, 180, 270]))
+    axis.set_xticklabels(["0", "90", "180", "270"])
+    axis.set_ylim(bottom=0)
+    axis.set_title(title)
+    return line
