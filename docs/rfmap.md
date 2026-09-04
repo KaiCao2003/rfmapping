@@ -31,7 +31,7 @@ rf_source = (
     / "regular_unitsSpikeCounts_260630_3.json"
 )
 
-raw = load_rf_maps(rf_source)
+raw = load_rf_maps(rf_source, unit_firing_rate=False)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(
     session,
@@ -114,6 +114,11 @@ One pooled regular RF source stores counts in this order:
 `load_rf_maps()` returns an ordered `RFMapList`. Each item is one `RFMap` with
 shape `(y, x, time)`.
 
+By default, loading divides `unitsSpikeCounts` by the spatial
+`occupancyTimeSec`, producing firing-rate values in Hz without changing any
+array shape. Pass `unit_firing_rate=False` to keep raw spike counts. Raw mode
+is required when `load_regular_rf_trials()` validates reconstructed counts.
+
 | Value | `RFMapList` shape | One `RFMap` shape | Meaning |
 | --- | --- | --- | --- |
 | `raw.shape` | `(unit, y, x, time)` | `(y, x, time)` | Pooled count timeline |
@@ -174,6 +179,37 @@ summed = raw if raw[0].n_time_bins == 1 else raw.sum(0.0, 0.2)
 There is deliberately no `time_range` argument on `rf_2d()` or `rf_1d()`.
 The singleton-bin object is the response window, which prevents pooled counts
 and reconstructed trial responses from silently using different windows.
+
+An `RFMap` is also callable as a shorthand for `sum()`. Omitted bounds use the
+first or last available time edge:
+
+```python
+rf_map(0.0, 0.204)          # rf_map.sum(0.0, 0.204)
+rf_map(None, 0.204)         # first available edge through 0.204
+rf_map(later_s=0.204)       # same as the line above
+rf_map(0.204)               # 0.204 through the last available edge
+rf_map()                    # the complete available time window
+```
+
+Python does not allow an omitted argument before a comma, so
+`rf_map(, 0.204)` is invalid syntax; use `None` or the `later_s` keyword.
+
+## Subtracting two summed maps
+
+Subtraction is defined between compatible `RFMap` objects that each already
+contain exactly one time bin. Sum each source window first:
+
+```python
+response_minus_baseline = (
+    rf_map.sum(0.1, 0.2) - rf_map.sum(0.0, 0.1)
+)
+```
+
+The operation subtracts the stored values element by element, so negative
+values are valid. The result keeps the left-hand map's time window; in this
+example that is `[0.1, 0.2)`. Default-loaded maps therefore produce a firing
+rate difference, while maps loaded with `unit_firing_rate=False` produce a raw
+pooled spike-count difference.
 
 ## Loading regular trials
 
@@ -373,7 +409,7 @@ for probe in ("A", "B"):
         / f"Probe{probe}"
         / "regular_unitsSpikeCounts_260630_3.json"
     )
-    raw = load_rf_maps(source)
+    raw = load_rf_maps(source, unit_firing_rate=False)
     summed = raw.sum(0.0, 0.2)
     trials = load_regular_rf_trials(session, probe, summed)
     results_by_probe[probe] = summed.rf_2d(
@@ -515,17 +551,19 @@ writable = np.array(mask_2d, copy=True)
 
 | API | Returns | Purpose |
 | --- | --- | --- |
-| `load_rf_maps(path)` | `RFMapList` | Load a regular pooled JSON-text `.json` or `.rfmap` source |
+| `load_rf_maps(path, unit_firing_rate=True)` | `RFMapList` | Load firing rates (`count / occupancyTimeSec`) by default; pass `False` for raw counts |
 | `asrfmap(array, ...)` | `RFMap` | Validate one standalone array |
 | `rf_map.sum(start, end)` | `RFMap` | Sum a half-open response window |
+| `rf_map(earlier_s=None, later_s=None)` | `RFMap` | Callable shorthand for `sum()`, with omitted bounds resolved to the available edges |
 | `rf_maps.sum(start, end, show_progress=...)` | `RFMapList` | Sum the same window for all units |
+| `left_rf_map - right_rf_map` | `RFMap` | Elementwise signed difference between compatible singleton-bin maps; keep the left time window |
 | `load_regular_rf_trials(session, probe, summed, on=..., off=...)` | `dict` | Reconstruct aligned ON or OFF regular trials |
 | `summed.rf_2d(trials, is_center=..., result_path=..., ...)` | read-only `uint8` array | Return the full 2-D mask or center |
 | `summed.rf_1d(trials, axis=..., is_center=..., result_path=..., ...)` | read-only `uint8` array | Project the same 2-D mask or center |
 | `rf_maps.by_index(index)` | `RFMap` | Select by original source unit index |
 | `rf_maps.by_unit_id(unit_id)` | `RFMap` | Select by recorded unit or cluster ID |
 | `rf_maps.to_4d_array()` | array | Stack pooled count timelines |
-| `summed.to_2d_array()` | array | Return singleton-bin count maps |
+| `summed.to_2d_array()` | array | Return singleton-bin loaded values |
 | `rf_map.where(value)` | index tuple | Locate matches as `(y, x, time)` |
 | `rf_maps.where(value)` | index tuple | Locate matches as `(unit, y, x, time)` |
 

@@ -26,7 +26,7 @@ rf_source = (
     / "regular_unitsSpikeCounts_260630_3.json"
 )
 
-raw = load_rf_maps(rf_source)
+raw = load_rf_maps(rf_source, unit_firing_rate=False)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(
     session,
@@ -63,6 +63,10 @@ unit_ids_with_any_zero_bin = np.asarray(summed.unit_ids)[units_with_any_zero_bin
 
 array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 ```
+
+`load_rf_maps()` returns firing-rate values by default by dividing the stored
+counts by `occupancyTimeSec`. Pass `unit_firing_rate=False` when raw pooled
+counts are needed, including before `load_regular_rf_trials()` validation.
 
 `sum(earlier, later)` uses seconds and the half-open interval
 `[earlier, later)`. Both values must resolve to actual `timeBinEdges` entries

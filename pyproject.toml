@@ -17,6 +17,7 @@ dependencies = [
 test = ["pytest>=8,<10"]
 analysis = [
   "matplotlib>=3.9,<4",
+  "nemos==0.2.9",
   "pandas>=2.2,<4",
   "pynapple>=0.9,<1",
 ]

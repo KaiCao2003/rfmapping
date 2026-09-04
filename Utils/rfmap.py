@@ -12,6 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, overload
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
@@ -60,6 +61,18 @@ def _flat_list(value: Any, label: str) -> list[Any]:
     ):
         raise ValueError(f"{label} must be a one-dimensional array")
     return value
+
+
+def _spatial_axis(value: Any, label: str, expected_length: int) -> list[Any]:
+    """Restore MATLAB's scalar encoding for a singleton spatial axis."""
+
+    if (
+        expected_length == 1
+        and isinstance(value, Real)
+        and not isinstance(value, bool)
+    ):
+        return [value]
+    return _flat_list(value, label)
 
 
 def _counts_are_numeric(value: Any) -> bool:
@@ -628,8 +641,9 @@ def _rf_output_arrays(
 class RFMap:
     """RF mapping data for one unit.
 
-    ``spike_counts`` always has axes ``(y, x, time_bin)``. Time-summed maps
-    retain a singleton time dimension so they remain RFMap objects.
+    ``spike_counts`` always has axes ``(y, x, time_bin)`` and retains its
+    historical field name when ``load_rf_maps()`` converts values to firing
+    rates. Time-summed maps keep a singleton time dimension.
     """
 
     unit_index: int
@@ -656,29 +670,67 @@ class RFMap:
             f"source_path={str(self.source_path)!r})"
         )
 
+    def __call__(
+        self,
+        earlier_s: float | None = None,
+        later_s: float | None = None,
+    ) -> RFMap:
+        """Sum a time window, defaulting omitted bounds to available edges."""
+
+        start = self.time_window_s[0] if earlier_s is None else earlier_s
+        stop = self.time_window_s[1] if later_s is None else later_s
+        return self.sum(start, stop)
+
     def __sub__(self, other: object) -> RFMap:
+        """Subtract compatible singleton-bin maps element by element.
+
+        Call :meth:`sum` on both operands first. The returned map keeps the
+        left operand's time window and may contain negative values.
+        """
+
         if not isinstance(other, RFMap):
             return NotImplemented
 
+        if self.n_time_bins != 1 or other.n_time_bins != 1:
+            raise ValueError(
+                "RFMap subtraction requires exactly one time bin in each "
+                "operand; call sum() first"
+            )
         if self.unit_id != other.unit_id:
             raise ValueError("RFMaps must have the same unit_id")
+        if self.shape[:2] != other.shape[:2]:
+            raise ValueError("RFMaps must have the same spatial shape")
         if not np.array_equal(self.x_positions, other.x_positions):
             raise ValueError("RFMaps must have identical x positions")
         if not np.array_equal(self.y_positions, other.y_positions):
             raise ValueError("RFMaps must have identical y positions")
-
+        if (self.presentation_counts is None) != (
+            other.presentation_counts is None
+        ):
+            raise ValueError("RFMaps must have identical presentation counts")
+        if (
+            self.presentation_counts is not None
+            and not np.array_equal(
+                self.presentation_counts,
+                other.presentation_counts,
+            )
+        ):
+            raise ValueError("RFMaps must have identical presentation counts")
         difference = (
-                self.spike_counts.sum(axis=-1, keepdims=True, dtype=np.float64)
-                - other.spike_counts.sum(axis=-1, keepdims=True, dtype=np.float64)
+            np.asarray(self.spike_counts, dtype=np.float64)
+            - np.asarray(other.spike_counts, dtype=np.float64)
         )
 
         metadata = deepcopy(dict(self.metadata))
-        metadata.update({
-            "operation": "rfmap_subtraction",
-            "lhs_time_window_s": list(self.time_window_s),
-            "rhs_time_window_s": list(other.time_window_s),
-            "rhs_source_path": str(other.source_path),
-        })
+        metadata.update(
+            {
+                "operation": "rfmap_subtraction",
+                "lhs_time_window_s": list(self.time_window_s),
+                "rhs_time_window_s": list(other.time_window_s),
+                "lhs_source_path": str(self.source_path),
+                "rhs_source_path": str(other.source_path),
+            }
+        )
 
         return _make_rf_map(
             unit_index=self.unit_index,
@@ -686,8 +738,7 @@ class RFMap:
             spike_counts=difference,
             x_positions=self.x_positions,
             y_positions=self.y_positions,
-            # 一个 bin，代表左侧 RFMap 的整个时间范围
-            time_bin_edges_s=np.asarray(self.time_window_s),
+            time_bin_edges_s=self.time_bin_edges_s,
             presentation_counts=self.presentation_counts,
             metadata=metadata,
             source_path=Path("<difference>"),
@@ -771,7 +822,7 @@ class RFMap:
     # Array conversion
 
     def where(self, value: Real) -> tuple[NDArray[np.intp], ...]:
-        """Return native-axis indices whose spike count equals ``value``.
+        """Return native-axis indices whose loaded value equals ``value``.
 
         This is equivalent to ``np.where(self.spike_counts == value)`` and
         returns ``(y, x, time)`` index arrays. A summed RFMap still retains a
@@ -801,7 +852,7 @@ class RFMap:
         return result
 
     def to_1d_array(self, axis: str = "x") -> NDArray[Any]:
-        """Project a summed 2-D count map onto horizontal x or vertical y."""
+        """Project a summed 2-D map onto horizontal x or vertical y."""
 
         normalized_axis = _axis_name(axis)
         matrix = self.to_2d_array()
@@ -1173,7 +1224,7 @@ class RFMapList(Sequence[RFMap]):
         return _readonly_array(np.stack([rf_map.spike_counts for rf_map in self]))
 
     def where(self, value: Real) -> tuple[NDArray[np.intp], ...]:
-        """Return native-axis indices whose spike count equals ``value``.
+        """Return native-axis indices whose loaded value equals ``value``.
 
         This is equivalent to ``np.where(self.to_4d_array() == value)`` and
         returns ``(unit, y, x, time)`` index arrays. The first array contains
@@ -1188,7 +1239,7 @@ class RFMapList(Sequence[RFMap]):
         )
 
     def to_2d_array(self) -> NDArray[Any]:
-        """Stack every unit's 2-D count map as ``(unit, y, x)``."""
+        """Stack every unit's 2-D map as ``(unit, y, x)``."""
 
         return _readonly_array(np.stack([rf_map.to_2d_array() for rf_map in self]))
 
@@ -1431,10 +1482,15 @@ def asrfmap(
     )
 
 
-def load_rf_maps(path: str | Path) -> RFMapList:
-    """Load one regular RF JSON-text source into ordered RFMap objects."""
+def load_rf_maps(
+    path: str | Path,
+    *,
+    unit_firing_rate: bool = True,
+) -> RFMapList:
+    """Load RF maps as ``count / occupancyTimeSec`` or raw spike counts."""
 
     source_path = Path(path)
+    use_firing_rate = _bool_value(unit_firing_rate, "unit_firing_rate")
     raw = read_formatted_json(source_path)
     if not isinstance(raw, dict):
         raise ValueError("RF mapping JSON must contain an object at the top level")
@@ -1496,7 +1552,7 @@ def load_rf_maps(path: str | Path) -> RFMapList:
     y_positions = _readonly_array(
         [
             _number(value, "yPositions value")
-            for value in _flat_list(raw["yPositions"], "yPositions")
+            for value in _spatial_axis(raw["yPositions"], "yPositions", n_y)
         ],
         dtype=float,
     )
@@ -1529,6 +1585,17 @@ def load_rf_maps(path: str | Path) -> RFMapList:
                 "stimulusPresentationCounts is zero where spike counts are nonzero"
             )
 
+    if use_firing_rate:
+        occupancy_time_s = np.asarray(
+            raw["occupancyTimeSec"],
+            dtype=np.float64,
+        ).reshape(n_y, n_x)
+        spike_counts = (
+            np.asarray(spike_counts, dtype=np.float64)
+            / occupancy_time_s[np.newaxis, :, :, np.newaxis]
+        )
+        spike_counts.setflags(write=False)
+
     metadata = {
         key: deepcopy(value)
         for key, value in raw.items()
@@ -1551,11 +1618,18 @@ def load_rf_maps(path: str | Path) -> RFMapList:
     return RFMapList(maps, source_path)
 
 
-def plot_2d_rfmap(data: np.ndarray, *, cmap: str = "viridis", is_save: bool = False, save_path: str = "rfmap.png"):
+def plot_2d_rfmap(
+    data: np.ndarray,
+    *,
+    cmap: str = "viridis",
+    is_save: bool = False,
+    save_path: str = "rfmap.png",
+):
     """Plot a 2D array as a heatmap without changing its orientation.
 
     The first array dimension is shown vertically (rows), and the second
-    dimension is shown horizontally (columns).
+    dimension is shown horizontally (columns). A singleton y row keeps the
+    GUI's 30:7 spatial-map footprint instead of rendering as a thin strip.
     """
     data = np.asarray(data)
     if data.ndim != 2:
@@ -1565,9 +1639,12 @@ def plot_2d_rfmap(data: np.ndarray, *, cmap: str = "viridis", is_save: bool = Fa
 
     n_rows, n_columns = data.shape
     fig, ax = plt.subplots()
+    image_aspect: str | float = "equal"
+    if n_rows == 1:
+        image_aspect = n_columns * 7.0 / 30.0
     image = ax.imshow(
         data,
-        aspect="equal",
+        aspect=image_aspect,
         cmap=cmap,
         interpolation="nearest",
     )
