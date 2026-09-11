@@ -5,6 +5,10 @@ cluster-permutation detector, notebooks, and MATLAB-related analysis sources.
 The Python/Tk, SwiftUI, and Web viewers now live in the sibling
 `../rfmapping_gui` repository and are not runtime dependencies of this package.
 
+GLM notebooks, scripts, reports, and their tests live in the sibling
+[`../glm`](../glm/README.md) directory. Shared timing, loading, and geometry
+helpers remain here and are copied into that directory when needed.
+
 ## Python RFMap API
 
 `Utils/rfmap.py` loads one pooled RF source into an ordered `RFMapList`
