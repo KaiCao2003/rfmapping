@@ -1,4 +1,5 @@
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 from Utils.json_tools import read_formatted_json
 from Utils.plotting import (
+    LIGHT_PLOT_STYLE,
     plot_allocentric_heatmap,
     plot_egocentric_heatmap,
     plot_egocentric_polar,
@@ -29,9 +31,8 @@ camera_ttl_active_high = True
 # rig pixel lim
 x_min, x_max = 370, 920
 y_min, y_max = 210, 760
-rig_size_px = 550
 rig_size_cm = 41
-cm_per_px = rig_size_cm / rig_size_px
+cm_per_px = rig_size_cm / (x_max - x_min)
 
 theta_bin_deg = 6
 number_of_distance_bins = 20
@@ -50,28 +51,35 @@ save_root_directory = (
 worker_data = None
 
 
-def px_to_cm(px: int) -> int:
-    return int(px * cm_per_px + 0.5)
-
-
 def d(theta_deg, center_x, center_y, head_direction_deg):
+    """Return ray distances to the arena boundary in pixels."""
     absolute_angle_rad = np.deg2rad(
         head_direction_deg[:, None] + theta_deg[None, :]
     )
     direction_x = -np.sin(absolute_angle_rad)
     direction_y = -np.cos(absolute_angle_rad)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        distance_x = np.where(
+    # Cardinal angles have tiny nonzero components from trigonometric roundoff.
+    distance_x = np.divide(
+        np.where(
             direction_x > 0,
-            (x_max - center_x[:, None]) / direction_x,
-            (x_min - center_x[:, None]) / direction_x,
-        )
-        distance_y = np.where(
+            x_max - center_x[:, None],
+            x_min - center_x[:, None],
+        ),
+        direction_x,
+        out=np.full_like(direction_x, np.inf),
+        where=np.abs(direction_x) > 1e-12,
+    )
+    distance_y = np.divide(
+        np.where(
             direction_y > 0,
-            (y_max - center_y[:, None]) / direction_y,
-            (y_min - center_y[:, None]) / direction_y,
-        )
+            y_max - center_y[:, None],
+            y_min - center_y[:, None],
+        ),
+        direction_y,
+        out=np.full_like(direction_y, np.inf),
+        where=np.abs(direction_y) > 1e-12,
+    )
 
     return np.minimum(distance_x, distance_y)
 
@@ -105,7 +113,7 @@ def compute_2d_map(
 
 def compute_rate_map(
         spike_map,
-        occupancy_map,
+        smoothed_occupancy,
         smoothing_sigma,
         smoothing_mode,
 ):
@@ -113,11 +121,7 @@ def compute_rate_map(
         spike_map,
         sigma=smoothing_sigma,
         mode=smoothing_mode,
-    )
-    smoothed_occupancy = gaussian_filter(
-        occupancy_map,
-        sigma=smoothing_sigma,
-        mode=smoothing_mode,
+        output=float,
     )
     rate_map = np.full_like(smoothed_spikes, np.nan, dtype=float)
     np.divide(
@@ -130,9 +134,9 @@ def compute_rate_map(
 
 
 def count_spikes_by_frame(spike_times, frame_times):
-    insertion = np.searchsorted(frame_times, spike_times)
-    right = np.clip(insertion, 0, len(frame_times) - 1)
-    left = np.clip(insertion - 1, 0, len(frame_times) - 1)
+    """Count spikes within the sorted frame-time interval loaded by load_data."""
+    right = np.searchsorted(frame_times, spike_times)
+    left = np.maximum(right - 1, 0)
     use_right = (
             np.abs(frame_times[right] - spike_times)
             < np.abs(frame_times[left] - spike_times)
@@ -249,14 +253,13 @@ def load_data():
     )
 
 
-def compute_maps(unit_info):
-    center_x_px = unit_info["x"]
-    center_y_px = unit_info["y"]
+def prepare_session_maps(pose, pose_times):
+    """Compute geometry and occupancy once, before forking unit workers."""
+    center_x_px = pose["center_x"].to_numpy()
+    center_y_px = pose["center_y"].to_numpy()
     center_x_cm = (center_x_px - x_min) * cm_per_px
     center_y_cm = (center_y_px - y_min) * cm_per_px
-    head_direction_deg = unit_info["direction"]
-    pose_times = unit_info["frame_times"]
-    spike_times = unit_info["spike_times"]
+    head_direction_deg = pose["hd_deg"].to_numpy()
 
     theta_edges = np.arange(0, 360 + theta_bin_deg, theta_bin_deg)
     theta_deg = theta_edges[:-1]
@@ -287,13 +290,6 @@ def compute_maps(unit_info):
 
     frame_dt_s = float(np.median(np.diff(pose_times)))
     frame_time_weights = np.full(len(pose_times), frame_dt_s)
-    spike_frame_counts = count_spikes_by_frame(
-        spike_times,
-        pose_times,
-    )
-    spike_x_cm = np.repeat(center_x_cm, spike_frame_counts)
-    spike_y_cm = np.repeat(center_y_cm, spike_frame_counts)
-
     egocentric_occupancy = compute_2d_map(
         theta_grid,
         theta_d_cm,
@@ -301,16 +297,73 @@ def compute_maps(unit_info):
         distance_edges,
         frame_time_weights,
     )
+    head_direction_deg = head_direction_deg % 360
+    allocentric_direction_occupancy = np.histogram(
+        head_direction_deg,
+        bins=theta_edges,
+        weights=frame_time_weights,
+    )[0]
+    allocentric_occupancy = compute_2d_map(
+        center_x_cm,
+        center_y_cm,
+        x_edges,
+        y_edges,
+        frame_time_weights,
+    )
+
+    return {
+        "frame_times": pose_times,
+        "head_direction_deg": head_direction_deg,
+        "theta_grid": theta_grid,
+        "theta_d_cm": theta_d_cm,
+        "theta_edges": theta_edges,
+        "distance_edges": distance_edges,
+        "x_edges": x_edges,
+        "y_edges": y_edges,
+        "trajectory_x_cm": center_x_cm,
+        "trajectory_y_cm": center_y_cm,
+        "egocentric_occupancy": egocentric_occupancy,
+        "allocentric_occupancy": allocentric_occupancy,
+        "smoothed_egocentric_occupancy": gaussian_filter(
+            egocentric_occupancy,
+            sigma=egocentric_smoothing_sigma,
+            mode=("wrap", "nearest"),
+        ),
+        "smoothed_allocentric_occupancy": gaussian_filter(
+            allocentric_occupancy,
+            sigma=allocentric_smoothing_sigma,
+            mode="nearest",
+        ),
+        "smoothed_direction_occupancy": gaussian_filter(
+            allocentric_direction_occupancy,
+            sigma=allocentric_smoothing_sigma,
+            mode="wrap",
+        ),
+    }
+
+
+def compute_maps(spike_times, session_maps):
+    center_x_cm = session_maps["trajectory_x_cm"]
+    center_y_cm = session_maps["trajectory_y_cm"]
+    theta_edges = session_maps["theta_edges"]
+    distance_edges = session_maps["distance_edges"]
+    x_edges = session_maps["x_edges"]
+    y_edges = session_maps["y_edges"]
+    spike_frame_counts = count_spikes_by_frame(
+        spike_times,
+        session_maps["frame_times"],
+    )
+
     egocentric_spike_map = compute_2d_map(
-        theta_grid,
-        theta_d_cm,
+        session_maps["theta_grid"],
+        session_maps["theta_d_cm"],
         theta_edges,
         distance_edges,
         spike_frame_counts,
     )
     egocentric_rate_map = compute_rate_map(
         egocentric_spike_map,
-        egocentric_occupancy,
+        session_maps["smoothed_egocentric_occupancy"],
         smoothing_sigma=egocentric_smoothing_sigma,
         smoothing_mode=("wrap", "nearest"),
     )
@@ -327,29 +380,16 @@ def compute_maps(unit_info):
         ]
     )
 
-    allocentric_direction_occupancy = np.histogram(
-        head_direction_deg % 360,
-        bins=theta_edges,
-        weights=frame_time_weights,
-    )[0]
     allocentric_direction_spikes = np.histogram(
-        head_direction_deg % 360,
+        session_maps["head_direction_deg"],
         bins=theta_edges,
         weights=spike_frame_counts,
     )[0]
     allocentric_tuning_curve = compute_rate_map(
         allocentric_direction_spikes,
-        allocentric_direction_occupancy,
+        session_maps["smoothed_direction_occupancy"],
         smoothing_sigma=allocentric_smoothing_sigma,
         smoothing_mode="wrap",
-    )
-
-    allocentric_occupancy = compute_2d_map(
-        center_x_cm,
-        center_y_cm,
-        x_edges,
-        y_edges,
-        frame_time_weights,
     )
     allocentric_spike_map = compute_2d_map(
         center_x_cm,
@@ -360,7 +400,7 @@ def compute_maps(unit_info):
     )
     allocentric_rate_map = compute_rate_map(
         allocentric_spike_map,
-        allocentric_occupancy,
+        session_maps["smoothed_allocentric_occupancy"],
         smoothing_sigma=allocentric_smoothing_sigma,
         smoothing_mode="nearest",
     )
@@ -370,302 +410,167 @@ def compute_maps(unit_info):
         "distance_edges": distance_edges,
         "x_edges": x_edges,
         "y_edges": y_edges,
-        "egocentric_occupancy": egocentric_occupancy,
+        "egocentric_occupancy": session_maps["egocentric_occupancy"],
         "egocentric_spike_map": egocentric_spike_map,
         "egocentric_rate_map": egocentric_rate_map,
         "egocentric_tuning_curve": egocentric_tuning_curve,
         "preferred_distance_cm": preferred_distance_cm,
-        "allocentric_occupancy": allocentric_occupancy,
+        "allocentric_occupancy": session_maps["allocentric_occupancy"],
         "allocentric_spike_map": allocentric_spike_map,
         "allocentric_rate_map": allocentric_rate_map,
         "allocentric_tuning_curve": allocentric_tuning_curve,
         "trajectory_x_cm": center_x_cm,
         "trajectory_y_cm": center_y_cm,
-        "spike_x_cm": spike_x_cm,
-        "spike_y_cm": spike_y_cm,
+        "spike_x_cm": np.repeat(center_x_cm, spike_frame_counts),
+        "spike_y_cm": np.repeat(center_y_cm, spike_frame_counts),
     }
 
 
-def plot_maps(maps, selected_unit_id):
-    figure = plt.figure(figsize=(30, 11), layout="constrained")
-    grid = figure.add_gridspec(2, 5)
+@dataclass(frozen=True)
+class MapPlot:
+    filename: str
+    kind: str
+    map_key: str = ""
+    title: str = ""
+    colorbar_label: str = ""
+    cmap: str = "viridis"
 
-    egocentric_time_axis = figure.add_subplot(grid[0, 0])
-    egocentric_spike_axis = figure.add_subplot(grid[0, 1])
-    egocentric_rate_axis = figure.add_subplot(grid[0, 2])
-    egocentric_polar_axis = figure.add_subplot(
-        grid[0, 3],
-        projection="polar",
-    )
-    egocentric_tuning_axis = figure.add_subplot(
-        grid[0, 4],
-        projection="polar",
-    )
-    allocentric_time_axis = figure.add_subplot(grid[1, 0])
-    allocentric_spike_axis = figure.add_subplot(grid[1, 1])
-    allocentric_rate_axis = figure.add_subplot(grid[1, 2])
-    trajectory_axis = figure.add_subplot(grid[1, 3])
-    allocentric_tuning_axis = figure.add_subplot(
-        grid[1, 4],
-        projection="polar",
-    )
 
-    plot_egocentric_heatmap(
-        egocentric_time_axis,
-        maps["distance_edges"],
-        maps["theta_edges"],
-        maps["egocentric_occupancy"],
-        "Egocentric time map",
-        "Seconds",
-        cmap="magma",
-    )
-    plot_egocentric_heatmap(
-        egocentric_spike_axis,
-        maps["distance_edges"],
-        maps["theta_edges"],
-        maps["egocentric_spike_map"],
-        "Egocentric spike map",
-        "Spikes",
-        cmap="magma",
-    )
-    plot_egocentric_heatmap(
-        egocentric_rate_axis,
-        maps["distance_edges"],
-        maps["theta_edges"],
-        maps["egocentric_rate_map"],
-        "Egocentric firing-rate map",
-        "Hz",
-    )
-    plot_egocentric_polar(
-        egocentric_polar_axis,
-        maps["theta_edges"],
-        maps["distance_edges"],
-        maps["egocentric_rate_map"],
-    )
-    plot_tuning_curve(
-        egocentric_tuning_axis,
-        maps["theta_edges"],
-        maps["egocentric_tuning_curve"],
-        f"Egocentric tuning ({maps['preferred_distance_cm']:.1f} cm)",
-    )
-
-    plot_allocentric_heatmap(
-        allocentric_time_axis,
-        maps["x_edges"],
-        maps["y_edges"],
-        maps["allocentric_occupancy"],
-        "Allocentric occupancy",
-        "Seconds",
-        cmap="magma",
-    )
-    plot_allocentric_heatmap(
-        allocentric_spike_axis,
-        maps["x_edges"],
-        maps["y_edges"],
-        maps["allocentric_spike_map"],
-        "Allocentric spike map",
-        "Spikes",
-        cmap="magma",
-    )
-    plot_allocentric_heatmap(
-        allocentric_rate_axis,
-        maps["x_edges"],
-        maps["y_edges"],
-        maps["allocentric_rate_map"],
-        "Allocentric firing-rate map",
-        "Hz",
-    )
-    plot_trajectory_spikes(
-        trajectory_axis,
-        maps["trajectory_x_cm"],
-        maps["trajectory_y_cm"],
-        maps["spike_x_cm"],
-        maps["spike_y_cm"],
-    )
-    plot_tuning_curve(
-        allocentric_tuning_axis,
-        maps["theta_edges"],
-        maps["allocentric_tuning_curve"],
+MAP_PLOTS = (
+    MapPlot(
+        "egocentric_time_map", "egocentric", "egocentric_occupancy",
+        "Egocentric time map", "Seconds", "magma",
+    ),
+    MapPlot(
+        "egocentric_spike_map", "egocentric", "egocentric_spike_map",
+        "Egocentric spike map", "Spikes", "magma",
+    ),
+    MapPlot(
+        "egocentric_rate_map", "egocentric", "egocentric_rate_map",
+        "Egocentric firing-rate map", "Hz",
+    ),
+    MapPlot("egocentric_rate_map_polar", "polar"),
+    MapPlot(
+        "egocentric_tuning_curve", "tuning", "egocentric_tuning_curve",
+        "Egocentric tuning ({preferred_distance_cm:.1f} cm)",
+    ),
+    MapPlot(
+        "allocentric_occupancy", "allocentric", "allocentric_occupancy",
+        "Allocentric occupancy", "Seconds", "magma",
+    ),
+    MapPlot(
+        "allocentric_spike_map", "allocentric", "allocentric_spike_map",
+        "Allocentric spike map", "Spikes", "magma",
+    ),
+    MapPlot(
+        "allocentric_rate_map", "allocentric", "allocentric_rate_map",
+        "Allocentric firing-rate map", "Hz",
+    ),
+    MapPlot("trajectory_spike_positions", "trajectory"),
+    MapPlot(
+        "allocentric_tuning_curve", "tuning", "allocentric_tuning_curve",
         "Allocentric HD tuning",
-    )
+    ),
+)
+PLOT_LAYOUTS = {
+    "egocentric": ((7, 5.5), None),
+    "allocentric": ((6.5, 6), None),
+    "polar": ((7, 6), "polar"),
+    "tuning": ((6, 6), "polar"),
+    "trajectory": ((6.5, 6), None),
+}
+FIGURE_FILE_TYPES = ("png", "svg")
 
-    figure.suptitle(
-        f"rec {recording_number}, Probe{probe_name}, unit {selected_unit_id}",
-        fontsize=16,
-    )
+
+def draw_map(axis, maps, plot):
+    if plot.kind in ("egocentric", "allocentric"):
+        if plot.kind == "egocentric":
+            plot_heatmap = plot_egocentric_heatmap
+            horizontal_edges = maps["distance_edges"]
+            vertical_edges = maps["theta_edges"]
+        else:
+            plot_heatmap = plot_allocentric_heatmap
+            horizontal_edges = maps["x_edges"]
+            vertical_edges = maps["y_edges"]
+        plot_heatmap(
+            axis, horizontal_edges, vertical_edges, maps[plot.map_key],
+            plot.title, plot.colorbar_label, cmap=plot.cmap,
+        )
+    elif plot.kind == "polar":
+        plot_egocentric_polar(
+            axis, maps["theta_edges"], maps["distance_edges"],
+            maps["egocentric_rate_map"],
+        )
+    elif plot.kind == "tuning":
+        plot_tuning_curve(
+            axis, maps["theta_edges"], maps[plot.map_key],
+            plot.title.format(**maps),
+        )
+    elif plot.kind == "trajectory":
+        plot_trajectory_spikes(
+            axis, maps["trajectory_x_cm"], maps["trajectory_y_cm"],
+            maps["spike_x_cm"], maps["spike_y_cm"],
+            x_limits=maps["x_edges"][[0, -1]],
+            y_limits=maps["y_edges"][[0, -1]],
+        )
+
+
+def plot_maps(maps, selected_unit_id):
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        figure = plt.figure(figsize=(30, 11), layout="constrained")
+        grid = figure.add_gridspec(2, 5)
+        for index, plot in enumerate(MAP_PLOTS):
+            _, projection = PLOT_LAYOUTS[plot.kind]
+            axis = figure.add_subplot(grid[divmod(index, 5)], projection=projection)
+            draw_map(axis, maps, plot)
+        figure.suptitle(
+            f"rec {recording_number}, Probe{probe_name}, unit {selected_unit_id}",
+            fontsize=16,
+        )
     return figure
 
 
+def prepare_output_directories():
+    plot_types = ("spatial_maps", *(plot.filename for plot in MAP_PLOTS))
+    for plot_type in plot_types:
+        for file_type in FIGURE_FILE_TYPES:
+            (save_root_directory / plot_type / file_type).mkdir(
+                parents=True, exist_ok=True,
+            )
+
+
 def save_figure(figure, plot_type, unit_id):
-    for file_type in ["png", "svg"]:
+    for file_type in FIGURE_FILE_TYPES:
         plot_directory = save_root_directory / plot_type / file_type
-        plot_directory.mkdir(parents=True, exist_ok=True)
         figure.savefig(
             plot_directory / f"{unit_id}.{file_type}",
             dpi=200,
             bbox_inches="tight",
+            facecolor="white",
+            transparent=False,
         )
 
 
 def save_individual_plots(maps, unit_id):
-    egocentric_plots = [
-        (
-            "egocentric_time_map",
-            "egocentric_occupancy",
-            "Egocentric time map",
-            "Seconds",
-            "magma",
-        ),
-        (
-            "egocentric_spike_map",
-            "egocentric_spike_map",
-            "Egocentric spike map",
-            "Spikes",
-            "magma",
-        ),
-        (
-            "egocentric_rate_map",
-            "egocentric_rate_map",
-            "Egocentric firing-rate map",
-            "Hz",
-            "viridis",
-        ),
-    ]
-    for filename, map_key, title, colorbar_label, cmap in egocentric_plots:
-        figure, axis = plt.subplots(
-            figsize=(7, 5.5),
-            layout="constrained",
-        )
-        plot_egocentric_heatmap(
-            axis,
-            maps["distance_edges"],
-            maps["theta_edges"],
-            maps[map_key],
-            title,
-            colorbar_label,
-            cmap=cmap,
-        )
-        save_figure(figure, filename, unit_id)
-        plt.close(figure)
-
-    polar_figure, polar_axis = plt.subplots(
-        figsize=(7, 6),
-        layout="constrained",
-        subplot_kw={"projection": "polar"},
-    )
-    plot_egocentric_polar(
-        polar_axis,
-        maps["theta_edges"],
-        maps["distance_edges"],
-        maps["egocentric_rate_map"],
-    )
-    save_figure(
-        polar_figure,
-        "egocentric_rate_map_polar",
-        unit_id,
-    )
-    plt.close(polar_figure)
-
-    tuning_curve_plots = [
-        (
-            "egocentric_tuning_curve",
-            "egocentric_tuning_curve",
-            f"Egocentric tuning ({maps['preferred_distance_cm']:.1f} cm)",
-        ),
-        (
-            "allocentric_tuning_curve",
-            "allocentric_tuning_curve",
-            "Allocentric HD tuning",
-        ),
-    ]
-    for filename, map_key, title in tuning_curve_plots:
-        figure, axis = plt.subplots(
-            figsize=(6, 6),
-            layout="constrained",
-            subplot_kw={"projection": "polar"},
-        )
-        plot_tuning_curve(
-            axis,
-            maps["theta_edges"],
-            maps[map_key],
-            title,
-        )
-        save_figure(figure, filename, unit_id)
-        plt.close(figure)
-
-    allocentric_plots = [
-        (
-            "allocentric_occupancy",
-            "allocentric_occupancy",
-            "Allocentric occupancy",
-            "Seconds",
-            "magma",
-        ),
-        (
-            "allocentric_spike_map",
-            "allocentric_spike_map",
-            "Allocentric spike map",
-            "Spikes",
-            "magma",
-        ),
-        (
-            "allocentric_rate_map",
-            "allocentric_rate_map",
-            "Allocentric firing-rate map",
-            "Hz",
-            "viridis",
-        ),
-    ]
-    for filename, map_key, title, colorbar_label, cmap in allocentric_plots:
-        figure, axis = plt.subplots(
-            figsize=(6.5, 6),
-            layout="constrained",
-        )
-        plot_allocentric_heatmap(
-            axis,
-            maps["x_edges"],
-            maps["y_edges"],
-            maps[map_key],
-            title,
-            colorbar_label,
-            cmap=cmap,
-        )
-        save_figure(figure, filename, unit_id)
-        plt.close(figure)
-
-    trajectory_figure, trajectory_axis = plt.subplots(
-        figsize=(6.5, 6),
-        layout="constrained",
-    )
-    plot_trajectory_spikes(
-        trajectory_axis,
-        maps["trajectory_x_cm"],
-        maps["trajectory_y_cm"],
-        maps["spike_x_cm"],
-        maps["spike_y_cm"],
-    )
-    save_figure(
-        trajectory_figure,
-        "trajectory_spike_positions",
-        unit_id,
-    )
-    plt.close(trajectory_figure)
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        for plot in MAP_PLOTS:
+            figsize, projection = PLOT_LAYOUTS[plot.kind]
+            figure, axis = plt.subplots(
+                figsize=figsize,
+                layout="constrained",
+                subplot_kw={"projection": projection},
+            )
+            draw_map(axis, maps, plot)
+            save_figure(figure, plot.filename, unit_id)
+            plt.close(figure)
 
 
 def process_unit(selected_unit_id):
-    pose, pose_times, spike_times, spike_clusters = worker_data
-    unit_info = {
-        "unit_id": selected_unit_id,
-        "x": pose["center_x"].to_numpy(),
-        "y": pose["center_y"].to_numpy(),
-        "direction": pose["hd_deg"].to_numpy(),
-        "frame_times": pose_times,
-        "spike_times": spike_times[
-            spike_clusters == selected_unit_id
-        ],
-    }
-
-    maps = compute_maps(unit_info)
+    session_maps, spike_times, spike_clusters = worker_data
+    maps = compute_maps(
+        spike_times[spike_clusters == selected_unit_id],
+        session_maps,
+    )
     figure = plot_maps(maps, selected_unit_id)
     save_figure(figure, "spatial_maps", selected_unit_id)
     plt.close(figure)
@@ -685,7 +590,9 @@ def main():
     ) = load_data()
     print("good unit ids:", good_unit_ids)
 
-    worker_data = pose, pose_times, spike_times, spike_clusters
+    session_maps = prepare_session_maps(pose, pose_times)
+    prepare_output_directories()
+    worker_data = session_maps, spike_times, spike_clusters
     with ProcessPoolExecutor(
         mp_context=get_context("fork"),
     ) as executor:

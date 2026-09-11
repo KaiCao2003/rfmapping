@@ -12,6 +12,7 @@ LIGHT_PLOT_STYLE = {
     "figure.facecolor": "white",
     "axes.facecolor": "white",
     "savefig.facecolor": "white",
+    "savefig.transparent": False,
     "text.color": "black",
     "axes.labelcolor": "black",
     "axes.edgecolor": "black",
@@ -953,6 +954,9 @@ def plot_trajectory_spikes(
     trajectory_y_cm,
     spike_x_cm,
     spike_y_cm,
+    *,
+    x_limits,
+    y_limits,
 ):
     axis.plot(
         trajectory_x_cm,
@@ -970,8 +974,8 @@ def plot_trajectory_spikes(
         linewidths=0,
         label="Spikes",
     )
-    axis.set_xlim(0, 41) #rig is 41cm to 41cm
-    axis.set_ylim(0, 41)
+    axis.set_xlim(x_limits)
+    axis.set_ylim(y_limits)
     axis.set_xlabel("x (cm)")
     axis.set_ylabel("y (cm)")
     axis.set_aspect("equal")
