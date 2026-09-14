@@ -462,6 +462,39 @@ def save_unit(maps, unit_id):
     )
 
 
+def save_egocentric_rfmap(session_maps, metadata):
+    """Save the plotted rate matrices with a singleton time axis."""
+    unit_ids = metadata["unit_ids"]
+    if not unit_ids:
+        return
+    rate_maps = []
+    for unit_id in unit_ids:
+        with np.load(
+            save_root_directory / "units" / f"{unit_id}.npz", allow_pickle=False,
+        ) as archive:
+            rate_maps.append(archive["egocentric_rate_map"])
+    values = np.stack(rate_maps)[..., None]
+    distance_edges = session_maps["distance_edges"]
+    theta_edges = session_maps["theta_edges"]
+    payload = {
+        "unitsSpikeCounts": np.where(np.isnan(values), None, values).tolist(),
+        "unitsSpikeCountsSize": list(values.shape),
+        "unitPool": unit_ids,
+        "xPositions": ((distance_edges[:-1] + distance_edges[1:]) / 2).tolist(),
+        "yPositions": ((theta_edges[:-1] + theta_edges[1:]) / 2).tolist(),
+        "xBinEdges": distance_edges.tolist(),
+        "yBinEdges": theta_edges.tolist(),
+        "xUnits": "cm",
+        "yUnits": "deg",
+        "timeBinEdges": metadata["source"]["selected_interval_s"],
+        "responseUnits": "Hz",
+        "responseNormalization": "already_normalized",
+    }
+    (save_root_directory / "egocentric_rate_map.rfmap").write_text(
+        json.dumps(payload, allow_nan=False) + "\n", encoding="utf-8",
+    )
+
+
 def process_unit(selected_unit_id):
     session_maps, spike_times, spike_clusters = worker_data
     maps = compute_maps(
@@ -514,6 +547,7 @@ def main(argv=None):
     ) as executor:
         for unit_id in executor.map(process_unit, unit_ids):
             print(f"saved unit {unit_id}: {save_root_directory}")
+    save_egocentric_rfmap(session_maps, metadata)
     # Publish the manifest last, so interrupted analysis cannot look complete.
     manifest_path = save_root_directory / "metadata.json.tmp"
     manifest_path.write_text(

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
+from Utils.rfmap import load_rf_maps
 
 import spatial_cell_analysis as spatial
 import spatial_cell_plotting as plotting
@@ -226,6 +227,45 @@ def test_saved_results_reproduce_maps_without_raw_inputs(session_maps, monkeypat
         assert not set(archive.files).intersection(spatial.SESSION_KEYS)
 
 
+def test_rfmap_export_preserves_plotted_matrices_and_coordinates(tmp_path, monkeypatch):
+    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
+    (tmp_path / "units").mkdir()
+    expected = np.array([
+        [[0.125, np.nan], [0.0, 19.75], [3.5, 0.01]],
+        [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+    ])
+    for unit_id, values in zip([9, 7], expected):
+        np.savez(tmp_path / "units" / f"{unit_id}.npz", egocentric_rate_map=values)
+    session = {"distance_edges": np.array([0, 4, 10]), "theta_edges": np.array([0, 90, 180, 360])}
+    metadata = {"unit_ids": [9, 7], "source": {"selected_interval_s": [5.0, 8.5]}}
+    spatial.save_egocentric_rfmap(session, metadata)
+    path = tmp_path / "egocentric_rate_map.rfmap"
+    payload = json.loads(path.read_text())
+    assert payload["unitsSpikeCounts"][0][0][1] == [None]
+    assert payload["responseUnits"] == "Hz"
+    assert payload["xBinEdges"] == [0, 4, 10]
+    assert payload["yBinEdges"] == [0, 90, 180, 360]
+    for options in ({}, {"unit_firing_rate": False}):
+        maps = load_rf_maps(path, **options)
+        assert maps.shape == (2, 3, 2, 1)
+        assert maps.unit_ids == [9, 7]
+        np.testing.assert_array_equal(maps.to_2d_array(), expected)
+        np.testing.assert_array_equal(maps[0].x_positions, [2, 7])
+        np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 270])
+        np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
+
+    # Ordinary count files still use their real occupancy denominator.
+    payload.pop("responseUnits")
+    payload.pop("responseNormalization")
+    payload["unitsSpikeCounts"] = np.nan_to_num(expected[..., None]).tolist()
+    payload["occupancyTimeSec"] = [[2, 4], [5, 10], [20, 40]]
+    path.write_text(json.dumps(payload))
+    np.testing.assert_array_equal(
+        load_rf_maps(path).to_2d_array(),
+        np.nan_to_num(expected) / np.array(payload["occupancyTimeSec"]),
+    )
+
+
 def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs, tmp_path):
     result_path = tmp_path / "results"
     label_path = recording_inputs / "kilosort/ProbeA/kilosort_10/cluster_KSLabel.tsv"
@@ -242,7 +282,10 @@ def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs,
     ]
     subprocess.run(analysis_command, check=True, env=environment, capture_output=True)
     assert {str(path.relative_to(result_path)) for path in result_path.rglob("*")
-            if path.is_file()} == {"metadata.json", "session.npz", "units/7.npz", "units/9.npz"}
+            if path.is_file()} == {
+                "metadata.json", "session.npz", "units/7.npz", "units/9.npz",
+                "egocentric_rate_map.rfmap",
+            }
     metadata, shared = plotting.load_results(result_path)
     assert metadata["date"] == "260827"
     assert metadata["recording_number"] == 10
@@ -257,6 +300,8 @@ def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs,
     loaded = plotting.load_unit(result_path, shared, 7)
     for key, value in expected.items():
         np.testing.assert_equal(loaded[key], value)
+    exported = load_rf_maps(result_path / "egocentric_rate_map.rfmap")
+    np.testing.assert_array_equal(exported[0].to_2d_array(), loaded["egocentric_rate_map"])
 
     selected_path = tmp_path / "selected"
     selected_command = analysis_command.copy()
@@ -267,6 +312,7 @@ def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs,
     )
     selected_metadata, selected_shared = plotting.load_results(selected_path)
     assert selected_metadata["unit_ids"] == [9]
+    assert load_rf_maps(selected_path / "egocentric_rate_map.rfmap").unit_ids == [9]
     assert {path.name for path in (selected_path / "units").iterdir()} == {"9.npz"}
     selected_unit = plotting.load_unit(selected_path, selected_shared, 9)
     assert selected_unit["spike_frame_counts"].sum() == 1

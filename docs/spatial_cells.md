@@ -76,12 +76,17 @@ angles toward the animal's left. The maximum saved boundary distance remains
 `rig_size_cm / 2 * sqrt(2)`; rays beyond that limit do not enter the histograms.
 These choices are preserved from `spatial_cell.py`.
 
-Egocentric boundary data is fully represented in these files. It is not
-exported as `.rfmap`: the current regular viewer schema requires trial counts
-and a time axis, while the free-moving HDF5 viewer supports its own Square/Bar
-schemas. A boundary `.rfmap` requires a dedicated format and matching GUI
-support in `../rfmapping_gui`; relabeling firing rates as trial counts would
-change their scientific meaning.
+`egocentric_rate_map.rfmap` stores the final plotted matrices using the existing
+RF JSON layout `(unit, angle, distance, 1)`. It preserves unit order, coordinate
+centers and bin edges, with distance in cm and angle in degrees. The single time
+bin spans the selected analysis interval. `responseUnits: "Hz"` identifies the
+already computed values; NaNs are stored as JSON `null`.
+
+`Utils.rfmap.load_rf_maps()` reads these values unchanged, without occupancy
+normalization or smoothing (also with `unit_firing_rate=False`). For example,
+`load_rf_maps(path)[0].to_2d_array()` returns the exact first unit's plotted
+matrix. A separate GUI reader must support the `Hz` marker to open these files;
+the legacy count-only GUI reader does not yet do so.
 
 ## Verification
 

@@ -75,12 +75,14 @@ def _spatial_axis(value: Any, label: str, expected_length: int) -> list[Any]:
     return _flat_list(value, label)
 
 
-def _counts_are_numeric(value: Any) -> bool:
+def _counts_are_numeric(value: Any, *, allow_null: bool = False) -> bool:
     if isinstance(value, list):
         for child in value:
-            if not _counts_are_numeric(child):
+            if not _counts_are_numeric(child, allow_null=allow_null):
                 return False
         return True
+    if value is None:
+        return allow_null
     return isinstance(value, Real) and not isinstance(value, bool)
 
 
@@ -1487,7 +1489,7 @@ def load_rf_maps(
     *,
     unit_firing_rate: bool = True,
 ) -> RFMapList:
-    """Load RF maps as ``count / occupancyTimeSec`` or raw spike counts."""
+    """Load counts with optional occupancy normalization, or saved Hz values unchanged."""
 
     source_path = Path(path)
     use_firing_rate = _bool_value(unit_firing_rate, "unit_firing_rate")
@@ -1516,20 +1518,27 @@ def load_rf_maps(
         raise ValueError("unitsSpikeCountsSize values must be positive")
     n_units, n_y, n_x, n_time_bins = shape
 
-    if not _counts_are_numeric(raw["unitsSpikeCounts"]):
+    stored_rates = raw.get("responseUnits") == "Hz"
+    if not _counts_are_numeric(raw["unitsSpikeCounts"], allow_null=stored_rates):
         raise ValueError(
             "unitsSpikeCounts contains a value that is not numeric "
             "(JSON numbers only; bool is invalid)"
         )
     try:
-        spike_counts = np.asarray(raw["unitsSpikeCounts"])
+        spike_counts = np.asarray(
+            raw["unitsSpikeCounts"], dtype=float if stored_rates else None,
+        )
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"Unable to parse unitsSpikeCounts: {exc}") from exc
     if spike_counts.shape != shape:
         raise ValueError(
             f"unitsSpikeCounts has shape {spike_counts.shape}, expected {shape}"
         )
-    if not np.all(np.isfinite(spike_counts)) or np.any(spike_counts < 0):
+    if stored_rates:
+        # JSON null preserves unoccupied bins as NaN in a precomputed rate map.
+        if np.any(np.isinf(spike_counts)) or np.any(spike_counts < 0):
+            raise ValueError("Saved Hz values must be non-negative numbers or null")
+    elif not np.all(np.isfinite(spike_counts)) or np.any(spike_counts < 0):
         raise ValueError("unitsSpikeCounts values must be finite and non-negative")
     spike_counts.setflags(write=False)
 
@@ -1585,7 +1594,7 @@ def load_rf_maps(
                 "stimulusPresentationCounts is zero where spike counts are nonzero"
             )
 
-    if use_firing_rate:
+    if use_firing_rate and not stored_rates:
         occupancy_time_s = np.asarray(
             raw["occupancyTimeSec"],
             dtype=np.float64,
