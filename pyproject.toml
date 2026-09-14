@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "rfmapping-analysis"
 version = "0.1.0"
 description = "RF mapping analysis models, detection, and raw-trial reconstruction"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "numpy>=2,<3",
   "scipy>=1.14,<2",
@@ -20,6 +20,7 @@ analysis = [
   "pandas>=2.2,<4",
   "pynapple>=0.9,<1",
   "scikit-learn>=1.5,<2",
+  "xarray>=2026.4,<2027",
 ]
 
 [tool.setuptools.packages.find]

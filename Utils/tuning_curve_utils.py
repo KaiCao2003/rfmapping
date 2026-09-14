@@ -6,128 +6,71 @@ import pandas as pd
 import pynapple as nap
 from tqdm import tqdm
 
+from Utils.json_tools import read_formatted_json
+
 
 HD_RAW_BIN_COUNT = 180
 RAYLEIGH_ALPHA = 0.05
 SHUFFLE_ALPHA = 0.01
 
 
-def get_exposure_timestamps(
-    session_info: dict,
-    camera_input_channel: int,
-    camera_ttl_threshold: int | float,
-    *,
-    camera_ttl_active_high: bool = True,
-) -> tuple[np.ndarray, float, dict]:
-    continuous_folder = (
+def _get_adc_time_origin(session_info: dict) -> float:
+    timestamp_path = (
         Path(session_info["base_path"])
         / session_info["record_nodes"]
         / session_info["experiment_id"]
         / session_info["recording_name"]
         / "continuous"
+        / session_info["continuous_ADC_folder"]
+        / "timestamps.npy"
     )
-    ADC_name = session_info["continuous_ADC_folder"]
-    ADC_input_channel_number = int(session_info["ADC_input_channel"])
-    ADC_folder = continuous_folder / ADC_name
-    timestamp_path = ADC_folder / "timestamps.npy"
-    continuous_path = ADC_folder / "continuous.dat"
+    return float(np.load(timestamp_path, mmap_mode="r")[0])
 
-    ADC_continuous_timestamp_data_raw = np.load(timestamp_path, mmap_mode="r")
-    assert ADC_continuous_timestamp_data_raw.ndim == 1
-    num_ADC_samples = len(ADC_continuous_timestamp_data_raw)
-    timestamp_dtype = ADC_continuous_timestamp_data_raw.dtype
-    timestamp_offset = int(ADC_continuous_timestamp_data_raw.offset)
-    ADC_time_origin_s = float(ADC_continuous_timestamp_data_raw[0])
-    ADC_continuous_timestamp_data_raw._mmap.close()
-    del ADC_continuous_timestamp_data_raw
 
-    signal_dtype = np.dtype(np.int16)
-    assert 0 <= camera_input_channel < ADC_input_channel_number
-    assert continuous_path.stat().st_size == (
-        num_ADC_samples * ADC_input_channel_number * signal_dtype.itemsize
-    ), "ADC continuous.dat size does not match timestamps/channels."
-
-    rise_time_parts = []
-    fall_time_parts = []
-    previous_active = False
-    first_rise_index = None
-    chunk_size = 1_000_000
-
-    for sample_start in range(0, num_ADC_samples, chunk_size):
-        sample_count = min(chunk_size, num_ADC_samples - sample_start)
-        signal_map = np.memmap(
-            continuous_path,
-            dtype=signal_dtype,
-            mode="r",
-            offset=sample_start * ADC_input_channel_number * signal_dtype.itemsize,
-            shape=(sample_count, ADC_input_channel_number),
+def get_exposure_timestamps(
+    session_info: dict,
+    data_dir: str | Path,
+) -> tuple[np.ndarray, float, dict]:
+    """Read saved camera times in seconds relative to the ADC origin."""
+    data_dir = Path(data_dir)
+    source_path = data_dir / "camera_frame_times.npy"
+    if source_path.is_file():
+        ADC_time_origin_s = _get_adc_time_origin(session_info)
+        exposure_timestamps = np.load(source_path) - ADC_time_origin_s
+        timestamp_reference = "saved_camera_frame_times"
+    else:
+        source_path = data_dir / "sync_data.json"
+        sync_data = read_formatted_json(source_path)
+        if "exposure_sampling_number_list_mid" not in sync_data:
+            raise KeyError(
+                f"No saved camera timestamps in {data_dir}. Generate "
+                "camera_frame_times.npy or sync_data.json "
+                "['exposure_sampling_number_list_mid'] upstream before analysis."
+            )
+        exposure_timestamps = np.asarray(
+            sync_data["exposure_sampling_number_list_mid"], dtype=float
         )
-        time_map = np.memmap(
-            timestamp_path,
-            dtype=timestamp_dtype,
-            mode="r",
-            offset=timestamp_offset + sample_start * timestamp_dtype.itemsize,
-            shape=sample_count,
-        )
+        if exposure_timestamps.size < 2:
+            raise ValueError(f"No complete camera timing data in {source_path}.")
+        if "exposure_sampling_number_list_mid_raw" in sync_data:
+            ADC_time_origin_s = float(
+                sync_data["exposure_sampling_number_list_mid_raw"][0]
+                - exposure_timestamps[0]
+            )
+        else:
+            ADC_time_origin_s = _get_adc_time_origin(session_info)
+        timestamp_reference = "saved_exposure_midpoint"
 
-        camera_data = signal_map[:, camera_input_channel]
-        camera_active = (
-            camera_data >= camera_ttl_threshold
-            if camera_ttl_active_high
-            else camera_data < camera_ttl_threshold
-        )
-        state = np.empty(camera_active.size + 1, dtype=bool)
-        state[0] = previous_active
-        state[1:] = camera_active
-        changes = np.flatnonzero(state[1:] != state[:-1])
-
-        if changes.size:
-            new_state = camera_active[changes]
-            rise_local = changes[new_state]
-            fall_local = changes[~new_state]
-            if rise_local.size:
-                if first_rise_index is None:
-                    first_rise_index = sample_start + int(rise_local[0])
-                rise_time_parts.append(np.asarray(time_map[rise_local], dtype=float))
-            if fall_local.size:
-                fall_time_parts.append(np.asarray(time_map[fall_local], dtype=float))
-
-        previous_active = bool(camera_active[-1])
-        del camera_data, camera_active, state
-        time_map._mmap.close()
-        signal_map._mmap.close()
-
-    assert not previous_active, "Motive TTL pulse reaches the end of the ADC stream."
-    assert first_rise_index is not None and first_rise_index > 0, (
-        "Motive TTL pulse starts at the ADC boundary."
-    )
-    assert rise_time_parts and fall_time_parts, (
-        "No complete Motive TTL pulse was detected."
-    )
-    rise_times = np.concatenate(rise_time_parts)
-    fall_times = np.concatenate(fall_time_parts)
-    assert rise_times.size == fall_times.size and np.all(rise_times < fall_times), (
-        "Could not pair Motive TTL rising/falling edges."
-    )
-
-    exposure_timestamps = (rise_times + fall_times) / 2 - ADC_time_origin_s
     exposure_periods = np.diff(exposure_timestamps)
-    assert exposure_periods.size, "At least two Motive TTL pulses are required."
     median_period_s = float(np.median(exposure_periods))
-    pulse_steps = np.rint(exposure_periods / median_period_s).astype(int)
-    assert np.all(pulse_steps == 1), (
-        "Internal Motive TTL pulse(s) are missing or duplicated."
-    )
-
     ttl_qc = {
         "ttl_pulse_count": int(len(exposure_timestamps)),
         "first_exposure_s": float(exposure_timestamps[0]),
         "last_exposure_s": float(exposure_timestamps[-1]),
         "median_period_s": median_period_s,
         "measured_rate_hz": float(1 / np.mean(exposure_periods)),
-        "camera_input_channel": int(camera_input_channel),
-        "camera_ttl_threshold": float(camera_ttl_threshold),
-        "camera_ttl_active_high": bool(camera_ttl_active_high),
+        "source_path": str(source_path),
+        "timestamp_reference": timestamp_reference,
     }
     return exposure_timestamps, ADC_time_origin_s, ttl_qc
 
@@ -191,7 +134,6 @@ def tuning_curve(
     base_dir,
     kilosort_dir,
     probe_name,
-    session_info,
     interval_pairs,
     HD_tsd,
     adc_time_origin_s,
@@ -218,19 +160,6 @@ def tuning_curve(
 
     base_dir = Path(base_dir)
     kilosort_dir = Path(kilosort_dir)
-    continuous_folder = (
-        Path(session_info["base_path"])
-        / session_info["record_nodes"]
-        / session_info["experiment_id"]
-        / session_info["recording_name"]
-        / "continuous"
-    )
-    probe_continuous_timestamps_dir = (
-        continuous_folder
-        / session_info[f"continuous_probe_{probe_name}_folder"]
-        / "timestamps.npy"
-    )
-
     cluster_KSLabel = pd.read_csv(kilosort_dir / "cluster_KSLabel.tsv", sep="\t")
     good_unit_ids = (
         cluster_KSLabel.loc[
@@ -241,28 +170,20 @@ def tuning_curve(
         .to_numpy()
     )
 
-    spike_samples = np.load(kilosort_dir / "spike_times.npy", mmap_mode="r").reshape(-1)
+    spike_times = np.load(
+        base_dir / "data" / f"probe{probe_name}" / "adc_spike_time.npy",
+        mmap_mode="r",
+    ).reshape(-1)
     spike_clusters = np.load(
         kilosort_dir / "spike_clusters.npy", mmap_mode="r"
     ).reshape(-1)
-    probe_continuous_timestamps = np.load(
-        probe_continuous_timestamps_dir, mmap_mode="r"
-    )
-    assert spike_samples.shape == spike_clusters.shape
+    assert spike_times.shape == spike_clusters.shape
 
     good_spike_mask = np.isin(spike_clusters, good_unit_ids)
-    good_spike_samples = np.asarray(spike_samples[good_spike_mask], dtype=np.int64)
+    good_spike_times = np.asarray(spike_times[good_spike_mask], dtype=float)
+    good_spike_times -= float(adc_time_origin_s)
     good_spike_clusters = np.asarray(spike_clusters[good_spike_mask], dtype=np.int64)
-    del good_spike_mask, spike_samples, spike_clusters
-    assert not good_spike_samples.size or (
-        good_spike_samples.min() >= 0
-        and good_spike_samples.max() < len(probe_continuous_timestamps)
-    ), "Kilosort spike sample is outside probe timestamps."
-
-    good_spike_times = np.asarray(
-        probe_continuous_timestamps[good_spike_samples], dtype=float
-    ) - float(adc_time_origin_s)
-    del good_spike_samples, probe_continuous_timestamps
+    del good_spike_mask, spike_times, spike_clusters
     cluster_order = np.argsort(good_spike_clusters, kind="stable")
     sorted_clusters = good_spike_clusters[cluster_order]
     sorted_spike_times = good_spike_times[cluster_order]
@@ -395,6 +316,9 @@ def tuning_curve(
     with tqdm(total=len(unit_ids), desc="Classifying HD cells", unit="unit") as pbar:
         for unit_index, unit_id in enumerate(unit_ids):
             unit_rates = firing_rates[unit_index]
+            firing_rate_hz.append(
+                [float(value) if np.isfinite(value) else None for value in unit_rates]
+            )
             valid_rates = np.isfinite(unit_rates)
             rate_sum = float(np.sum(unit_rates[valid_rates]))
             rate_mvl = np.nan
@@ -412,6 +336,12 @@ def tuning_curve(
                         1.0,
                     )
                 )
+
+            if not np.isfinite(rate_mvl):
+                for values in unit_data.values():
+                    values.append(None)
+                pbar.update(1)
+                continue
 
             unit_spikes = tsgroup[int(unit_id)].restrict(time_support)
             spike_angles = unit_spikes.value_from(HD_tsd).values
@@ -472,9 +402,6 @@ def tuning_curve(
                     else 0
                 )
 
-            firing_rate_hz.append(
-                [float(value) if np.isfinite(value) else None for value in unit_rates]
-            )
             unit_data["hd_class"].append(hd_class)
             unit_data["rate_mvl"].append(_json_float(rate_mvl))
             unit_data["spike_angle_mrl"].append(_json_float(spike_angle_mrl))
@@ -491,7 +418,7 @@ def tuning_curve(
         "kilosort_dir": str(kilosort_dir),
         "timebase": "open_ephys_adc_t0_relative_seconds",
         "adc_time_origin_raw_s": float(adc_time_origin_s),
-        "timestamp_reference": "motive_exposure_ttl_midpoint",
+        "timestamp_reference": "saved_camera_timestamps",
         "angle_convention_note": (
             "head_direction_deg must be calibrated to GUI convention: 0 degrees up, "
             "positive counter-clockwise. This notebook only applies modulo 360."

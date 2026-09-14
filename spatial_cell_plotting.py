@@ -1,4 +1,5 @@
 """Render spatial-cell results without loading raw recording data."""
+
 import argparse
 import json
 from dataclasses import dataclass
@@ -10,8 +11,6 @@ from Utils.plotting import (
     LIGHT_PLOT_STYLE, plot_allocentric_heatmap, plot_egocentric_heatmap,
     plot_egocentric_polar, plot_trajectory_spikes, plot_tuning_curve,
 )
-
-save_root_directory = Path("plots")
 
 
 @dataclass(frozen=True)
@@ -112,24 +111,26 @@ def plot_maps(maps, selected_unit_id, metadata):
             axis = figure.add_subplot(grid[divmod(index, 5)], projection=projection)
             draw_map(axis, maps, plot)
         figure.suptitle(
-            f"rec {metadata['recording_number']}, Probe{metadata['probe_name']}, unit {selected_unit_id}",
+            f"{metadata['date']}, rec {metadata['recording_number']}, "
+            f"Probe{metadata['probe_name']}, {metadata['phase_key']}, "
+            f"unit {selected_unit_id}",
             fontsize=16,
         )
     return figure
 
 
-def prepare_output_directories():
+def prepare_output_directories(output_directory):
     plot_types = ("spatial_maps", *(plot.filename for plot in MAP_PLOTS))
     for plot_type in plot_types:
         for file_type in FIGURE_FILE_TYPES:
-            (save_root_directory / plot_type / file_type).mkdir(
+            (output_directory / plot_type / file_type).mkdir(
                 parents=True, exist_ok=True,
             )
 
 
-def save_figure(figure, plot_type, unit_id):
+def save_figure(figure, plot_type, unit_id, output_directory):
     for file_type in FIGURE_FILE_TYPES:
-        plot_directory = save_root_directory / plot_type / file_type
+        plot_directory = output_directory / plot_type / file_type
         figure.savefig(
             plot_directory / f"{unit_id}.{file_type}",
             dpi=200,
@@ -139,7 +140,7 @@ def save_figure(figure, plot_type, unit_id):
         )
 
 
-def save_individual_plots(maps, unit_id):
+def save_individual_plots(maps, unit_id, output_directory):
     with plt.rc_context(LIGHT_PLOT_STYLE):
         for plot in MAP_PLOTS:
             figsize, projection = PLOT_LAYOUTS[plot.kind]
@@ -149,12 +150,20 @@ def save_individual_plots(maps, unit_id):
                 subplot_kw={"projection": projection},
             )
             draw_map(axis, maps, plot)
-            save_figure(figure, plot.filename, unit_id)
-            plt.close(figure)
+            try:
+                save_figure(figure, plot.filename, unit_id, output_directory)
+            finally:
+                plt.close(figure)
 
 
 def load_results(result_directory):
-    metadata = json.loads((result_directory / "metadata.json").read_text())
+    result_directory = Path(result_directory)
+    manifest_path = result_directory / "metadata.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"No completed spatial analysis in {result_directory}: metadata.json is missing"
+        )
+    metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (metadata["schema_name"], metadata["schema_version"]) != (
         "rfmapping-spatial-cells", 1,
     ):
@@ -165,7 +174,8 @@ def load_results(result_directory):
 
 
 def load_unit(result_directory, session, unit_id):
-    with np.load(result_directory / "units" / f"{unit_id}.npz", allow_pickle=False) as archive:
+    unit_path = Path(result_directory) / "units" / f"{unit_id}.npz"
+    with np.load(unit_path, allow_pickle=False) as archive:
         maps = {**session, **dict(archive)}
     counts = maps["spike_frame_counts"]
     maps["spike_x_cm"] = np.repeat(maps["trajectory_x_cm"], counts)
@@ -173,27 +183,33 @@ def load_unit(result_directory, session, unit_id):
     return maps
 
 
-def main():
-    global save_root_directory
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--units", type=int, nargs="+")
-    args = parser.parse_args()
-    metadata, session = load_results(args.results)
-    unit_ids = metadata["unit_ids"] if args.units is None else args.units
+    args = parser.parse_args(argv)
+    result_directory = args.results.expanduser().resolve()
+    metadata, session = load_results(result_directory)
+    unit_ids = (
+        metadata["unit_ids"] if args.units is None else list(dict.fromkeys(args.units))
+    )
     unknown = set(unit_ids) - set(metadata["unit_ids"])
     if unknown:
         parser.error(f"Units absent from results: {sorted(unknown)}")
-    save_root_directory = args.output or args.results / "plots"
-    prepare_output_directories()
+    output_directory = (
+        args.output.expanduser().resolve() if args.output else result_directory / "plots"
+    )
+    prepare_output_directories(output_directory)
     for unit_id in unit_ids:
-        maps = load_unit(args.results, session, unit_id)
+        maps = load_unit(result_directory, session, unit_id)
         figure = plot_maps(maps, unit_id, metadata)
-        save_figure(figure, "spatial_maps", unit_id)
-        plt.close(figure)
-        save_individual_plots(maps, unit_id)
-        print(f"plotted unit {unit_id}: {save_root_directory}")
+        try:
+            save_figure(figure, "spatial_maps", unit_id, output_directory)
+        finally:
+            plt.close(figure)
+        save_individual_plots(maps, unit_id, output_directory)
+        print(f"plotted unit {unit_id}: {output_directory}")
 
 
 if __name__ == "__main__":

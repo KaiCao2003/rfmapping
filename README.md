@@ -9,6 +9,15 @@ GLM notebooks, scripts, reports, and their tests live in the sibling
 [`../glm`](../glm/README.md) directory. Shared timing, loading, and geometry
 helpers remain here and are copied into that directory when needed.
 
+## Spatial-cell analysis and plotting
+
+`spatial_cell_analysis.py` saves numeric results as shared/per-unit NPZ files
+with a JSON manifest. `spatial_cell_plotting.py` renders those saved results
+without loading the original recording or rerunning analysis. The former
+combined script and the two spatial-cell notebooks are replaced by these
+scripts. See [docs/spatial_cells.md](docs/spatial_cells.md) for commands, the
+result format, and boundary-map viewer compatibility.
+
 ## Python RFMap API
 
 `Utils/rfmap.py` loads one pooled RF source into an ordered `RFMapList`

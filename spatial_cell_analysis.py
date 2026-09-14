@@ -1,6 +1,8 @@
-from concurrent.futures import ProcessPoolExecutor
+"""Analyze spatial cells once and save results for independent plotting."""
+
 import argparse
 import json
+from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -33,7 +35,9 @@ save_root_directory = (
     / date
     / f"{date}_{recording_number}"
     / "data"
-    / "spatial_cells" / f"Probe{probe_name}" / phase_key
+    / "spatial_cells"
+    / f"Probe{probe_name}"
+    / phase_key
 )
 
 worker_data = None
@@ -162,15 +166,15 @@ def load_data():
         )
     )
 
-    pose = pd.read_csv(session_dir / f"{date}.csv")
-    pose = pose.dropna(
-        subset=["frame", "center_x", "center_y", "hd_deg"]
-    )
+    pose = pd.read_csv(
+        session_dir / f"{date}.csv",
+        usecols=["frame", "center_x", "center_y", "hd_deg"],
+    ).dropna()
 
     session_info = read_formatted_json(
         data_dir / "session_info.json"
     )["session_info"]
-    exposure_timestamps, adc_time_origin_s, _ = (
+    exposure_timestamps, adc_time_origin_s, timing_metadata = (
         get_exposure_timestamps(
             session_info=session_info,
             data_dir=data_dir,
@@ -215,6 +219,17 @@ def load_data():
         spike_times[spikes_in_interval],
         spike_clusters[spikes_in_interval],
         good_unit_ids,
+        {
+            "pose_path": str(session_dir / f"{date}.csv"),
+            "kilosort_dir": str(kilosort_dir),
+            "spike_times_path": str(
+                data_dir / f"probe{probe_name}" / "adc_spike_time.npy"
+            ),
+            "interval_table_path": str(data_dir / "interval_table.csv"),
+            "selected_interval_s": [start, end],
+            "adc_time_origin_s": float(adc_time_origin_s),
+            "camera_timing": timing_metadata,
+        },
     )
 
 
@@ -398,7 +413,7 @@ SESSION_KEYS = (
 )
 
 
-def save_session(session_maps, good_unit_ids):
+def save_session(session_maps, unit_ids, source_metadata):
     save_root_directory.mkdir(parents=True, exist_ok=True)
     (save_root_directory / "units").mkdir(exist_ok=True)
     np.savez_compressed(
@@ -406,10 +421,15 @@ def save_session(session_maps, good_unit_ids):
         **{key: session_maps[key] for key in SESSION_KEYS},
     )
     metadata = {
-        "schema_name": "rfmapping-spatial-cells", "schema_version": 1,
-        "recording_root": str(recording_root), "date": date,
-        "recording_number": recording_number, "probe_name": probe_name,
-        "phase_key": phase_key, "unit_ids": good_unit_ids,
+        "schema_name": "rfmapping-spatial-cells",
+        "schema_version": 1,
+        "recording_root": str(recording_root),
+        "date": date,
+        "recording_number": recording_number,
+        "probe_name": probe_name,
+        "phase_key": phase_key,
+        "unit_ids": unit_ids,
+        "source": source_metadata,
         "arena_bounds_px": [x_min, x_max, y_min, y_max],
         "rig_size_cm": rig_size_cm, "cm_per_px": cm_per_px,
         "theta_bin_deg": theta_bin_deg,
@@ -423,6 +443,14 @@ def save_session(session_maps, good_unit_ids):
         "trajectory_coordinates": "arena origin at top left; y increases down",
         "rate_unit": "Hz", "occupancy_unit": "seconds",
         "smoothing_sigma_unit": "bins",
+        "egocentric_smoothing_mode": ["wrap", "nearest"],
+        "allocentric_smoothing_mode": "nearest",
+        "direction_smoothing_mode": "wrap",
+        "frame_time_reference": "seconds relative to ADC origin",
+        "frame_dt_s": float(np.median(np.diff(session_maps["frame_times"]))),
+        "occupancy_weighting": "median interval between retained pose frames",
+        "spike_frame_assignment": "nearest retained frame; ties go to earlier frame",
+        "egocentric_ray_angles": "theta_edges[:-1]",
     }
     return metadata
 
@@ -443,28 +471,55 @@ def process_unit(selected_unit_id):
     return selected_unit_id
 
 
-def main():
+def main(argv=None):
     global worker_data, save_root_directory
-    parser = argparse.ArgumentParser(description="Analyze spatial cells and save arrays.")
-    parser.add_argument("--output", type=Path, default=save_root_directory)
-    parser.add_argument("--workers", type=int, default=None)
-    args = parser.parse_args()
-    save_root_directory = args.output
+    global recording_root, date, recording_number, probe_name, phase_key
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--recording-root", type=Path, default=recording_root)
+    parser.add_argument("--date", default=date)
+    parser.add_argument("--recording-number", type=int, default=recording_number)
+    parser.add_argument("--probe", choices=("A", "B"), default=probe_name)
+    parser.add_argument("--phase", default=phase_key)
+    parser.add_argument("--output", type=Path, help="New result directory")
+    parser.add_argument("--units", type=int, nargs="+", help="Subset of good unit IDs")
+    parser.add_argument("--workers", type=int, help="Number of analysis processes")
+    args = parser.parse_args(argv)
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers must be at least 1")
+    recording_root = args.recording_root.expanduser().resolve()
+    date = args.date
+    recording_number = args.recording_number
+    probe_name = args.probe
+    phase_key = args.phase
+    save_root_directory = (
+        args.output.expanduser().resolve() if args.output else
+        recording_root / date / f"{date}_{recording_number}"
+        / "data" / "spatial_cells" / f"Probe{probe_name}" / phase_key
+    )
     # A new directory prevents mixing units or metadata from different runs.
     save_root_directory.mkdir(parents=True, exist_ok=False)
-    pose, pose_times, spike_times, spike_clusters, good_unit_ids = load_data()
+    (
+        pose, pose_times, spike_times, spike_clusters, good_unit_ids, source_metadata,
+    ) = load_data()
+    unit_ids = good_unit_ids if args.units is None else list(dict.fromkeys(args.units))
+    unknown = set(unit_ids) - set(good_unit_ids)
+    if unknown:
+        parser.error(f"Units absent from good-unit labels: {sorted(unknown)}")
     session_maps = prepare_session_maps(pose, pose_times)
-    metadata = save_session(session_maps, good_unit_ids)
+    metadata = save_session(session_maps, unit_ids, source_metadata)
     worker_data = session_maps, spike_times, spike_clusters
     with ProcessPoolExecutor(
         max_workers=args.workers, mp_context=get_context("fork"),
     ) as executor:
-        for unit_id in executor.map(process_unit, good_unit_ids):
+        for unit_id in executor.map(process_unit, unit_ids):
             print(f"saved unit {unit_id}: {save_root_directory}")
     # Publish the manifest last, so interrupted analysis cannot look complete.
-    (save_root_directory / "metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n"
+    manifest_path = save_root_directory / "metadata.json.tmp"
+    manifest_path.write_text(
+        json.dumps(metadata, indent=2, allow_nan=False) + "\n", encoding="utf-8",
     )
+    manifest_path.replace(save_root_directory / "metadata.json")
 
 
 if __name__ == "__main__":
