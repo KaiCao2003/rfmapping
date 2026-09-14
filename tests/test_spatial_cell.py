@@ -10,7 +10,8 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 
-import spatial_cell as spatial
+import spatial_cell_analysis as spatial
+import spatial_cell_plotting as plotting
 
 
 def test_load_data_uses_saved_camera_and_spike_times(tmp_path, monkeypatch):
@@ -126,7 +127,7 @@ def test_units_share_occupancy_and_preserve_firing_rates(session_maps):
             assert maps[key] is session_maps[key]
         assert maps["allocentric_occupancy"].sum() == len(frames) * 0.5
         assert maps["allocentric_spike_map"].sum() == len(frames) * spikes_per_frame
-        assert len(maps["spike_x_cm"]) == len(frames) * spikes_per_frame
+        assert maps["spike_frame_counts"].sum() == len(frames) * spikes_per_frame
         for key in (
             "egocentric_rate_map", "allocentric_rate_map", "allocentric_tuning_curve",
         ):
@@ -144,14 +145,16 @@ def test_unoccupied_bins_remain_nan():
 def test_all_plot_exports_use_configured_limits_and_opaque_white_background(
     session_maps, monkeypatch, tmp_path,
 ):
-    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
+    monkeypatch.setattr(plotting, "save_root_directory", tmp_path)
     maps = spatial.compute_maps(session_maps["frame_times"], session_maps)
+    maps["spike_x_cm"] = np.repeat(maps["trajectory_x_cm"], maps["spike_frame_counts"])
+    maps["spike_y_cm"] = np.repeat(maps["trajectory_y_cm"], maps["spike_frame_counts"])
     maps["x_edges"] = np.linspace(0, 30, 41)
     maps["y_edges"] = np.linspace(0, 45, 41)
-    spatial.prepare_output_directories()
+    plotting.prepare_output_directories()
 
     with plt.style.context("dark_background"), plt.rc_context({"savefig.transparent": True}):
-        figure = spatial.plot_maps(maps, 7)
+        figure = plotting.plot_maps(maps, 7, {"recording_number": 2, "probe_name": "A"})
         try:
             figure.canvas.draw()
             assert figure.get_facecolor() == to_rgba("white")
@@ -166,8 +169,8 @@ def test_all_plot_exports_use_configured_limits_and_opaque_white_background(
             )
             np.testing.assert_allclose(trajectory_axis.get_xlim(), [0, 30])
             np.testing.assert_allclose(trajectory_axis.get_ylim(), [45, 0])
-            spatial.save_figure(figure, "spatial_maps", 7)
-            spatial.save_individual_plots(maps, 7)
+            plotting.save_figure(figure, "spatial_maps", 7)
+            plotting.save_individual_plots(maps, 7)
         finally:
             plt.close(figure)
 
@@ -188,3 +191,21 @@ def test_all_plot_exports_use_configured_limits_and_opaque_white_background(
             pixels = plt.imread(path)
             np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
             assert np.all(pixels[:, :, 3] == 1)
+
+
+def test_saved_results_reproduce_maps_without_raw_inputs(session_maps, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
+    expected = spatial.compute_maps(session_maps["frame_times"], session_maps)
+    metadata = spatial.save_session(session_maps, [7])
+    spatial.save_unit(expected, 7)
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
+    loaded_metadata, shared = plotting.load_results(tmp_path)
+    actual = plotting.load_unit(tmp_path, shared, 7)
+    assert loaded_metadata["unit_ids"] == [7]
+    for key, value in expected.items():
+        np.testing.assert_equal(actual[key], value)
+    np.testing.assert_equal(actual["spike_x_cm"], session_maps["trajectory_x_cm"])
+    with np.load(tmp_path / "units/7.npz", allow_pickle=False) as archive:
+        assert not set(archive.files).intersection(spatial.SESSION_KEYS)
