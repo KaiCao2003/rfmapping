@@ -24,10 +24,6 @@ recording_number = 2
 probe_name = "A"
 phase_key = "baseline"
 
-camera_input_channel = 1
-camera_ttl_threshold = 14000
-camera_ttl_active_high = True
-
 # rig pixel lim
 x_min, x_max = 370, 920
 y_min, y_max = 210, 760
@@ -185,9 +181,7 @@ def load_data():
     exposure_timestamps, adc_time_origin_s, _ = (
         get_exposure_timestamps(
             session_info=session_info,
-            camera_input_channel=camera_input_channel,
-            camera_ttl_threshold=camera_ttl_threshold,
-            camera_ttl_active_high=camera_ttl_active_high,
+            data_dir=data_dir,
         )
     )
     pose_times = exposure_timestamps[
@@ -214,31 +208,10 @@ def load_data():
         ).reshape(-1),
         dtype=int,
     )
-    spike_samples = np.asarray(
-        np.load(
-            kilosort_dir / "spike_times.npy",
-            mmap_mode="r",
-        ).reshape(-1),
-        dtype=np.int64,
-    )
-
-    probe_timestamps_path = (
-            Path(session_info["base_path"])
-            / session_info["record_nodes"]
-            / session_info["experiment_id"]
-            / session_info["recording_name"]
-            / "continuous"
-            / session_info[f"continuous_probe_{probe_name}_folder"]
-            / "timestamps.npy"
-    )
-    probe_timestamps = np.load(
-        probe_timestamps_path,
+    spike_times = np.load(
+        data_dir / f"probe{probe_name}" / "adc_spike_time.npy",
         mmap_mode="r",
-    )
-    spike_times = (
-            np.asarray(probe_timestamps[spike_samples], dtype=float)
-            - adc_time_origin_s
-    )
+    ).reshape(-1) - adc_time_origin_s
     spikes_in_interval = (
             (spike_times >= pose_times[0])
             & (spike_times <= pose_times[-1])
