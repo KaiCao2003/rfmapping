@@ -216,31 +216,37 @@ def test_analysis_saves_one_file_and_rerun_replaces_it(recording_inputs, tmp_pat
 
 
 @pytest.mark.parametrize("is_save", [False, True])
-def test_plotting_notebook_displays_one_unit_and_saves_only_when_requested(
+def test_plotting_notebook_displays_unit_and_population_and_saves_when_requested(
     tmp_path, is_save,
 ):
     nbformat = pytest.importorskip("nbformat")
     NotebookClient = pytest.importorskip("nbclient").NotebookClient
     path = tmp_path / "tuning.rfmap"
-    values = np.arange(24, dtype=float).reshape(2, 4, 3)
-    values[1, 0, 0] = np.nan
+    values = np.array([
+        [[2, np.nan, 4], [0, 0, 0], [0, 0, 0], [1, 1, 1]],
+        [[np.nan, 0, 0], [1, 1, 1], [0, 0, 0], [0, 0, 0]],
+        np.zeros((4, 3)),
+        [[1, 1, 1], [2, 2, 2], [np.nan, np.nan, np.nan], [4, 4, 4]],
+        np.full((4, 3), np.nan),
+    ])
     spatial.save_egocentric_rfmap(
         path, values,
         {"distance_edges": np.linspace(0, 12, 4), "theta_edges": np.linspace(0, 360, 5)},
-        [7, 9], [0.0, 1.0],
+        [7, 9, 11, 13, 19], [0.0, 1.0],
     )
     notebook_path = Path(spatial.__file__).with_name("spatial_cell_plotting.ipynb")
     nb = nbformat.read(notebook_path, as_version=4)
     nbformat.validate(nb)
     parameters = next(cell for cell in nb.cells if cell.id == "parameters")
     parameters.source = (
-        f"result_path = Path({str(path)!r})\nunit_id = 9\nis_save = {is_save!r}\n"
-        "save_path = result_path.with_name(f'unit_{unit_id}.png')\n"
+        f"result_path = Path({str(path)!r})\nrf_maps = load_rf_maps(result_path)\n"
     )
     plot_cell = next(cell for cell in nb.cells if cell.id == "plot")
     plot_cell.source = (
+        f"unit_id = 9\nis_save = {is_save!r}\n"
+        "save_path = result_path.with_name(f'unit_{unit_id}.png')\n"
         "plt.style.use('dark_background')\nplt.rcParams['savefig.transparent'] = True\n"
-        + plot_cell.source
+        + plot_cell.source[plot_cell.source.index("rfmap = rf_maps.by_unit_id"):]
         + "\nnp.testing.assert_array_equal(axis.images[0].get_array(), rfmap.to_2d_array())\n"
         "assert rfmap.unit_id == 9\n"
         "assert axis.get_xlabel() == 'Distance to boundary (cm)'\n"
@@ -251,6 +257,28 @@ def test_plotting_notebook_displays_one_unit_and_saves_only_when_requested(
         "assert axis.get_facecolor() == (1, 1, 1, 1)\n"
         "assert axis.xaxis.label.get_color() == 'black'\n"
     )
+    heatmap_cell = next(cell for cell in nb.cells if cell.id == "all-units-heatmap")
+    heatmap_cell.source = heatmap_cell.source.replace(
+        "is_save_heatmap = False", f"is_save_heatmap = {is_save!r}",
+    ) + "\n" + "\n".join([
+        "np.testing.assert_array_equal(sorted_unit_ids, [9, 7, 13, 11, 19])",
+        "expected_heatmap = np.array([",
+        "    [1, 0, 0, 0], [0, 1, 0.5, 0], [0.5, 0.25, 1, np.nan],",
+        "    [0, 0, 0, 0], [np.nan, np.nan, np.nan, np.nan],",
+        "])",
+        "np.testing.assert_array_equal(",
+        "    np.ma.filled(heatmap_axis.images[0].get_array(), np.nan), expected_heatmap,",
+        ")",
+        "assert heatmap_axis.get_xlim() == (-180, 180)",
+        "assert heatmap_axis.get_ylim() == (4.5, -0.5)",
+        "assert [tick.get_text() for tick in heatmap_axis.get_xticklabels()] == ['180', '90', '0', '270', '180']",
+        "assert [tick.get_text() for tick in heatmap_axis.get_yticklabels()] == ['9', '7', '13', '11', '19']",
+        "assert heatmap_figure.axes[1].get_ylabel() == 'Normalized response'",
+        "assert heatmap_axis.images[0].get_clim() == (0, 1)",
+        "assert heatmap_figure.get_facecolor() == (1, 1, 1, 1)",
+        "assert heatmap_axis.get_facecolor() == (1, 1, 1, 1)",
+        "assert heatmap_axis.xaxis.label.get_color() == 'black'",
+    ])
     client = NotebookClient(
         nb, timeout=60, kernel_name="python3",
         resources={"metadata": {"path": str(notebook_path.parent)}},
@@ -262,13 +290,15 @@ def test_plotting_notebook_displays_one_unit_and_saves_only_when_requested(
         output for cell in nb.cells for output in cell.get("outputs", [])
         if "image/png" in output.get("data", {})
     ]
-    assert len(images) == 1
-    expected_files = {path, tmp_path / "unit_9.png"} if is_save else {path}
+    assert len(images) == 2
+    image_paths = [tmp_path / "unit_9.png", tmp_path / "all_units_angle_heatmap.png"]
+    expected_files = {path, *image_paths} if is_save else {path}
     assert set(tmp_path.iterdir()) == expected_files
     if is_save:
-        pixels = plt.imread(tmp_path / "unit_9.png")
-        np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
-        assert np.all(pixels[:, :, 3] == 1)
+        for image_path in image_paths:
+            pixels = plt.imread(image_path)
+            np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
+            assert np.all(pixels[:, :, 3] == 1)
 
 
 def test_load_data_reads_adc_when_saved_camera_times_are_missing(recording_inputs):

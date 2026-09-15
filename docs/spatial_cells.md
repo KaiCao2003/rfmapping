@@ -1,7 +1,8 @@
 # Spatial-cell tuning matrices
 
 Run `spatial_cell_analysis.ipynb` to save one `egocentric_rate_map.rfmap` file.
-Run `spatial_cell_plotting.ipynb` to read that file and display one selected unit.
+Run `spatial_cell_plotting.ipynb` to display one selected unit and an angular
+heatmap containing all saved units.
 Use the remote `~/.virtualenvs/rfmapping` kernel on `hhw9l84`.
 
 ## Analysis
@@ -78,8 +79,20 @@ figure, axis = plot_2d_rfmap(rfmap.to_2d_array())
 
 The notebook sets distance/angle labels and an Hz colorbar on the returned
 figure, with angle increasing upward and opaque white figure/axes backgrounds.
-Only the selected matrix is displayed. `is_save = False` writes no image files;
-set it to `True` to save that one figure to `save_path`.
+`is_save = False` writes no single-unit image; set it to `True` to save that
+figure to `save_path`.
+
+The final cell displays all units as one 1D angular heatmap. It sums each
+saved matrix over distance (ignoring unvisited bins), normalizes each curve
+by its maximum, and sorts rows by their peak in the displayed angle layout.
+Entirely unvisited angular bins remain blank; silent or entirely missing
+units remain included at the bottom. The column layout matches
+`hd_rf_comparison.ipynb`: `180 → 90 → 0 → 270 → 180`.
+These are display projections of the saved 2D rates. The notebook uses
+`plot_2d_rfmap()` for the stacked curves
+as well as the selected unit, then labels the returned axes.
+Set `is_save_heatmap = True` to save the single population image to
+`all_units_angle_heatmap.png`; its default is `False`.
 
 The old batch exporter `spatial_cell_plotting.py` is removed. Plotting no longer
 loads NPZ files, reconstructs trajectories, or exports all units in PNG/SVG.
@@ -96,10 +109,15 @@ ssh hhw9l84 'cd ~/Developer/rfmapping && \
 
 Tests cover geometry and timing, exact matrix/coordinate/NaN round trips,
 a single output file across reruns, and preserving a previous result on failure.
-Notebook execution checks one visible unit, no default image files, and one
-explicitly requested PNG with opaque white backgrounds and readable labels.
+Notebook execution checks the selected unit and all-unit heatmap, projection
+values, row order and normalization, missing and silent units, no default
+image files, and explicitly requested PNGs with opaque white backgrounds.
 
 On `m19/260831/260831_2`, all 81 saved matrices matched the previous RF map
 element for element, including NaNs. Analysis and saving took 3.864 s and
 produced one 2.11 MB file. Reading the existing RF map from the recording share
 and displaying unit 8 took 0.261 s, excluding kernel startup and imports.
+The all-unit angular heatmap rendered in 0.461 s for all 81 units. Its
+projections matched `rf_maps.to_1d_array(axis="y")` on this recording, and the
+plotting notebook created no files in the result directory with both save
+flags at their defaults.

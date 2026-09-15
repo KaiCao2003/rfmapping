@@ -13,8 +13,9 @@ helpers remain here and are copied into that directory when needed.
 
 `spatial_cell_analysis.ipynb` saves the final tuning matrices for all selected
 units in one `.rfmap` file with a single time bin. `spatial_cell_plotting.ipynb`
-uses the existing RFMap reader and plotter to display one selected unit;
-`is_save = True` saves that one image. Set the Basler/OptiHub2 output bools
+uses the existing RFMap reader and plotter for a selected unit and an angular
+heatmap of all saved units. `is_save` and `is_save_heatmap` save their respective
+figures when set to `True`. Set the Basler/OptiHub2 output bools
 explicitly in the analysis notebook. See [docs/spatial_cells.md](docs/spatial_cells.md)
 for usage and the result format.
 
