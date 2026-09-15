@@ -82,19 +82,58 @@ def test_exposure_reads_saved_times_without_scanning_adc(tmp_path, source):
         np.testing.assert_array_equal(np.load(source_path), relative_times + origin)
 
 
-@pytest.mark.parametrize(
-    "sync_data, error",
-    [
-        (None, FileNotFoundError),
-        ({"recording_interval": [[0, 10]]}, KeyError),
-        ({"exposure_sampling_number_list_mid": []}, ValueError),
-    ],
-)
-def test_missing_exposure_data_does_not_regenerate(tmp_path, sync_data, error):
-    if sync_data is not None:
-        (tmp_path / "sync_data.json").write_text(json.dumps(sync_data), encoding="utf-8")
-    with pytest.raises(error):
+def test_saved_empty_camera_times_are_invalid(tmp_path):
+    (tmp_path / "sync_data.json").write_text(json.dumps({
+        "exposure_sampling_number_list_mid": [],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="No complete camera timing data"):
         tuning_curve_utils.get_exposure_timestamps(session_info={}, data_dir=tmp_path)
+
+
+@pytest.mark.parametrize("active_high", [True, False])
+@pytest.mark.parametrize("sync_exists", [True, False])
+@pytest.mark.parametrize("active_at_boundary", [True, False])
+def test_missing_saved_times_read_raw_adc_pulses_across_chunks(
+    tmp_path, active_high, sync_exists, active_at_boundary,
+):
+    adc_dir = tmp_path / "node/experiment/recording/continuous/ADC"
+    adc_dir.mkdir(parents=True)
+    session_info = {
+        "base_path": str(tmp_path), "record_nodes": "node",
+        "experiment_id": "experiment", "recording_name": "recording",
+        "continuous_ADC_folder": "ADC", "ADC_input_channel": 2,
+    }
+    origin = 100.0
+    times = origin + np.arange(1_000_030) / 1000
+    np.save(adc_dir / "timestamps.npy", times)
+    signal = np.zeros((len(times), 2), dtype=np.int16)
+    starts = np.array([10, 999_990, 1_000_010])
+    ends = starts + 15
+    for start, end in zip(starts, ends):
+        signal[start:end, 1] = 20000
+    if not active_high:
+        signal[:, 1] = 20000 - signal[:, 1]
+    if active_at_boundary:
+        signal[:5, 1] = 20000 if active_high else 0
+        signal[-3:, 1] = 20000 if active_high else 0
+    signal.tofile(adc_dir / "continuous.dat")
+    if sync_exists:
+        (tmp_path / "sync_data.json").write_text(json.dumps({
+            "recording_interval": [[0, 1010]],
+        }))
+
+    actual, adc_origin, qc = tuning_curve_utils.get_exposure_timestamps(
+        session_info, tmp_path, camera_input_channel=1,
+        camera_ttl_threshold=14000, camera_ttl_active_high=active_high,
+    )
+
+    np.testing.assert_allclose(actual, (times[starts] + times[ends]) / 2 - origin)
+    assert adc_origin == origin
+    assert qc["ttl_pulse_count"] == 3
+    assert qc["timestamp_reference"] == "adc_exposure_midpoint"
+    assert qc["camera_ttl_active_high"] is active_high
+    assert qc["source_path"] == str(adc_dir / "continuous.dat")
+    assert not (tmp_path / "camera_frame_times.npy").exists()
 
 
 @pytest.mark.parametrize("include_empty_unit", [False, True])

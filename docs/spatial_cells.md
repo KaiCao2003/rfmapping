@@ -1,13 +1,30 @@
 # Spatial-cell analysis and plotting
 
-`spatial_cell_analysis.py` replaces the combined `spatial_cell.py` script.
-The old analysis and plotting notebooks are removed; their grid/border scores
-and shuffle analyses are not part of this pipeline. Existing geometry,
+Use `spatial_cell_analysis.ipynb` to analyze and save, then
+`spatial_cell_plotting.ipynb` to read the saved files and plot. Their small Python
+modules retain the reusable functions and command-line entry points.
+The legacy grid/border scores and shuffle analyses are not part of this pipeline.
+Existing geometry,
 occupancy weighting, bin limits, smoothing and tuning calculations are preserved.
 
-Configure arena bounds, bin sizes and smoothing at the top of
-`spatial_cell_analysis.py`. The recording, probe and phase also accept command
-line overrides. Run project Python only on `hhw9l84`:
+Configure the recording, arena bounds, bin sizes and smoothing in the analysis
+notebook. Select exactly one camera output explicitly:
+
+```python
+basler_output = True
+optihub2_output = False
+```
+
+These presets match this setup: Basler opto-coupled `ExposureActive` is
+electrically active-low, while OptiHub2 uses active-high pulses. Basler's
+logical exposure signal must not be confused with the measured pin voltage;
+`LineInverter` can reverse that voltage again. The Basler preset assumes no
+additional inversion. See [Basler Line Status](https://docs.baslerweb.com/line-status#opto-coupled-output-line)
+and [Line Inverter](https://docs.baslerweb.com/line-inverter).
+The code never infers camera type or polarity from the signal.
+
+Run notebook kernels with `~/.virtualenvs/rfmapping` on `hhw9l84`.
+The command-line entry points also remain available:
 
 ```sh
 ssh hhw9l84 'cd ~/Developer/rfmapping && \
@@ -21,7 +38,7 @@ ssh hhw9l84 'cd ~/Developer/rfmapping && \
 
 Analysis defaults to `session/data/spatial_cells/ProbeA/baseline/` with the
 configured probe and phase. `--output /path/to/new/results` selects another
-output directory; it must not already exist. `--workers N` limits parallel
+output directory; it must be new or empty. `--workers N` limits parallel
 analysis workers. `--recording-root /path/to/mouse` changes the mouse directory;
 `--units 7 9` analyzes only those good units, otherwise all good units are saved.
 An interrupted run has no `metadata.json`; rerun into a new directory. The
@@ -29,14 +46,23 @@ manifest is published only after all units finish. Existing results are never
 overwritten by analysis.
 
 Inputs must include a processed `session/<date>.csv` with `frame`, `center_x`,
-`center_y`, and `hd_deg` columns, Kilosort good-unit labels and clusters, saved
-`data/probeA/adc_spike_time.npy`, and saved camera times (`camera_frame_times.npy`
-or `sync_data.json["exposure_sampling_number_list_mid"]`). Raw Motive CSV exports
-must be processed upstream first. This script does not generate missing timing.
-The configured `m19/260831/260831_2` recording currently lacks saved camera times
-(checked 2026-09-14); the example needs those upstream inputs before it can run.
+`center_y`, and `hd_deg` columns, Kilosort good-unit labels and clusters, and saved
+`data/probeA/adc_spike_time.npy`. Saved camera times (`camera_frame_times.npy`
+or `sync_data.json["exposure_sampling_number_list_mid"]`) are read when available.
+When they are absent, the configured ADC channel is scanned in chunks and the
+midpoint of each complete exposure pulse is used, relative to the ADC origin.
+The low intervals before/after Basler acquisition are excluded. This does not
+write or replace timing files in the source recording. `camera_input_channel`
+is zero-based; `camera_ttl_threshold` uses raw int16 ADC units.
 
-The plotting command reads only the result directory. Use `--units 7 9` to
+Basler pose frame IDs index the exposure times directly, including gaps caused
+by invalid pose estimates. OptiHub2 additionally permits one trailing Motive
+frame without a TTL, matching `tuning_curves.ipynb`. Raw Motive CSV exports must
+still be processed into the pose columns above before spatial analysis.
+
+The plotting notebook previews a selected unit and exports `unit_ids` (all
+saved units when `None`). The plotting command also reads only the result
+directory. Use `--units 7 9` to
 select units and `--output /path/to/figures` to redirect figures. By default all
 manifest units are rendered under `results/plots/`, with the existing combined
 figure and ten individual panels in PNG and SVG. Figures have opaque white
@@ -97,9 +123,18 @@ ssh hhw9l84 'cd ~/Developer/rfmapping && \
   tests/test_spatial_cell.py tests/test_tuning_curve_utils.py'
 ```
 
-Tests cover geometry, spike alignment, numeric NPZ round trips including NaNs,
+Tests cover saved times and raw ADC timing with both polarities, pulses crossing
+chunk boundaries, Basler idle intervals, explicit output selection, Motive's
+trailing frame, geometry, spike alignment, numeric NPZ round trips including NaNs,
 shared-array storage, schema checks and interrupted runs. An integration test
 runs analysis in a separate process, makes the raw recording path unavailable,
 then renders all 22 PNG/SVG outputs per unit using only saved results. Export checks also
 exercise dark global Matplotlib defaults to confirm opaque white figures and
 axes with readable labels.
+
+Both notebooks were also executed on `m19/260831/260831_2`: 91,447 complete
+low pulses at 25 Hz match the video's 91,447 frames, with 91,443 valid pose
+frames. All 81 good units were analyzed and saved; every exported RF matrix
+matched its unit NPZ exactly. A selected real unit was previewed and all 22
+PNG/SVG files were exported. Validation outputs were written to a separate
+temporary directory, leaving the default result directory available.

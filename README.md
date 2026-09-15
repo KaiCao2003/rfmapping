@@ -11,11 +11,11 @@ helpers remain here and are copied into that directory when needed.
 
 ## Spatial-cell analysis and plotting
 
-`spatial_cell_analysis.py` saves numeric results as shared/per-unit NPZ files
-with a JSON manifest. `spatial_cell_plotting.py` renders those saved results
-without loading the original recording or rerunning analysis. The former
-combined script and the two spatial-cell notebooks are replaced by these
-scripts. See [docs/spatial_cells.md](docs/spatial_cells.md) for commands, the
+`spatial_cell_analysis.ipynb` saves numeric results as shared/per-unit NPZ files
+with a JSON manifest and a single-time-bin RF map. `spatial_cell_plotting.ipynb`
+renders those saved results without loading the original recording or rerunning
+analysis. Set the Basler/OptiHub2 output bools explicitly in the analysis notebook.
+See [docs/spatial_cells.md](docs/spatial_cells.md) for usage, the
 result format, and boundary-map viewer compatibility.
 
 ## Python RFMap API
@@ -123,6 +123,28 @@ permutation behavior and ignores `drop_bins`.
 
 See [docs/rfmap.md](docs/rfmap.md) for the complete data contract, array shapes,
 permutation semantics, and troubleshooting guide.
+
+## Saved timing inputs for tuning and spatial analysis
+
+Tuning and spatial analysis read `data/probeA/adc_spike_time.npy` (or `probeB`)
+in Kilosort spike order. These files contain absolute timestamps in seconds;
+the analysis subtracts the ADC origin once.
+
+`get_exposure_timestamps(session_info, data_dir)` first reads existing
+`data/camera_frame_times.npy` or
+`sync_data.json["exposure_sampling_number_list_mid"]`. The NPY contains absolute
+seconds; the JSON midpoint field already contains ADC-relative seconds,
+despite its `sampling_number` name. If neither is available, the helper reads
+complete exposure pulses from the configured raw ADC channel in chunks.
+Basler opto-coupled output uses low pulses in this setup; OptiHub2 uses high
+pulses. The spatial notebook selects these explicitly with two output bools.
+The source and raw-signal settings are recorded in `ttl_qc`.
+
+For JSON with `exposure_sampling_number_list_mid_raw`, the ADC origin is the
+difference between the first raw and relative midpoints. Otherwise only the
+first ADC timestamp supplies the origin. Saved camera times retain their
+upstream frame alignment and timing definition. Spike times must already be
+saved; this path does not reconstruct spikes from sample indices.
 
 ## Install and validate
 

@@ -155,7 +155,12 @@ def read_good_unit_ids(kilosort_dir: Path) -> list[int]:
     )
 
 
-def load_data():
+def load_data(
+    *, basler_output=True, optihub2_output=False,
+    camera_input_channel=1, camera_ttl_threshold=14000,
+):
+    if basler_output == optihub2_output:
+        raise ValueError("Set exactly one of basler_output and optihub2_output to True.")
     session_dir = (
             recording_root / date / f"{date}_{recording_number}"
     )
@@ -169,7 +174,7 @@ def load_data():
     pose = pd.read_csv(
         session_dir / f"{date}.csv",
         usecols=["frame", "center_x", "center_y", "hd_deg"],
-    ).dropna()
+    )
 
     session_info = read_formatted_json(
         data_dir / "session_info.json"
@@ -178,10 +183,28 @@ def load_data():
         get_exposure_timestamps(
             session_info=session_info,
             data_dir=data_dir,
+            camera_input_channel=camera_input_channel,
+            camera_ttl_threshold=camera_ttl_threshold,
+            # Basler opto-coupled ExposureActive is electrically active-low.
+            camera_ttl_active_high=optihub2_output,
         )
     )
+    timing_metadata["camera_output"] = "basler" if basler_output else "optihub2"
+    # Match tuning_curves.ipynb: Motive may export one final frame without a TTL.
+    if optihub2_output and np.array_equal(
+        pose["frame"].to_numpy(), np.arange(len(exposure_timestamps) + 1),
+    ):
+        pose = pose.iloc[:-1]
+        timing_metadata["dropped_trailing_motive_frame"] = True
+    pose = pose.dropna()
+    frame_ids = pose["frame"].to_numpy(dtype=int)
+    if np.any((frame_ids < 0) | (frame_ids >= len(exposure_timestamps))):
+        raise ValueError(
+            f"Pose frame IDs exceed the {len(exposure_timestamps)} camera timestamps "
+            f"for {timing_metadata['camera_output']} output."
+        )
     pose_times = exposure_timestamps[
-        pose["frame"].to_numpy(dtype=int)
+        frame_ids
     ]
 
     interval_table = pd.read_csv(data_dir / "interval_table.csv")
@@ -504,8 +527,62 @@ def process_unit(selected_unit_id):
     return selected_unit_id
 
 
-def main(argv=None):
+def run_analysis(
+    *, output=None, units=None, workers=None,
+    basler_output=True, optihub2_output=False,
+    camera_input_channel=1, camera_ttl_threshold=14000,
+):
+    """Analyze the configured recording; return metadata after all files are saved."""
     global worker_data, save_root_directory
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be at least 1")
+    save_root_directory = (
+        Path(output).expanduser().resolve() if output else
+        recording_root / date / f"{date}_{recording_number}"
+        / "data" / "spatial_cells" / f"Probe{probe_name}" / phase_key
+    )
+    # A failed input load may have left an empty directory; existing results stay intact.
+    if save_root_directory.exists() and any(save_root_directory.iterdir()):
+        raise FileExistsError(f"Result directory is not empty: {save_root_directory}")
+    (
+        pose, pose_times, spike_times, spike_clusters, good_unit_ids, source_metadata,
+    ) = load_data(
+        basler_output=basler_output, optihub2_output=optihub2_output,
+        camera_input_channel=camera_input_channel,
+        camera_ttl_threshold=camera_ttl_threshold,
+    )
+    timing = source_metadata["camera_timing"]
+    print(
+        f"{timing['camera_output']}: {timing['ttl_pulse_count']} camera frames, "
+        f"{timing['measured_rate_hz']:.3f} Hz ({timing['timestamp_reference']}); "
+        f"{len(pose)} valid pose frames in {phase_key}"
+    )
+    unit_ids = good_unit_ids if units is None else list(dict.fromkeys(units))
+    unknown = set(unit_ids) - set(good_unit_ids)
+    if unknown:
+        raise ValueError(f"Units absent from good-unit labels: {sorted(unknown)}")
+    session_maps = prepare_session_maps(pose, pose_times)
+    metadata = save_session(session_maps, unit_ids, source_metadata)
+    worker_data = session_maps, spike_times, spike_clusters
+    try:
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=get_context("fork"),
+        ) as executor:
+            for unit_id in executor.map(process_unit, unit_ids):
+                print(f"saved unit {unit_id}: {save_root_directory}")
+    finally:
+        worker_data = None
+    save_egocentric_rfmap(session_maps, metadata)
+    # Publish the manifest last, so interrupted analysis cannot look complete.
+    manifest_path = save_root_directory / "metadata.json.tmp"
+    manifest_path.write_text(
+        json.dumps(metadata, indent=2, allow_nan=False) + "\n", encoding="utf-8",
+    )
+    manifest_path.replace(save_root_directory / "metadata.json")
+    return metadata
+
+
+def main(argv=None):
     global recording_root, date, recording_number, probe_name, phase_key
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -517,6 +594,10 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, help="New result directory")
     parser.add_argument("--units", type=int, nargs="+", help="Subset of good unit IDs")
     parser.add_argument("--workers", type=int, help="Number of analysis processes")
+    parser.add_argument("--basler-output", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--optihub2-output", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--camera-input-channel", type=int, default=1)
+    parser.add_argument("--camera-ttl-threshold", type=float, default=14000)
     args = parser.parse_args(argv)
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be at least 1")
@@ -525,35 +606,12 @@ def main(argv=None):
     recording_number = args.recording_number
     probe_name = args.probe
     phase_key = args.phase
-    save_root_directory = (
-        args.output.expanduser().resolve() if args.output else
-        recording_root / date / f"{date}_{recording_number}"
-        / "data" / "spatial_cells" / f"Probe{probe_name}" / phase_key
+    return run_analysis(
+        output=args.output, units=args.units, workers=args.workers,
+        basler_output=args.basler_output, optihub2_output=args.optihub2_output,
+        camera_input_channel=args.camera_input_channel,
+        camera_ttl_threshold=args.camera_ttl_threshold,
     )
-    # A new directory prevents mixing units or metadata from different runs.
-    save_root_directory.mkdir(parents=True, exist_ok=False)
-    (
-        pose, pose_times, spike_times, spike_clusters, good_unit_ids, source_metadata,
-    ) = load_data()
-    unit_ids = good_unit_ids if args.units is None else list(dict.fromkeys(args.units))
-    unknown = set(unit_ids) - set(good_unit_ids)
-    if unknown:
-        parser.error(f"Units absent from good-unit labels: {sorted(unknown)}")
-    session_maps = prepare_session_maps(pose, pose_times)
-    metadata = save_session(session_maps, unit_ids, source_metadata)
-    worker_data = session_maps, spike_times, spike_clusters
-    with ProcessPoolExecutor(
-        max_workers=args.workers, mp_context=get_context("fork"),
-    ) as executor:
-        for unit_id in executor.map(process_unit, unit_ids):
-            print(f"saved unit {unit_id}: {save_root_directory}")
-    save_egocentric_rfmap(session_maps, metadata)
-    # Publish the manifest last, so interrupted analysis cannot look complete.
-    manifest_path = save_root_directory / "metadata.json.tmp"
-    manifest_path.write_text(
-        json.dumps(metadata, indent=2, allow_nan=False) + "\n", encoding="utf-8",
-    )
-    manifest_path.replace(save_root_directory / "metadata.json")
 
 
 if __name__ == "__main__":

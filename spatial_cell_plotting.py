@@ -183,22 +183,18 @@ def load_unit(result_directory, session, unit_id):
     return maps
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("results", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--units", type=int, nargs="+")
-    args = parser.parse_args(argv)
-    result_directory = args.results.expanduser().resolve()
+def plot_results(result_directory, *, output=None, units=None):
+    """Export the selected saved units without running analysis."""
+    result_directory = Path(result_directory).expanduser().resolve()
     metadata, session = load_results(result_directory)
     unit_ids = (
-        metadata["unit_ids"] if args.units is None else list(dict.fromkeys(args.units))
+        metadata["unit_ids"] if units is None else list(dict.fromkeys(units))
     )
     unknown = set(unit_ids) - set(metadata["unit_ids"])
     if unknown:
-        parser.error(f"Units absent from results: {sorted(unknown)}")
+        raise ValueError(f"Units absent from results: {sorted(unknown)}")
     output_directory = (
-        args.output.expanduser().resolve() if args.output else result_directory / "plots"
+        Path(output).expanduser().resolve() if output else result_directory / "plots"
     )
     prepare_output_directories(output_directory)
     for unit_id in unit_ids:
@@ -210,6 +206,18 @@ def main(argv=None):
             plt.close(figure)
         save_individual_plots(maps, unit_id, output_directory)
         print(f"plotted unit {unit_id}: {output_directory}")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--units", type=int, nargs="+")
+    args = parser.parse_args(argv)
+    try:
+        plot_results(args.results, output=args.output, units=args.units)
+    except ValueError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

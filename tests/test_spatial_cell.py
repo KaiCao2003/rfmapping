@@ -268,6 +268,7 @@ def test_rfmap_export_preserves_plotted_matrices_and_coordinates(tmp_path, monke
 
 def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs, tmp_path):
     result_path = tmp_path / "results"
+    result_path.mkdir()  # Allow the empty directory left by the original timing failure.
     label_path = recording_inputs / "kilosort/ProbeA/kilosort_10/cluster_KSLabel.tsv"
     pd.DataFrame({"cluster_id": [7, 9], "KSLabel": ["good", "good"]}).to_csv(
         label_path, sep="\t", index=False,
@@ -336,12 +337,54 @@ def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs,
     assert all(path.stem in {"7", "9"} and path.stat().st_size > 0 for path in figures)
 
 
-def test_missing_saved_camera_times_report_required_upstream_input(recording_inputs):
+def test_load_data_reads_adc_when_saved_camera_times_are_missing(recording_inputs):
+    adc_dir = recording_inputs / "node/experiment/recording/continuous/ADC"
+    adc_dir.mkdir(parents=True)
+    np.save(adc_dir / "timestamps.npy", 100 + np.arange(2100) / 1000)
+    signal = np.zeros((2100, 2), dtype=np.int16)
+    signal[:, 1] = 20000
+    signal[:20, 1] = 0  # Basler stays low before and after acquisition.
+    signal[2050:, 1] = 0
+    for center in (50, 250, 500, 1000, 1250, 2000):
+        signal[center - 10:center + 10, 1] = 0
+    signal.tofile(adc_dir / "continuous.dat")
+    (recording_inputs / "data/session_info.json").write_text(json.dumps({
+        "session_info": {
+            "base_path": str(recording_inputs), "record_nodes": "node",
+            "experiment_id": "experiment", "recording_name": "recording",
+            "continuous_ADC_folder": "ADC", "ADC_input_channel": 2,
+        },
+    }))
     (recording_inputs / "data/sync_data.json").write_text(json.dumps({
         "recording_interval": [[0, 10]],
     }))
-    with pytest.raises(KeyError, match="No saved camera timestamps.*upstream"):
-        spatial.load_data()
+    pose, times, spikes, clusters, units, source = spatial.load_data()
+    np.testing.assert_array_equal(pose["frame"], [1, 2, 3])
+    np.testing.assert_allclose(times, [0.25, 0.5, 1.0])
+    np.testing.assert_allclose(spikes, [0.25, 0.75, 1.0])
+    assert source["camera_timing"]["timestamp_reference"] == "adc_exposure_midpoint"
+    assert source["camera_timing"]["camera_output"] == "basler"
+    assert source["camera_timing"]["camera_ttl_active_high"] is False
+    assert source["camera_timing"]["ttl_pulse_count"] == 6
+
+
+@pytest.mark.parametrize("basler, optihub2", [(True, True), (False, False)])
+def test_camera_output_requires_exactly_one_bool(recording_inputs, basler, optihub2):
+    with pytest.raises(ValueError, match="Set exactly one"):
+        spatial.load_data(basler_output=basler, optihub2_output=optihub2)
+
+
+def test_only_optihub2_drops_one_trailing_motive_frame(recording_inputs):
+    pd.DataFrame({
+        "frame": np.arange(7), "center_x": 500.0, "center_y": 500.0, "hd_deg": 0.0,
+    }).to_csv(recording_inputs / "260827.csv", index=False)
+    pose, times, *_, source = spatial.load_data(basler_output=False, optihub2_output=True)
+    np.testing.assert_array_equal(pose["frame"], [1, 2, 3, 4])
+    np.testing.assert_array_equal(times, [0.25, 0.5, 1.0, 1.25])
+    assert source["camera_timing"]["camera_output"] == "optihub2"
+    assert source["camera_timing"]["dropped_trailing_motive_frame"] is True
+    with pytest.raises(ValueError, match="Pose frame IDs exceed"):
+        spatial.load_data(basler_output=True, optihub2_output=False)
 
 
 def test_pose_input_requires_processed_columns(recording_inputs):
