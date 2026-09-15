@@ -11,12 +11,12 @@ helpers remain here and are copied into that directory when needed.
 
 ## Spatial-cell analysis and plotting
 
-`spatial_cell_analysis.ipynb` saves numeric results as shared/per-unit NPZ files
-with a JSON manifest and a single-time-bin RF map. `spatial_cell_plotting.ipynb`
-renders those saved results without loading the original recording or rerunning
-analysis. Set the Basler/OptiHub2 output bools explicitly in the analysis notebook.
-See [docs/spatial_cells.md](docs/spatial_cells.md) for usage, the
-result format, and boundary-map viewer compatibility.
+`spatial_cell_analysis.ipynb` saves the final tuning matrices for all selected
+units in one `.rfmap` file with a single time bin. `spatial_cell_plotting.ipynb`
+uses the existing RFMap reader and plotter to display one selected unit;
+`is_save = True` saves that one image. Set the Basler/OptiHub2 output bools
+explicitly in the analysis notebook. See [docs/spatial_cells.md](docs/spatial_cells.md)
+for usage and the result format.
 
 ## Python RFMap API
 

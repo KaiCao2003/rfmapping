@@ -12,11 +12,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
-from matplotlib.colors import to_rgba
 from Utils.rfmap import load_rf_maps
 
 import spatial_cell_analysis as spatial
-import spatial_cell_plotting as plotting
 
 
 @pytest.fixture
@@ -129,24 +127,17 @@ def session_maps():
     return spatial.prepare_session_maps(pose, np.arange(len(pose)) * 0.5)
 
 
-def test_units_share_occupancy_and_preserve_firing_rates(session_maps):
+def test_tuning_matrix_preserves_constant_firing_rates(session_maps):
     for values in session_maps.values():
         values.setflags(write=False)
-
     frames = session_maps["frame_times"]
     for spikes_per_frame in (1, 2, 0):
-        maps = spatial.compute_maps(np.repeat(frames, spikes_per_frame), session_maps)
-        for key in ("egocentric_occupancy", "allocentric_occupancy"):
-            assert maps[key] is session_maps[key]
-        assert maps["allocentric_occupancy"].sum() == len(frames) * 0.5
-        assert maps["allocentric_spike_map"].sum() == len(frames) * spikes_per_frame
-        assert maps["spike_frame_counts"].sum() == len(frames) * spikes_per_frame
-        for key in (
-            "egocentric_rate_map", "allocentric_rate_map", "allocentric_tuning_curve",
-        ):
-            rates = maps[key]
-            assert np.isfinite(rates).any()
-            np.testing.assert_allclose(rates[np.isfinite(rates)], spikes_per_frame * 2)
+        rates = spatial.compute_tuning_matrix(
+            np.repeat(frames, spikes_per_frame), session_maps,
+        )
+        assert rates.shape == (60, 20)
+        assert np.isfinite(rates).any()
+        np.testing.assert_allclose(rates[np.isfinite(rates)], spikes_per_frame * 2)
 
 
 def test_unoccupied_bins_remain_nan():
@@ -155,91 +146,18 @@ def test_unoccupied_bins_remain_nan():
     assert np.isnan(rates).all()
 
 
-def test_all_plot_exports_use_configured_limits_and_opaque_white_background(
-    session_maps, tmp_path,
-):
-    maps = spatial.compute_maps(session_maps["frame_times"], session_maps)
-    maps["spike_x_cm"] = np.repeat(maps["trajectory_x_cm"], maps["spike_frame_counts"])
-    maps["spike_y_cm"] = np.repeat(maps["trajectory_y_cm"], maps["spike_frame_counts"])
-    maps["x_edges"] = np.linspace(0, 30, 41)
-    maps["y_edges"] = np.linspace(0, 45, 41)
-    plotting.prepare_output_directories(tmp_path)
-    metadata = {
-        "date": "260831", "recording_number": 2, "probe_name": "B", "phase_key": "test",
-    }
-
-    with plt.style.context("dark_background"), plt.rc_context({"savefig.transparent": True}):
-        figure = plotting.plot_maps(maps, 7, metadata)
-        try:
-            figure.canvas.draw()
-            assert figure._suptitle.get_text() == "260831, rec 2, ProbeB, test, unit 7"
-            assert figure.get_facecolor() == to_rgba("white")
-            for axis in figure.axes:
-                assert axis.get_facecolor() == to_rgba("white")
-                assert to_rgba(axis.title.get_color()) == to_rgba("black")
-                assert to_rgba(axis.xaxis.label.get_color()) == to_rgba("black")
-            panels = [axis for axis in figure.axes if axis.get_title()]
-            assert len(panels) == 10
-            trajectory_axis = next(
-                axis for axis in panels if axis.get_title() == "Trajectory and spike positions"
-            )
-            np.testing.assert_allclose(trajectory_axis.get_xlim(), [0, 30])
-            np.testing.assert_allclose(trajectory_axis.get_ylim(), [45, 0])
-            plotting.save_figure(figure, "spatial_maps", 7, tmp_path)
-            plotting.save_individual_plots(maps, 7, tmp_path)
-        finally:
-            plt.close(figure)
-
-    expected_plots = {
-        "spatial_maps", "egocentric_time_map", "egocentric_spike_map",
-        "egocentric_rate_map", "egocentric_rate_map_polar", "egocentric_tuning_curve",
-        "allocentric_occupancy", "allocentric_spike_map", "allocentric_rate_map",
-        "trajectory_spike_positions", "allocentric_tuning_curve",
-    }
-    expected_files = {
-        tmp_path / plot / extension / f"7.{extension}"
-        for plot in expected_plots for extension in ("png", "svg")
-    }
-    assert {path for path in tmp_path.rglob("*") if path.is_file()} == expected_files
-    for path in expected_files:
-        assert path.stat().st_size > 0
-        if path.suffix == ".png":
-            pixels = plt.imread(path)
-            np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
-            assert np.all(pixels[:, :, 3] == 1)
-
-
-def test_saved_results_reproduce_maps_without_raw_inputs(session_maps, monkeypatch, tmp_path):
-    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
-    expected = spatial.compute_maps(session_maps["frame_times"], session_maps)
-    # Unoccupied bins must survive serialization without becoming zeros.
-    expected["egocentric_rate_map"][0, 0] = np.nan
-    metadata = spatial.save_session(session_maps, [7], {})
-    spatial.save_unit(expected, 7)
-    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
-    loaded_metadata, shared = plotting.load_results(tmp_path)
-    actual = plotting.load_unit(tmp_path, shared, 7)
-    assert loaded_metadata["unit_ids"] == [7]
-    for key, value in expected.items():
-        np.testing.assert_equal(actual[key], value)
-    np.testing.assert_equal(actual["spike_x_cm"], session_maps["trajectory_x_cm"])
-    with np.load(tmp_path / "units/7.npz", allow_pickle=False) as archive:
-        assert not set(archive.files).intersection(spatial.SESSION_KEYS)
-
-
-def test_rfmap_export_preserves_plotted_matrices_and_coordinates(tmp_path, monkeypatch):
-    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
-    (tmp_path / "units").mkdir()
+def test_rfmap_export_preserves_matrices_units_coordinates_and_nan(tmp_path):
     expected = np.array([
         [[0.125, np.nan], [0.0, 19.75], [3.5, 0.01]],
         [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
     ])
-    for unit_id, values in zip([9, 7], expected):
-        np.savez(tmp_path / "units" / f"{unit_id}.npz", egocentric_rate_map=values)
-    session = {"distance_edges": np.array([0, 4, 10]), "theta_edges": np.array([0, 90, 180, 360])}
-    metadata = {"unit_ids": [9, 7], "source": {"selected_interval_s": [5.0, 8.5]}}
-    spatial.save_egocentric_rfmap(session, metadata)
+    session = {
+        "distance_edges": np.array([0, 4, 10]),
+        "theta_edges": np.array([0, 90, 180, 360]),
+    }
     path = tmp_path / "egocentric_rate_map.rfmap"
+    spatial.save_egocentric_rfmap(path, expected, session, [9, 7], [5.0, 8.5])
+    assert list(tmp_path.iterdir()) == [path]
     payload = json.loads(path.read_text())
     assert payload["unitsSpikeCounts"][0][0][1] == [None]
     assert payload["responseUnits"] == "Hz"
@@ -254,87 +172,103 @@ def test_rfmap_export_preserves_plotted_matrices_and_coordinates(tmp_path, monke
         np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 270])
         np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
 
-    # Ordinary count files still use their real occupancy denominator.
-    payload.pop("responseUnits")
-    payload.pop("responseNormalization")
-    payload["unitsSpikeCounts"] = np.nan_to_num(expected[..., None]).tolist()
-    payload["occupancyTimeSec"] = [[2, 4], [5, 10], [20, 40]]
-    path.write_text(json.dumps(payload))
-    np.testing.assert_array_equal(
-        load_rf_maps(path).to_2d_array(),
-        np.nan_to_num(expected) / np.array(payload["occupancyTimeSec"]),
-    )
 
-
-def test_analysis_then_plotting_cli_with_raw_recording_removed(recording_inputs, tmp_path):
-    result_path = tmp_path / "results"
-    result_path.mkdir()  # Allow the empty directory left by the original timing failure.
+def test_analysis_saves_one_file_and_rerun_replaces_it(recording_inputs, tmp_path):
+    result_path = tmp_path / "results" / "egocentric_rate_map.rfmap"
     label_path = recording_inputs / "kilosort/ProbeA/kilosort_10/cluster_KSLabel.tsv"
     pd.DataFrame({"cluster_id": [7, 9], "KSLabel": ["good", "good"]}).to_csv(
         label_path, sep="\t", index=False,
     )
-    script_directory = Path(spatial.__file__).parent
     environment = {**os.environ, "MPLBACKEND": "Agg", "PYTHONDONTWRITEBYTECODE": "1"}
     analysis_command = [
-        sys.executable, str(script_directory / "spatial_cell_analysis.py"),
+        sys.executable, str(Path(spatial.__file__)),
         "--recording-root", str(tmp_path), "--date", "260827",
         "--recording-number", "10", "--probe", "A", "--phase", "baseline",
         "--output", str(result_path), "--workers", "2",
     ]
     subprocess.run(analysis_command, check=True, env=environment, capture_output=True)
-    assert {str(path.relative_to(result_path)) for path in result_path.rglob("*")
-            if path.is_file()} == {
-                "metadata.json", "session.npz", "units/7.npz", "units/9.npz",
-                "egocentric_rate_map.rfmap",
-            }
-    metadata, shared = plotting.load_results(result_path)
-    assert metadata["date"] == "260827"
-    assert metadata["recording_number"] == 10
-    assert metadata["source"]["selected_interval_s"] == [0.25, 1.25]
-    assert metadata["frame_dt_s"] == 0.375
-    expected = spatial.compute_maps(np.array([0.25, 1.0]), spatial.prepare_session_maps(
-        pd.DataFrame({
-            "center_x": [500.0] * 3, "center_y": [500.0] * 3,
-            "hd_deg": [90.0, 180.0, 270.0],
-        }), np.array([0.25, 0.5, 1.0]),
-    ))
-    loaded = plotting.load_unit(result_path, shared, 7)
-    for key, value in expected.items():
-        np.testing.assert_equal(loaded[key], value)
-    exported = load_rf_maps(result_path / "egocentric_rate_map.rfmap")
-    np.testing.assert_array_equal(exported[0].to_2d_array(), loaded["egocentric_rate_map"])
-
-    selected_path = tmp_path / "selected"
-    selected_command = analysis_command.copy()
-    selected_command[selected_command.index("--output") + 1] = str(selected_path)
-    subprocess.run(
-        [*selected_command, "--units", "9"],
-        check=True, env=environment, capture_output=True,
+    assert list(result_path.parent.iterdir()) == [result_path]
+    maps = load_rf_maps(result_path)
+    assert maps.unit_ids == [7, 9]
+    expected = spatial.compute_tuning_matrix(
+        np.array([0.25, 1.0]),
+        spatial.prepare_session_maps(
+            pd.DataFrame({
+                "center_x": [500.0] * 3, "center_y": [500.0] * 3,
+                "hd_deg": [90.0, 180.0, 270.0],
+            }),
+            np.array([0.25, 0.5, 1.0]),
+        ),
     )
-    selected_metadata, selected_shared = plotting.load_results(selected_path)
-    assert selected_metadata["unit_ids"] == [9]
-    assert load_rf_maps(selected_path / "egocentric_rate_map.rfmap").unit_ids == [9]
-    assert {path.name for path in (selected_path / "units").iterdir()} == {"9.npz"}
-    selected_unit = plotting.load_unit(selected_path, selected_shared, 9)
-    assert selected_unit["spike_frame_counts"].sum() == 1
-    for key, value in plotting.load_unit(result_path, shared, 9).items():
-        np.testing.assert_equal(selected_unit[key], value)
+    np.testing.assert_array_equal(maps.by_unit_id(7).to_2d_array(), expected)
 
-    # Refuse to mix a rerun's arrays with this manifest or existing units.
-    manifest_bytes = (result_path / "metadata.json").read_bytes()
-    rerun = subprocess.run(analysis_command, env=environment, capture_output=True)
-    assert rerun.returncode != 0
-    assert (result_path / "metadata.json").read_bytes() == manifest_bytes
-
+    subprocess.run(
+        [*analysis_command, "--units", "9"], check=True, env=environment, capture_output=True,
+    )
+    assert list(result_path.parent.iterdir()) == [result_path]
+    selected = load_rf_maps(result_path)
+    assert selected.unit_ids == [9]
+    np.testing.assert_array_equal(
+        selected[0].to_2d_array(), maps.by_unit_id(9).to_2d_array(),
+    )
     recording_inputs.rename(tmp_path / "unavailable_recording")
-    subprocess.run(
-        [sys.executable, str(script_directory / "spatial_cell_plotting.py"),
-         str(result_path)],
-        check=True, env=environment, capture_output=True,
+    np.testing.assert_array_equal(load_rf_maps(result_path).to_2d_array(), selected.to_2d_array())
+
+
+@pytest.mark.parametrize("is_save", [False, True])
+def test_plotting_notebook_displays_one_unit_and_saves_only_when_requested(
+    tmp_path, is_save,
+):
+    nbformat = pytest.importorskip("nbformat")
+    NotebookClient = pytest.importorskip("nbclient").NotebookClient
+    path = tmp_path / "tuning.rfmap"
+    values = np.arange(24, dtype=float).reshape(2, 4, 3)
+    values[1, 0, 0] = np.nan
+    spatial.save_egocentric_rfmap(
+        path, values,
+        {"distance_edges": np.linspace(0, 12, 4), "theta_edges": np.linspace(0, 360, 5)},
+        [7, 9], [0.0, 1.0],
     )
-    figures = list((result_path / "plots").rglob("*.*"))
-    assert len(figures) == 44
-    assert all(path.stem in {"7", "9"} and path.stat().st_size > 0 for path in figures)
+    notebook_path = Path(spatial.__file__).with_name("spatial_cell_plotting.ipynb")
+    nb = nbformat.read(notebook_path, as_version=4)
+    nbformat.validate(nb)
+    parameters = next(cell for cell in nb.cells if cell.id == "parameters")
+    parameters.source = (
+        f"result_path = Path({str(path)!r})\nunit_id = 9\nis_save = {is_save!r}\n"
+        "save_path = result_path.with_name(f'unit_{unit_id}.png')\n"
+    )
+    plot_cell = next(cell for cell in nb.cells if cell.id == "plot")
+    plot_cell.source = (
+        "plt.style.use('dark_background')\nplt.rcParams['savefig.transparent'] = True\n"
+        + plot_cell.source
+        + "\nnp.testing.assert_array_equal(axis.images[0].get_array(), rfmap.to_2d_array())\n"
+        "assert rfmap.unit_id == 9\n"
+        "assert axis.get_xlabel() == 'Distance to boundary (cm)'\n"
+        "assert axis.get_ylabel() == 'Egocentric angle (deg)'\n"
+        "assert axis.get_ylim() == (0, 360)\n"
+        "assert axis.get_xlim() == (0, 12)\n"
+        "assert figure.get_facecolor() == (1, 1, 1, 1)\n"
+        "assert axis.get_facecolor() == (1, 1, 1, 1)\n"
+        "assert axis.xaxis.label.get_color() == 'black'\n"
+    )
+    client = NotebookClient(
+        nb, timeout=60, kernel_name="python3",
+        resources={"metadata": {"path": str(notebook_path.parent)}},
+    )
+    client.km = client.create_kernel_manager()
+    client.km.kernel_spec.argv[0] = sys.executable
+    client.execute()
+    images = [
+        output for cell in nb.cells for output in cell.get("outputs", [])
+        if "image/png" in output.get("data", {})
+    ]
+    assert len(images) == 1
+    expected_files = {path, tmp_path / "unit_9.png"} if is_save else {path}
+    assert set(tmp_path.iterdir()) == expected_files
+    if is_save:
+        pixels = plt.imread(tmp_path / "unit_9.png")
+        np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
+        assert np.all(pixels[:, :, 3] == 1)
 
 
 def test_load_data_reads_adc_when_saved_camera_times_are_missing(recording_inputs):
@@ -393,25 +327,7 @@ def test_pose_input_requires_processed_columns(recording_inputs):
         spatial.load_data()
 
 
-def test_plot_selection_uses_saved_unit_ids(session_maps, tmp_path, monkeypatch):
-    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
-    maps = spatial.compute_maps(session_maps["frame_times"], session_maps)
-    metadata = spatial.save_session(session_maps, [7, 9], {})
-    for unit_id in metadata["unit_ids"]:
-        spatial.save_unit(maps, unit_id)
-    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
-    plotted = []
-    monkeypatch.setattr(plotting, "MAP_PLOTS", ())
-    monkeypatch.setattr(plotting, "plot_maps", lambda maps, unit, meta: plt.figure())
-    monkeypatch.setattr(plotting, "save_figure", lambda fig, kind, unit, out: plotted.append(unit))
-    plotting.main([str(tmp_path), "--units", "9", "9"])
-    assert plotted == [9]
-    with pytest.raises(SystemExit):
-        plotting.main([str(tmp_path), "--units", "8"])
-    assert plotted == [9]
-
-
-def test_failed_analysis_has_no_completed_manifest(recording_inputs, tmp_path, monkeypatch):
+def test_failed_analysis_keeps_previous_result(recording_inputs, tmp_path, monkeypatch):
     class FailedExecutor:
         def __init__(self, **kwargs):
             pass
@@ -426,21 +342,10 @@ def test_failed_analysis_has_no_completed_manifest(recording_inputs, tmp_path, m
             raise RuntimeError("unit analysis failed")
 
     monkeypatch.setattr(spatial, "ProcessPoolExecutor", FailedExecutor)
-    monkeypatch.setattr(spatial, "save_root_directory", tmp_path)
-    monkeypatch.setattr(spatial, "worker_data", None)
-    result_path = tmp_path / "incomplete"
+    result_path = tmp_path / "result.rfmap"
+    result_path.write_text("previous complete result")
     with pytest.raises(RuntimeError, match="unit analysis failed"):
-        spatial.main(["--output", str(result_path)])
-    assert (result_path / "session.npz").is_file()
-    assert not (result_path / "metadata.json").exists()
-    with pytest.raises(FileNotFoundError, match="No completed spatial analysis"):
-        plotting.load_results(result_path)
-
-
-@pytest.mark.parametrize("name, version", [("unknown", 1), ("rfmapping-spatial-cells", 2)])
-def test_plotting_rejects_unknown_result_schema(tmp_path, name, version):
-    (tmp_path / "metadata.json").write_text(json.dumps({
-        "schema_name": name, "schema_version": version,
-    }))
-    with pytest.raises(ValueError, match="Unsupported spatial-cell result schema"):
-        plotting.load_results(tmp_path)
+        spatial.run_analysis(output=result_path)
+    assert result_path.read_text() == "previous complete result"
+    assert not result_path.with_name("result.rfmap.tmp").exists()
+    assert spatial.worker_data is None

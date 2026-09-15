@@ -1,4 +1,4 @@
-"""Analyze spatial cells once and save results for independent plotting."""
+"""Analyze spatial cells and save the final egocentric tuning matrices as one RFMap."""
 
 import argparse
 import json
@@ -26,19 +26,7 @@ cm_per_px = rig_size_cm / (x_max - x_min)
 
 theta_bin_deg = 6
 number_of_distance_bins = 20
-number_of_spatial_bins = 40
 egocentric_smoothing_sigma = 5
-allocentric_smoothing_sigma = 1.5
-
-save_root_directory = (
-    recording_root
-    / date
-    / f"{date}_{recording_number}"
-    / "data"
-    / "spatial_cells"
-    / f"Probe{probe_name}"
-    / phase_key
-)
 
 worker_data = None
 
@@ -257,245 +245,51 @@ def load_data(
 
 
 def prepare_session_maps(pose, pose_times):
-    """Compute geometry and occupancy once, before forking unit workers."""
-    center_x_px = pose["center_x"].to_numpy()
-    center_y_px = pose["center_y"].to_numpy()
-    center_x_cm = (center_x_px - x_min) * cm_per_px
-    center_y_cm = (center_y_px - y_min) * cm_per_px
-    head_direction_deg = pose["hd_deg"].to_numpy()
-
+    """Compute the shared geometry and occupancy needed for egocentric tuning."""
     theta_edges = np.arange(0, 360 + theta_bin_deg, theta_bin_deg)
     theta_deg = theta_edges[:-1]
     theta_d_cm = d(
         theta_deg,
-        center_x_px,
-        center_y_px,
-        head_direction_deg,
+        pose["center_x"].to_numpy(),
+        pose["center_y"].to_numpy(),
+        pose["hd_deg"].to_numpy(),
     ) * cm_per_px
     theta_grid = np.broadcast_to(theta_deg[None, :], theta_d_cm.shape)
-
-    maximum_distance_cm = rig_size_cm / 2 * np.sqrt(2)
     distance_edges = np.linspace(
-        0,
-        maximum_distance_cm,
-        number_of_distance_bins + 1,
+        0, rig_size_cm / 2 * np.sqrt(2), number_of_distance_bins + 1,
     )
-    x_edges = np.linspace(
-        0,
-        rig_size_cm,
-        number_of_spatial_bins + 1,
-    )
-    y_edges = np.linspace(
-        0,
-        rig_size_cm,
-        number_of_spatial_bins + 1,
-    )
-
     frame_dt_s = float(np.median(np.diff(pose_times)))
-    frame_time_weights = np.full(len(pose_times), frame_dt_s)
-    egocentric_occupancy = compute_2d_map(
-        theta_grid,
-        theta_d_cm,
-        theta_edges,
-        distance_edges,
-        frame_time_weights,
+    occupancy = compute_2d_map(
+        theta_grid, theta_d_cm, theta_edges, distance_edges,
+        np.full(len(pose_times), frame_dt_s),
     )
-    head_direction_deg = head_direction_deg % 360
-    allocentric_direction_occupancy = np.histogram(
-        head_direction_deg,
-        bins=theta_edges,
-        weights=frame_time_weights,
-    )[0]
-    allocentric_occupancy = compute_2d_map(
-        center_x_cm,
-        center_y_cm,
-        x_edges,
-        y_edges,
-        frame_time_weights,
-    )
-
     return {
         "frame_times": pose_times,
-        "head_direction_deg": head_direction_deg,
         "theta_grid": theta_grid,
         "theta_d_cm": theta_d_cm,
         "theta_edges": theta_edges,
         "distance_edges": distance_edges,
-        "x_edges": x_edges,
-        "y_edges": y_edges,
-        "trajectory_x_cm": center_x_cm,
-        "trajectory_y_cm": center_y_cm,
-        "egocentric_occupancy": egocentric_occupancy,
-        "allocentric_occupancy": allocentric_occupancy,
         "smoothed_egocentric_occupancy": gaussian_filter(
-            egocentric_occupancy,
-            sigma=egocentric_smoothing_sigma,
-            mode=("wrap", "nearest"),
-        ),
-        "smoothed_allocentric_occupancy": gaussian_filter(
-            allocentric_occupancy,
-            sigma=allocentric_smoothing_sigma,
-            mode="nearest",
-        ),
-        "smoothed_direction_occupancy": gaussian_filter(
-            allocentric_direction_occupancy,
-            sigma=allocentric_smoothing_sigma,
-            mode="wrap",
+            occupancy, sigma=egocentric_smoothing_sigma, mode=("wrap", "nearest"),
         ),
     }
 
 
-def compute_maps(spike_times, session_maps):
-    center_x_cm = session_maps["trajectory_x_cm"]
-    center_y_cm = session_maps["trajectory_y_cm"]
-    theta_edges = session_maps["theta_edges"]
-    distance_edges = session_maps["distance_edges"]
-    x_edges = session_maps["x_edges"]
-    y_edges = session_maps["y_edges"]
-    spike_frame_counts = count_spikes_by_frame(
-        spike_times,
-        session_maps["frame_times"],
-    )
-
-    egocentric_spike_map = compute_2d_map(
-        session_maps["theta_grid"],
-        session_maps["theta_d_cm"],
-        theta_edges,
-        distance_edges,
+def compute_tuning_matrix(spike_times, session_maps):
+    spike_frame_counts = count_spikes_by_frame(spike_times, session_maps["frame_times"])
+    spike_map = compute_2d_map(
+        session_maps["theta_grid"], session_maps["theta_d_cm"],
+        session_maps["theta_edges"], session_maps["distance_edges"],
         spike_frame_counts,
     )
-    egocentric_rate_map = compute_rate_map(
-        egocentric_spike_map,
-        session_maps["smoothed_egocentric_occupancy"],
-        smoothing_sigma=egocentric_smoothing_sigma,
-        smoothing_mode=("wrap", "nearest"),
-    )
-    preferred_distance_index = np.unravel_index(
-        np.nanargmax(egocentric_rate_map),
-        egocentric_rate_map.shape,
-    )[1]
-    egocentric_tuning_curve = egocentric_rate_map[
-        :, preferred_distance_index
-    ]
-    preferred_distance_cm = np.mean(
-        distance_edges[
-            preferred_distance_index: preferred_distance_index + 2
-        ]
-    )
-
-    allocentric_direction_spikes = np.histogram(
-        session_maps["head_direction_deg"],
-        bins=theta_edges,
-        weights=spike_frame_counts,
-    )[0]
-    allocentric_tuning_curve = compute_rate_map(
-        allocentric_direction_spikes,
-        session_maps["smoothed_direction_occupancy"],
-        smoothing_sigma=allocentric_smoothing_sigma,
-        smoothing_mode="wrap",
-    )
-    allocentric_spike_map = compute_2d_map(
-        center_x_cm,
-        center_y_cm,
-        x_edges,
-        y_edges,
-        spike_frame_counts,
-    )
-    allocentric_rate_map = compute_rate_map(
-        allocentric_spike_map,
-        session_maps["smoothed_allocentric_occupancy"],
-        smoothing_sigma=allocentric_smoothing_sigma,
-        smoothing_mode="nearest",
-    )
-
-    return {
-        "theta_edges": theta_edges,
-        "distance_edges": distance_edges,
-        "x_edges": x_edges,
-        "y_edges": y_edges,
-        "egocentric_occupancy": session_maps["egocentric_occupancy"],
-        "egocentric_spike_map": egocentric_spike_map,
-        "egocentric_rate_map": egocentric_rate_map,
-        "egocentric_tuning_curve": egocentric_tuning_curve,
-        "preferred_distance_cm": preferred_distance_cm,
-        "spike_frame_counts": spike_frame_counts,
-        "allocentric_occupancy": session_maps["allocentric_occupancy"],
-        "allocentric_spike_map": allocentric_spike_map,
-        "allocentric_rate_map": allocentric_rate_map,
-        "allocentric_tuning_curve": allocentric_tuning_curve,
-        "trajectory_x_cm": center_x_cm,
-        "trajectory_y_cm": center_y_cm,
-    }
-
-
-# Only these shared arrays are needed to reproduce the figures.
-SESSION_KEYS = (
-    "frame_times", "theta_edges", "distance_edges", "x_edges", "y_edges",
-    "trajectory_x_cm", "trajectory_y_cm", "egocentric_occupancy",
-    "allocentric_occupancy",
-)
-
-
-def save_session(session_maps, unit_ids, source_metadata):
-    save_root_directory.mkdir(parents=True, exist_ok=True)
-    (save_root_directory / "units").mkdir(exist_ok=True)
-    np.savez_compressed(
-        save_root_directory / "session.npz",
-        **{key: session_maps[key] for key in SESSION_KEYS},
-    )
-    metadata = {
-        "schema_name": "rfmapping-spatial-cells",
-        "schema_version": 1,
-        "recording_root": str(recording_root),
-        "date": date,
-        "recording_number": recording_number,
-        "probe_name": probe_name,
-        "phase_key": phase_key,
-        "unit_ids": unit_ids,
-        "source": source_metadata,
-        "arena_bounds_px": [x_min, x_max, y_min, y_max],
-        "rig_size_cm": rig_size_cm, "cm_per_px": cm_per_px,
-        "theta_bin_deg": theta_bin_deg,
-        "number_of_distance_bins": number_of_distance_bins,
-        "number_of_spatial_bins": number_of_spatial_bins,
-        "egocentric_smoothing_sigma": egocentric_smoothing_sigma,
-        "allocentric_smoothing_sigma": allocentric_smoothing_sigma,
-        "egocentric_axis_order": ["angle_deg", "distance_cm"],
-        "allocentric_axis_order": ["x_cm", "y_cm"],
-        "angle_convention": "0 forward; positive toward left in image coordinates",
-        "trajectory_coordinates": "arena origin at top left; y increases down",
-        "rate_unit": "Hz", "occupancy_unit": "seconds",
-        "smoothing_sigma_unit": "bins",
-        "egocentric_smoothing_mode": ["wrap", "nearest"],
-        "allocentric_smoothing_mode": "nearest",
-        "direction_smoothing_mode": "wrap",
-        "frame_time_reference": "seconds relative to ADC origin",
-        "frame_dt_s": float(np.median(np.diff(session_maps["frame_times"]))),
-        "occupancy_weighting": "median interval between retained pose frames",
-        "spike_frame_assignment": "nearest retained frame; ties go to earlier frame",
-        "egocentric_ray_angles": "theta_edges[:-1]",
-    }
-    return metadata
-
-
-def save_unit(maps, unit_id):
-    np.savez_compressed(
-        save_root_directory / "units" / f"{unit_id}.npz",
-        **{key: value for key, value in maps.items() if key not in SESSION_KEYS},
+    return compute_rate_map(
+        spike_map, session_maps["smoothed_egocentric_occupancy"],
+        smoothing_sigma=egocentric_smoothing_sigma, smoothing_mode=("wrap", "nearest"),
     )
 
 
-def save_egocentric_rfmap(session_maps, metadata):
-    """Save the plotted rate matrices with a singleton time axis."""
-    unit_ids = metadata["unit_ids"]
-    if not unit_ids:
-        return
-    rate_maps = []
-    for unit_id in unit_ids:
-        with np.load(
-            save_root_directory / "units" / f"{unit_id}.npz", allow_pickle=False,
-        ) as archive:
-            rate_maps.append(archive["egocentric_rate_map"])
+def save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interval_s):
+    """Save only the final tuning matrices and RFMap coordinates, in one file."""
     values = np.stack(rate_maps)[..., None]
     distance_edges = session_maps["distance_edges"]
     theta_edges = session_maps["theta_edges"]
@@ -509,22 +303,25 @@ def save_egocentric_rfmap(session_maps, metadata):
         "yBinEdges": theta_edges.tolist(),
         "xUnits": "cm",
         "yUnits": "deg",
-        "timeBinEdges": metadata["source"]["selected_interval_s"],
+        "timeBinEdges": interval_s,
         "responseUnits": "Hz",
         "responseNormalization": "already_normalized",
     }
-    (save_root_directory / "egocentric_rate_map.rfmap").write_text(
+    result_path = Path(result_path)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    # Replace the result only after every unit and the complete JSON are ready.
+    temporary_path = result_path.with_name(result_path.name + ".tmp")
+    temporary_path.write_text(
         json.dumps(payload, allow_nan=False) + "\n", encoding="utf-8",
     )
+    temporary_path.replace(result_path)
 
 
 def process_unit(selected_unit_id):
     session_maps, spike_times, spike_clusters = worker_data
-    maps = compute_maps(
+    return compute_tuning_matrix(
         spike_times[spike_clusters == selected_unit_id], session_maps,
     )
-    save_unit(maps, selected_unit_id)
-    return selected_unit_id
 
 
 def run_analysis(
@@ -532,18 +329,16 @@ def run_analysis(
     basler_output=True, optihub2_output=False,
     camera_input_channel=1, camera_ttl_threshold=14000,
 ):
-    """Analyze the configured recording; return metadata after all files are saved."""
-    global worker_data, save_root_directory
+    """Analyze the configured recording and return the single saved RFMap path."""
+    global worker_data
     if workers is not None and workers < 1:
         raise ValueError("workers must be at least 1")
-    save_root_directory = (
+    result_path = (
         Path(output).expanduser().resolve() if output else
         recording_root / date / f"{date}_{recording_number}"
         / "data" / "spatial_cells" / f"Probe{probe_name}" / phase_key
+        / "egocentric_rate_map.rfmap"
     )
-    # A failed input load may have left an empty directory; existing results stay intact.
-    if save_root_directory.exists() and any(save_root_directory.iterdir()):
-        raise FileExistsError(f"Result directory is not empty: {save_root_directory}")
     (
         pose, pose_times, spike_times, spike_clusters, good_unit_ids, source_metadata,
     ) = load_data(
@@ -558,28 +353,26 @@ def run_analysis(
         f"{len(pose)} valid pose frames in {phase_key}"
     )
     unit_ids = good_unit_ids if units is None else list(dict.fromkeys(units))
+    if not unit_ids:
+        raise ValueError("No good units selected.")
     unknown = set(unit_ids) - set(good_unit_ids)
     if unknown:
         raise ValueError(f"Units absent from good-unit labels: {sorted(unknown)}")
     session_maps = prepare_session_maps(pose, pose_times)
-    metadata = save_session(session_maps, unit_ids, source_metadata)
     worker_data = session_maps, spike_times, spike_clusters
     try:
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=get_context("fork"),
         ) as executor:
-            for unit_id in executor.map(process_unit, unit_ids):
-                print(f"saved unit {unit_id}: {save_root_directory}")
+            rate_maps = list(executor.map(process_unit, unit_ids))
     finally:
         worker_data = None
-    save_egocentric_rfmap(session_maps, metadata)
-    # Publish the manifest last, so interrupted analysis cannot look complete.
-    manifest_path = save_root_directory / "metadata.json.tmp"
-    manifest_path.write_text(
-        json.dumps(metadata, indent=2, allow_nan=False) + "\n", encoding="utf-8",
+    save_egocentric_rfmap(
+        result_path, rate_maps, session_maps, unit_ids,
+        source_metadata["selected_interval_s"],
     )
-    manifest_path.replace(save_root_directory / "metadata.json")
-    return metadata
+    print(f"Saved {len(unit_ids)} tuning matrices: {result_path}")
+    return result_path
 
 
 def main(argv=None):
@@ -591,7 +384,7 @@ def main(argv=None):
     parser.add_argument("--recording-number", type=int, default=recording_number)
     parser.add_argument("--probe", choices=("A", "B"), default=probe_name)
     parser.add_argument("--phase", default=phase_key)
-    parser.add_argument("--output", type=Path, help="New result directory")
+    parser.add_argument("--output", type=Path, help="Output .rfmap file (replaced on rerun)")
     parser.add_argument("--units", type=int, nargs="+", help="Subset of good unit IDs")
     parser.add_argument("--workers", type=int, help="Number of analysis processes")
     parser.add_argument("--basler-output", action=argparse.BooleanOptionalAction, default=True)
