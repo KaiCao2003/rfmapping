@@ -1,4 +1,4 @@
-"""Analyze spatial cells and save the final egocentric tuning matrices as one RFMap."""
+"""Save full egocentric tuning matrices and three distance-band bearing RFMaps."""
 
 import argparse
 import json
@@ -27,12 +27,18 @@ cm_per_px = rig_size_cm / (x_max - x_min)
 theta_bin_deg = 6
 number_of_distance_bins = 20
 egocentric_smoothing_sigma = 5
+distance_bands_cm = (
+    ("0-8", None, 8),
+    ("8-16", 8, 16),
+    ("16-", 16, None),
+)
 
 worker_data = None
 
 
-def d(theta_deg, center_x, center_y, head_direction_deg):
+def d(theta_deg, center_x, center_y, head_direction_deg, *, bounds=None):
     """Return ray distances to the arena boundary in pixels."""
+    left, right, top, bottom = (x_min, x_max, y_min, y_max) if bounds is None else bounds
     absolute_angle_rad = np.deg2rad(
         head_direction_deg[:, None] + theta_deg[None, :]
     )
@@ -43,8 +49,8 @@ def d(theta_deg, center_x, center_y, head_direction_deg):
     distance_x = np.divide(
         np.where(
             direction_x > 0,
-            x_max - center_x[:, None],
-            x_min - center_x[:, None],
+            right - center_x[:, None],
+            left - center_x[:, None],
         ),
         direction_x,
         out=np.full_like(direction_x, np.inf),
@@ -53,8 +59,8 @@ def d(theta_deg, center_x, center_y, head_direction_deg):
     distance_y = np.divide(
         np.where(
             direction_y > 0,
-            y_max - center_y[:, None],
-            y_min - center_y[:, None],
+            bottom - center_y[:, None],
+            top - center_y[:, None],
         ),
         direction_y,
         out=np.full_like(direction_y, np.inf),
@@ -146,21 +152,25 @@ def read_good_unit_ids(kilosort_dir: Path) -> list[int]:
 def load_data(
     *, basler_output=True, optihub2_output=False,
     camera_input_channel=1, camera_ttl_threshold=14000,
+    session_dir=None, probe=None, phase=None,
 ):
     if basler_output == optihub2_output:
         raise ValueError("Set exactly one of basler_output and optihub2_output to True.")
-    session_dir = (
-            recording_root / date / f"{date}_{recording_number}"
+    session_dir = Path(session_dir) if session_dir is not None else (
+        recording_root / date / f"{date}_{recording_number}"
     )
+    selected_probe = probe_name if probe is None else probe
+    selected_phase = phase_key if phase is None else phase
+    session_date = session_dir.name.split("_")[0]
     data_dir = session_dir / "data"
     kilosort_dir = next(
-        (session_dir / "kilosort" / f"Probe{probe_name}").glob(
+        (session_dir / "kilosort" / f"Probe{selected_probe}").glob(
             "kilosort_*"
         )
     )
 
     pose = pd.read_csv(
-        session_dir / f"{date}.csv",
+        session_dir / f"{session_date}.csv",
         usecols=["frame", "center_x", "center_y", "hd_deg"],
     )
 
@@ -197,7 +207,7 @@ def load_data(
 
     interval_table = pd.read_csv(data_dir / "interval_table.csv")
     interval = interval_table.loc[
-        interval_table["interval_type"] == phase_key,
+        interval_table["interval_type"] == selected_phase,
         ["start", "end"],
     ].iloc[0]
     start = float(interval["start"])
@@ -216,7 +226,7 @@ def load_data(
         dtype=int,
     )
     spike_times = np.load(
-        data_dir / f"probe{probe_name}" / "adc_spike_time.npy",
+        data_dir / f"probe{selected_probe}" / "adc_spike_time.npy",
         mmap_mode="r",
     ).reshape(-1) - adc_time_origin_s
     spikes_in_interval = (
@@ -231,10 +241,10 @@ def load_data(
         spike_clusters[spikes_in_interval],
         good_unit_ids,
         {
-            "pose_path": str(session_dir / f"{date}.csv"),
+            "pose_path": str(session_dir / f"{session_date}.csv"),
             "kilosort_dir": str(kilosort_dir),
             "spike_times_path": str(
-                data_dir / f"probe{probe_name}" / "adc_spike_time.npy"
+                data_dir / f"probe{selected_probe}" / "adc_spike_time.npy"
             ),
             "interval_table_path": str(data_dir / "interval_table.csv"),
             "selected_interval_s": [start, end],
@@ -288,11 +298,36 @@ def compute_tuning_matrix(spike_times, session_maps):
     )
 
 
-def save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interval_s):
-    """Save only the final tuning matrices and RFMap coordinates, in one file."""
+def save_egocentric_rfmap(
+    result_path, rate_maps, session_maps, unit_ids, interval_s,
+    *, distance_band_cm=None, metadata=None,
+):
+    """Save the full matrices or their angular sums within one distance band."""
     values = np.stack(rate_maps)[..., None]
     distance_edges = session_maps["distance_edges"]
     theta_edges = session_maps["theta_edges"]
+    band_metadata = {}
+    if distance_band_cm is not None:
+        lower_cm, upper_cm = distance_band_cm
+        distance_centers = (distance_edges[:-1] + distance_edges[1:]) / 2
+        selected = np.ones(len(distance_centers), dtype=bool)
+        if lower_cm is not None:
+            selected &= distance_centers > lower_cm
+        if upper_cm is not None:
+            selected &= distance_centers <= upper_cm
+        # Sum the saved rates by bin center, matching the plotting projection.
+        selected_values = values[:, :, selected, :]
+        values = np.nansum(selected_values, axis=2, keepdims=True)
+        values[~np.isfinite(selected_values).any(axis=2, keepdims=True)] = np.nan
+        band_start_cm = distance_edges[0] if lower_cm is None else lower_cm
+        band_end_cm = distance_edges[-1] if upper_cm is None else upper_cm
+        # An open-ended band beyond the available grid has an empty extent.
+        distance_edges = np.array([band_start_cm, max(band_start_cm, band_end_cm)])
+        band_metadata = {
+            "distanceSelection": "bin_centers",
+            "distanceBinCentersCm": distance_centers[selected].tolist(),
+            "responseAggregation": "sum_over_distance",
+        }
     payload = {
         "unitsSpikeCounts": np.where(np.isnan(values), None, values).tolist(),
         "unitsSpikeCountsSize": list(values.shape),
@@ -306,6 +341,8 @@ def save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interv
         "timeBinEdges": interval_s,
         "responseUnits": "Hz",
         "responseNormalization": "already_normalized",
+        **band_metadata,
+        **({} if metadata is None else metadata),
     }
     result_path = Path(result_path)
     result_path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +352,21 @@ def save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interv
         json.dumps(payload, allow_nan=False) + "\n", encoding="utf-8",
     )
     temporary_path.replace(result_path)
+
+
+def save_egocentric_rfmaps(result_path, rate_maps, session_maps, unit_ids, interval_s):
+    """Save the full map, then <=8 cm, (8, 16] cm, and >16 cm bearing maps."""
+    result_path = Path(result_path)
+    save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interval_s)
+    result_paths = [result_path]
+    for suffix, lower_cm, upper_cm in distance_bands_cm:
+        band_path = result_path.with_name(f"{result_path.stem}_{suffix}{result_path.suffix}")
+        save_egocentric_rfmap(
+            band_path, rate_maps, session_maps, unit_ids, interval_s,
+            distance_band_cm=(lower_cm, upper_cm),
+        )
+        result_paths.append(band_path)
+    return result_paths
 
 
 def process_unit(selected_unit_id):
@@ -329,7 +381,7 @@ def run_analysis(
     basler_output=True, optihub2_output=False,
     camera_input_channel=1, camera_ttl_threshold=14000,
 ):
-    """Analyze the configured recording and return the single saved RFMap path."""
+    """Analyze the recording and return all four saved RFMap paths, full map first."""
     global worker_data
     if workers is not None and workers < 1:
         raise ValueError("workers must be at least 1")
@@ -367,12 +419,13 @@ def run_analysis(
             rate_maps = list(executor.map(process_unit, unit_ids))
     finally:
         worker_data = None
-    save_egocentric_rfmap(
+    result_paths = save_egocentric_rfmaps(
         result_path, rate_maps, session_maps, unit_ids,
         source_metadata["selected_interval_s"],
     )
-    print(f"Saved {len(unit_ids)} tuning matrices: {result_path}")
-    return result_path
+    for path in result_paths:
+        print(f"Saved {len(unit_ids)} tuning matrices: {path}")
+    return result_paths
 
 
 def main(argv=None):
@@ -384,7 +437,10 @@ def main(argv=None):
     parser.add_argument("--recording-number", type=int, default=recording_number)
     parser.add_argument("--probe", choices=("A", "B"), default=probe_name)
     parser.add_argument("--phase", default=phase_key)
-    parser.add_argument("--output", type=Path, help="Output .rfmap file (replaced on rerun)")
+    parser.add_argument(
+        "--output", type=Path,
+        help="Full .rfmap filename; three distance-band files use the same stem (all replaced on rerun)",
+    )
     parser.add_argument("--units", type=int, nargs="+", help="Subset of good unit IDs")
     parser.add_argument("--workers", type=int, help="Number of analysis processes")
     parser.add_argument("--basler-output", action=argparse.BooleanOptionalAction, default=True)

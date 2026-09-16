@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import operator
 from collections.abc import Iterator, Mapping, Sequence
@@ -76,6 +77,11 @@ def _spatial_axis(value: Any, label: str, expected_length: int) -> list[Any]:
 
 
 def _counts_are_numeric(value: Any, *, allow_null: bool = False) -> bool:
+    if isinstance(value, np.ndarray):
+        return (
+            np.issubdtype(value.dtype, np.number)
+            and not np.issubdtype(value.dtype, np.complexfloating)
+        )
     if isinstance(value, list):
         for child in value:
             if not _counts_are_numeric(child, allow_null=allow_null):
@@ -1484,16 +1490,39 @@ def asrfmap(
     )
 
 
+def _read_rf_source(source_path: Path) -> dict[str, Any]:
+    """Read legacy JSON or MATLAB's indexed NPZ without expanding counts to lists."""
+
+    with source_path.open("rb") as stream:
+        indexed_npz = stream.read(4) == b"PK\x03\x04"
+    if not indexed_npz:
+        return read_formatted_json(source_path)
+
+    with np.load(source_path, allow_pickle=False) as archive:
+        raw = json.loads(archive["metadata"].tobytes().decode("utf-8"))
+        for name in (
+            "unitPool", "xPositions", "yPositions", "timeBinEdges", "occupancyTimeSec",
+        ):
+            raw[name] = archive[name].tolist()
+        if "stimulusPresentationCounts" in archive:
+            raw["stimulusPresentationCounts"] = archive["stimulusPresentationCounts"].tolist()
+        raw["unitsSpikeCounts"] = np.stack([
+            archive[f"unit_{_integer(unit_id, 'unitPool value')}"]
+            for unit_id in raw["unitPool"]
+        ])
+    return raw
+
+
 def load_rf_maps(
     path: str | Path,
     *,
     unit_firing_rate: bool = True,
 ) -> RFMapList:
-    """Load counts with optional occupancy normalization, or saved Hz values unchanged."""
+    """Load JSON or indexed NPZ maps, optionally normalizing counts by occupancy."""
 
     source_path = Path(path)
     use_firing_rate = _bool_value(unit_firing_rate, "unit_firing_rate")
-    raw = read_formatted_json(source_path)
+    raw = _read_rf_source(source_path)
     if not isinstance(raw, dict):
         raise ValueError("RF mapping JSON must contain an object at the top level")
     required = {

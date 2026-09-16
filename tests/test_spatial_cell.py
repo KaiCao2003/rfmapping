@@ -173,8 +173,79 @@ def test_rfmap_export_preserves_matrices_units_coordinates_and_nan(tmp_path):
         np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
 
 
-def test_analysis_saves_one_file_and_rerun_replaces_it(recording_inputs, tmp_path):
-    result_path = tmp_path / "results" / "egocentric_rate_map.rfmap"
+def test_four_rfmap_exports_partition_bin_centers_and_preserve_missing_values(tmp_path):
+    values = np.array([
+        [[1, 2, 4, 8], [np.nan, 3, np.nan, 5], [np.nan] * 4, [0] * 4],
+        [[2, 4, 8, 16], [1, np.nan, 3, 4], [0] * 4, [np.nan] * 4],
+    ], dtype=float)
+    original = values.copy()
+    session = {
+        # Centers at 8 and 16 cm belong to the lower of the adjacent bands.
+        "distance_edges": np.array([0, 4, 12, 20, 24]),
+        "theta_edges": np.linspace(0, 360, 5),
+    }
+    paths = spatial.save_egocentric_rfmaps(
+        tmp_path / "tuning.rfmap", values, session, [9, 7], [5.0, 8.5],
+    )
+    assert [path.name for path in paths] == [
+        "tuning.rfmap", "tuning_0-8.rfmap",
+        "tuning_8-16.rfmap", "tuning_16-.rfmap",
+    ]
+    assert set(tmp_path.iterdir()) == set(paths)
+    np.testing.assert_array_equal(values, original)
+    np.testing.assert_array_equal(load_rf_maps(paths[0]).to_2d_array(), values)
+    expected_curves = [
+        [[3, 3, np.nan, 0], [6, 1, 0, np.nan]],
+        [[4, np.nan, np.nan, 0], [8, 3, 0, np.nan]],
+        [[8, 5, np.nan, 0], [16, 4, 0, np.nan]],
+    ]
+    for path, expected, bounds, centers in zip(
+        paths[1:], expected_curves, ([0, 8], [8, 16], [16, 24]),
+        ([2, 8], [16], [22]),
+    ):
+        payload = json.loads(path.read_text())
+        assert payload["unitsSpikeCounts"][0][2][0] == [None]
+        assert "distanceRangeCm" not in payload
+        assert payload["distanceSelection"] == "bin_centers"
+        assert payload["distanceBinCentersCm"] == centers
+        assert payload["responseAggregation"] == "sum_over_distance"
+        assert payload["xUnits"] == "cm"
+        assert payload["xBinEdges"] == bounds
+        assert payload["yBinEdges"] == [0, 90, 180, 270, 360]
+        for options in ({}, {"unit_firing_rate": False}):
+            maps = load_rf_maps(path, **options)
+            assert maps.shape == (2, 4, 1, 1)
+            assert maps.unit_ids == [9, 7]
+            np.testing.assert_array_equal(maps.to_2d_array()[:, :, 0], expected)
+            np.testing.assert_array_equal(maps[0].x_positions, [np.mean(bounds)])
+            np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 225, 315])
+            np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
+    curves = np.stack([load_rf_maps(path).to_2d_array()[:, :, 0] for path in paths[1:]])
+    np.testing.assert_array_equal(np.nansum(curves, axis=0), np.nansum(values, axis=2))
+
+
+def test_empty_distance_bands_save_missing_curves(tmp_path):
+    paths = spatial.save_egocentric_rfmaps(
+        tmp_path / "tuning.rfmap", np.ones((1, 4, 1)),
+        {"distance_edges": np.array([0, 4]), "theta_edges": np.linspace(0, 360, 5)},
+        [7], [0, 1],
+    )
+    np.testing.assert_array_equal(load_rf_maps(paths[1]).to_2d_array(), np.ones((1, 4, 1)))
+    for path, bounds in zip(paths[2:], ([8, 16], [16, 16])):
+        maps = load_rf_maps(path)
+        assert maps.shape == (1, 4, 1, 1)
+        assert np.isnan(maps.to_2d_array()).all()
+        assert maps[0].metadata["distanceBinCentersCm"] == []
+        assert maps[0].metadata["xBinEdges"] == bounds
+
+
+def test_analysis_saves_four_files_and_rerun_replaces_them(recording_inputs, tmp_path):
+    result_path = tmp_path / "results" / "tuning.rfmap"
+    result_paths = [
+        result_path, result_path.with_name("tuning_0-8.rfmap"),
+        result_path.with_name("tuning_8-16.rfmap"),
+        result_path.with_name("tuning_16-.rfmap"),
+    ]
     label_path = recording_inputs / "kilosort/ProbeA/kilosort_10/cluster_KSLabel.tsv"
     pd.DataFrame({"cluster_id": [7, 9], "KSLabel": ["good", "good"]}).to_csv(
         label_path, sep="\t", index=False,
@@ -187,7 +258,7 @@ def test_analysis_saves_one_file_and_rerun_replaces_it(recording_inputs, tmp_pat
         "--output", str(result_path), "--workers", "2",
     ]
     subprocess.run(analysis_command, check=True, env=environment, capture_output=True)
-    assert list(result_path.parent.iterdir()) == [result_path]
+    assert set(result_path.parent.iterdir()) == set(result_paths)
     maps = load_rf_maps(result_path)
     assert maps.unit_ids == [7, 9]
     expected = spatial.compute_tuning_matrix(
@@ -201,18 +272,28 @@ def test_analysis_saves_one_file_and_rerun_replaces_it(recording_inputs, tmp_pat
         ),
     )
     np.testing.assert_array_equal(maps.by_unit_id(7).to_2d_array(), expected)
+    first_run = {path: load_rf_maps(path) for path in result_paths}
+    for path, band_maps in list(first_run.items())[1:]:
+        assert band_maps.unit_ids == [7, 9]
+        lower, upper = band_maps[0].metadata["xBinEdges"]
+        distances = maps[0].x_positions
+        selected_distances = (distances > lower) & (distances <= upper)
+        np.testing.assert_allclose(
+            band_maps.by_unit_id(7).to_2d_array()[:, 0],
+            expected[:, selected_distances].sum(axis=1),
+        )
 
     subprocess.run(
         [*analysis_command, "--units", "9"], check=True, env=environment, capture_output=True,
     )
-    assert list(result_path.parent.iterdir()) == [result_path]
-    selected = load_rf_maps(result_path)
-    assert selected.unit_ids == [9]
-    np.testing.assert_array_equal(
-        selected[0].to_2d_array(), maps.by_unit_id(9).to_2d_array(),
-    )
+    assert set(result_path.parent.iterdir()) == set(result_paths)
     recording_inputs.rename(tmp_path / "unavailable_recording")
-    np.testing.assert_array_equal(load_rf_maps(result_path).to_2d_array(), selected.to_2d_array())
+    for path in result_paths:
+        selected = load_rf_maps(path)
+        assert selected.unit_ids == [9]
+        np.testing.assert_array_equal(
+            selected[0].to_2d_array(), first_run[path].by_unit_id(9).to_2d_array(),
+        )
 
 
 @pytest.mark.parametrize("is_save", [False, True])
@@ -261,18 +342,22 @@ def test_plotting_notebook_displays_unit_and_population_and_saves_when_requested
     heatmap_cell.source = heatmap_cell.source.replace(
         "is_save_heatmap = False", f"is_save_heatmap = {is_save!r}",
     ) + "\n" + "\n".join([
-        "np.testing.assert_array_equal(sorted_unit_ids, [9, 7, 13, 11, 19])",
+        "np.testing.assert_array_equal(sorted_unit_ids, [9, 7, 13])",
+        "np.testing.assert_array_equal(excluded_unit_ids, [11, 19])",
+        "np.testing.assert_array_equal(unit_ids, [7, 9, 13])",
+        "assert rate_maps.shape == (3, 4, 3)",
+        "assert angle_profiles.shape == (3, 4)",
+        "assert peak_bin.shape == (3,)",
         "expected_heatmap = np.array([",
         "    [1, 0, 0, 0], [0, 1, 0.5, 0], [0.5, 0.25, 1, np.nan],",
-        "    [0, 0, 0, 0], [np.nan, np.nan, np.nan, np.nan],",
         "])",
         "np.testing.assert_array_equal(",
         "    np.ma.filled(heatmap_axis.images[0].get_array(), np.nan), expected_heatmap,",
         ")",
         "assert heatmap_axis.get_xlim() == (-180, 180)",
-        "assert heatmap_axis.get_ylim() == (4.5, -0.5)",
+        "assert heatmap_axis.get_ylim() == (2.5, -0.5)",
         "assert [tick.get_text() for tick in heatmap_axis.get_xticklabels()] == ['180', '90', '0', '270', '180']",
-        "assert [tick.get_text() for tick in heatmap_axis.get_yticklabels()] == ['9', '7', '13', '11', '19']",
+        "assert [tick.get_text() for tick in heatmap_axis.get_yticklabels()] == ['9', '7', '13']",
         "assert heatmap_figure.axes[1].get_ylabel() == 'Normalized response'",
         "assert heatmap_axis.images[0].get_clim() == (0, 1)",
         "assert heatmap_figure.get_facecolor() == (1, 1, 1, 1)",
@@ -299,6 +384,141 @@ def test_plotting_notebook_displays_unit_and_population_and_saves_when_requested
             pixels = plt.imread(image_path)
             np.testing.assert_array_equal(pixels[0, 0], [1, 1, 1, 1])
             assert np.all(pixels[:, :, 3] == 1)
+
+
+@pytest.mark.parametrize(
+    "distance_band, column, bounds",
+    [((None, 8), 0, (0, 8)), ((8, 16), 1, (8, 16)), ((16, None), 2, (16, 24))],
+)
+def test_plotting_notebook_reads_distance_bearing_maps(tmp_path, distance_band, column, bounds):
+    nbformat = pytest.importorskip("nbformat")
+    NotebookClient = pytest.importorskip("nbclient").NotebookClient
+    path = tmp_path / "bearing.rfmap"
+    values = np.arange(1, 25, dtype=float).reshape(2, 4, 3)
+    spatial.save_egocentric_rfmap(
+        path, values,
+        {"distance_edges": np.array([0, 4, 20, 24]), "theta_edges": np.linspace(0, 360, 5)},
+        [7, 9], [0, 1], distance_band_cm=distance_band,
+    )
+    notebook_path = Path(spatial.__file__).with_name("spatial_cell_plotting.ipynb")
+    nb = nbformat.read(notebook_path, as_version=4)
+    parameters = next(cell for cell in nb.cells if cell.id == "parameters")
+    parameters.source = f"result_path = Path({str(path)!r})\nrf_maps = load_rf_maps(result_path)\n"
+    plot_cell = next(cell for cell in nb.cells if cell.id == "plot")
+    plot_cell.source = (
+        "unit_id = 9\nis_save = False\n"
+        + plot_cell.source[plot_cell.source.index("rfmap = rf_maps.by_unit_id"):]
+        + f"\nassert axis.get_xlim() == {bounds!r}\n"
+        "assert axis.get_xlabel() == 'Distance to boundary (cm)'\n"
+        "assert axis.get_ylim() == (0, 360)\n"
+        "assert figure.axes[1].get_ylabel() == 'Hz'\n"
+        f"np.testing.assert_array_equal(axis.images[0].get_array()[:, 0], {values[1, :, column].tolist()!r})\n"
+    )
+    heatmap_cell = next(cell for cell in nb.cells if cell.id == "all-units-heatmap")
+    heatmap_cell.source += (
+        f"\nnp.testing.assert_array_equal(angle_profiles, {values[:, :, column].tolist()!r})\n"
+    )
+    client = NotebookClient(
+        nb, timeout=60, kernel_name="python3",
+        resources={"metadata": {"path": str(notebook_path.parent)}},
+    )
+    client.km = client.create_kernel_manager()
+    client.km.kernel_spec.argv[0] = sys.executable
+    client.execute()
+    assert set(tmp_path.iterdir()) == {path}
+
+
+def test_population_sort_matches_hd_rf_reference_and_rendered_peak_positions(tmp_path):
+    nbformat = pytest.importorskip("nbformat")
+    NotebookClient = pytest.importorskip("nbclient").NotebookClient
+    notebook_path = Path(spatial.__file__).with_name("spatial_cell_plotting.ipynb")
+    from Utils.direction_comparison import to_rf_angles, profile_table, sorted_by_peak
+    # Equal native peaks and unsorted IDs expose both RF-reference tie rules.
+    profiles = np.array([
+        [0, 0, 10, 10], [0, 0, 0, 5], [0, 0, 10, 0], [10, 0, 0, 0],
+        [0, 0, 0, 0], [np.nan] * 4,
+    ])
+    unit_ids = [40, 9, 7, 13, 99, 100]
+    angles = np.array([45, 135, 225, 315])
+    keys = [("A", unit_id) for unit_id in unit_ids[:4]]
+    peak_by_key = {key: angles[np.argmax(profile)] for key, profile in zip(keys, profiles[:4])}
+    reference = profile_table(profiles[:4], unit_ids[:4], to_rf_angles(angles), probe="A")
+    ordered_keys = sorted_by_peak(reference, keys)
+    expected_ids = [unit_id for _, unit_id in ordered_keys]
+    assert expected_ids == [13, 9, 7, 40]
+    to_layout_x = to_rf_angles
+    columns = np.argsort(to_layout_x(angles))
+    expected_rows = np.array([profiles[unit_ids.index(unit_id), columns] for unit_id in expected_ids])
+    expected_rows /= expected_rows.max(axis=1, keepdims=True)
+    peak_x = [float(to_layout_x(peak_by_key[key])) for key in ordered_keys]
+    path = tmp_path / "tuning.rfmap"
+    spatial.save_egocentric_rfmap(
+        path, profiles[:, :, None],
+        {"distance_edges": np.array([0, 8]), "theta_edges": np.linspace(0, 360, 5)},
+        unit_ids, [0, 1],
+    )
+    nb = nbformat.read(notebook_path, as_version=4)
+    nb.cells = [cell for cell in nb.cells if cell.id in {"imports", "parameters", "all-units-heatmap"}]
+    parameters = next(cell for cell in nb.cells if cell.id == "parameters")
+    parameters.source = (
+        f"result_path = Path({str(path)!r})\nrf_maps = load_rf_maps(result_path)\n"
+        "plt.rcParams['image.origin'] = 'lower'\n"
+    )
+    heatmap_cell = next(cell for cell in nb.cells if cell.id == "all-units-heatmap")
+    heatmap_cell.source += "\n" + "\n".join([
+        f"np.testing.assert_array_equal(sorted_unit_ids, {expected_ids!r})",
+        "np.testing.assert_array_equal(excluded_unit_ids, [99, 100])",
+        f"np.testing.assert_array_equal(heatmap_axis.images[0].get_array(), {expected_rows.tolist()!r})",
+        "from matplotlib.backend_bases import MouseEvent",
+        "heatmap_figure.canvas.draw()",
+        f"for row, peak_x in enumerate({peak_x!r}):",
+        "    px, py = heatmap_axis.transData.transform((peak_x, row))",
+        "    event = MouseEvent('motion_notify_event', heatmap_figure.canvas, px, py)",
+        "    assert heatmap_axis.images[0].get_cursor_data(event) == 1.0",
+    ])
+    client = NotebookClient(
+        nb, timeout=60, kernel_name="python3",
+        resources={"metadata": {"path": str(notebook_path.parent)}},
+    )
+    client.km = client.create_kernel_manager()
+    client.km.kernel_spec.argv[0] = sys.executable
+    client.execute()
+
+
+def test_population_heatmap_explains_when_all_profiles_are_zero_or_missing(tmp_path):
+    nbformat = pytest.importorskip("nbformat")
+    NotebookClient = pytest.importorskip("nbclient").NotebookClient
+    path = tmp_path / "empty.rfmap"
+    spatial.save_egocentric_rfmap(
+        path, [np.zeros((4, 1)), np.full((4, 1), np.nan)],
+        {"distance_edges": np.array([0, 8]), "theta_edges": np.linspace(0, 360, 5)},
+        [7, 9], [0, 1],
+    )
+    notebook_path = Path(spatial.__file__).with_name("spatial_cell_plotting.ipynb")
+    nb = nbformat.read(notebook_path, as_version=4)
+    nb.cells = [cell for cell in nb.cells if cell.id in {"imports", "parameters", "all-units-heatmap"}]
+    parameters = next(cell for cell in nb.cells if cell.id == "parameters")
+    parameters.source = f"result_path = Path({str(path)!r})\nrf_maps = load_rf_maps(result_path)\n"
+    heatmap_cell = next(cell for cell in nb.cells if cell.id == "all-units-heatmap")
+    heatmap_cell.source += "\n" + "\n".join([
+        "assert n_units == 0",
+        "np.testing.assert_array_equal(excluded_unit_ids, [7, 9])",
+        "assert rate_maps.shape == (0, 4, 1)",
+        "assert angle_profiles.shape == (0, 4)",
+        "assert peak_bin.size == 0",
+        "assert len(heatmap_axis.images) == 0",
+        "assert heatmap_axis.texts[0].get_text() == 'No nonzero responses in this RFMap.'",
+        "assert heatmap_figure.get_facecolor() == (1, 1, 1, 1)",
+        "assert heatmap_axis.get_facecolor() == (1, 1, 1, 1)",
+    ])
+    client = NotebookClient(
+        nb, timeout=60, kernel_name="python3",
+        resources={"metadata": {"path": str(notebook_path.parent)}},
+    )
+    client.km = client.create_kernel_manager()
+    client.km.kernel_spec.argv[0] = sys.executable
+    client.execute()
+    assert set(tmp_path.iterdir()) == {path}
 
 
 def test_load_data_reads_adc_when_saved_camera_times_are_missing(recording_inputs):
@@ -357,7 +577,7 @@ def test_pose_input_requires_processed_columns(recording_inputs):
         spatial.load_data()
 
 
-def test_failed_analysis_keeps_previous_result(recording_inputs, tmp_path, monkeypatch):
+def test_failed_analysis_keeps_all_previous_results(recording_inputs, tmp_path, monkeypatch):
     class FailedExecutor:
         def __init__(self, **kwargs):
             pass
@@ -373,9 +593,16 @@ def test_failed_analysis_keeps_previous_result(recording_inputs, tmp_path, monke
 
     monkeypatch.setattr(spatial, "ProcessPoolExecutor", FailedExecutor)
     result_path = tmp_path / "result.rfmap"
-    result_path.write_text("previous complete result")
+    result_paths = [
+        result_path, result_path.with_name("result_0-8.rfmap"),
+        result_path.with_name("result_8-16.rfmap"),
+        result_path.with_name("result_16-.rfmap"),
+    ]
+    for path in result_paths:
+        path.write_text("previous complete result")
     with pytest.raises(RuntimeError, match="unit analysis failed"):
         spatial.run_analysis(output=result_path)
-    assert result_path.read_text() == "previous complete result"
-    assert not result_path.with_name("result.rfmap.tmp").exists()
+    for path in result_paths:
+        assert path.read_text() == "previous complete result"
+        assert not path.with_name(path.name + ".tmp").exists()
     assert spatial.worker_data is None
