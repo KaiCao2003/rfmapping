@@ -156,11 +156,36 @@ def test_rfmap_export_preserves_matrices_units_coordinates_and_nan(tmp_path):
         "theta_edges": np.array([0, 90, 180, 360]),
     }
     path = tmp_path / "egocentric_rate_map.rfmap"
-    spatial.save_egocentric_rfmap(path, expected, session, [9, 7], [5.0, 8.5])
+    spatial.save_egocentric_rfmap(
+        path, expected, session, [9, 7], [5.0, 8.5],
+        metadata={"boundaryType": "circle", "boundaryDiameterCm": 20},
+    )
     assert list(tmp_path.iterdir()) == [path]
-    payload = json.loads(path.read_text())
-    assert payload["unitsSpikeCounts"][0][0][1] == [None]
+    assert path.read_bytes().startswith(b"PK\x03\x04")
+    with np.load(path, allow_pickle=False) as archive:
+        assert set(archive.files) == {
+            "metadata", "unitPool", "xPositions", "yPositions", "timeBinEdges",
+            "occupancyTimeSec", "unit_9", "unit_7",
+        }
+        assert archive["metadata"].dtype == np.uint8
+        payload = json.loads(archive["metadata"].tobytes().decode("utf-8"))
+        assert payload["format"] == "rfmap"
+        assert payload["formatVersion"] == 2
+        assert payload["storage"] == "indexed_npz"
+        assert payload["unitArrayKeyPattern"] == "unit_{unit_id}"
+        assert payload["unitArrayAxes"] == ["y", "x", "time"]
+        assert payload["unitsSpikeCountsSize"] == [2, 3, 2, 1]
+        assert "unitsSpikeCounts" not in payload
+        assert archive["unitPool"].dtype == np.int64
+        for unit_id, matrix in zip([9, 7], expected):
+            stored = archive[f"unit_{unit_id}"]
+            assert stored.dtype == np.float64
+            assert stored.flags.f_contiguous
+            np.testing.assert_array_equal(stored, matrix[..., None])
+        np.testing.assert_array_equal(archive["occupancyTimeSec"], np.ones((3, 2)))
     assert payload["responseUnits"] == "Hz"
+    assert payload["responseNormalization"] == "already_normalized"
+    assert payload["occupancyTimeSecDefinition"] == "normalization_identity_for_precomputed_rates"
     assert payload["xBinEdges"] == [0, 4, 10]
     assert payload["yBinEdges"] == [0, 90, 180, 360]
     for options in ({}, {"unit_firing_rate": False}):
@@ -171,6 +196,28 @@ def test_rfmap_export_preserves_matrices_units_coordinates_and_nan(tmp_path):
         np.testing.assert_array_equal(maps[0].x_positions, [2, 7])
         np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 270])
         np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
+        assert maps[0].metadata["boundaryType"] == "circle"
+        assert maps[0].metadata["boundaryDiameterCm"] == 20
+
+
+def test_rfmap_write_failure_preserves_previous_result(tmp_path, monkeypatch):
+    path = tmp_path / "tuning.rfmap"
+    original = b"previous complete result"
+    path.write_bytes(original)
+
+    def fail_mid_write(stream, **arrays):
+        stream.write(b"partial archive")
+        raise OSError("write interrupted")
+
+    monkeypatch.setattr(spatial.np, "savez_compressed", fail_mid_write)
+    with pytest.raises(OSError, match="write interrupted"):
+        spatial.save_egocentric_rfmap(
+            path, np.ones((1, 2, 1)),
+            {"distance_edges": np.array([0, 4]), "theta_edges": np.array([0, 180, 360])},
+            [7], [0, 1],
+        )
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_four_rfmap_exports_partition_bin_centers_and_preserve_missing_values(tmp_path):
@@ -203,8 +250,9 @@ def test_four_rfmap_exports_partition_bin_centers_and_preserve_missing_values(tm
         paths[1:], expected_curves, ([0, 8], [8, 16], [16, 24]),
         ([2, 8], [16], [22]),
     ):
-        payload = json.loads(path.read_text())
-        assert payload["unitsSpikeCounts"][0][2][0] == [None]
+        with np.load(path, allow_pickle=False) as archive:
+            payload = json.loads(archive["metadata"].tobytes().decode("utf-8"))
+            assert np.isnan(archive["unit_9"][2, 0, 0])
         assert "distanceRangeCm" not in payload
         assert payload["distanceSelection"] == "bin_centers"
         assert payload["distanceBinCentersCm"] == centers

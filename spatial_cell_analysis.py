@@ -302,8 +302,8 @@ def save_egocentric_rfmap(
     result_path, rate_maps, session_maps, unit_ids, interval_s,
     *, distance_band_cm=None, metadata=None,
 ):
-    """Save the full matrices or their angular sums within one distance band."""
-    values = np.stack(rate_maps)[..., None]
+    """Save full matrices or distance-band sums as a version-2 indexed RFMap."""
+    values = np.stack(rate_maps).astype(np.float64, copy=False)[..., None]
     distance_edges = session_maps["distance_edges"]
     theta_edges = session_maps["theta_edges"]
     band_metadata = {}
@@ -329,29 +329,44 @@ def save_egocentric_rfmap(
             "responseAggregation": "sum_over_distance",
         }
     payload = {
-        "unitsSpikeCounts": np.where(np.isnan(values), None, values).tolist(),
         "unitsSpikeCountsSize": list(values.shape),
-        "unitPool": unit_ids,
-        "xPositions": ((distance_edges[:-1] + distance_edges[1:]) / 2).tolist(),
-        "yPositions": ((theta_edges[:-1] + theta_edges[1:]) / 2).tolist(),
         "xBinEdges": distance_edges.tolist(),
         "yBinEdges": theta_edges.tolist(),
         "xUnits": "cm",
         "yUnits": "deg",
-        "timeBinEdges": interval_s,
         "responseUnits": "Hz",
         "responseNormalization": "already_normalized",
         **band_metadata,
         **({} if metadata is None else metadata),
+        "format": "rfmap",
+        "formatVersion": 2,
+        "storage": "indexed_npz",
+        "unitArrayKeyPattern": "unit_{unit_id}",
+        "unitArrayAxes": ["y", "x", "time"],
+        "occupancyTimeSecDefinition": "normalization_identity_for_precomputed_rates",
+    }
+    arrays = {
+        "metadata": np.frombuffer(json.dumps(payload, allow_nan=False).encode("utf-8"), dtype=np.uint8),
+        "unitPool": np.asarray(unit_ids, dtype=np.int64),
+        "xPositions": np.asarray((distance_edges[:-1] + distance_edges[1:]) / 2, dtype=np.float64),
+        "yPositions": np.asarray((theta_edges[:-1] + theta_edges[1:]) / 2, dtype=np.float64),
+        "timeBinEdges": np.asarray(interval_s, dtype=np.float64),
+        # Required by the indexed schema; stored Hz values need no further division.
+        # This identity array is not measured occupancy.
+        "occupancyTimeSec": np.ones(values.shape[1:3], dtype=np.float64, order="F"),
+        **{f"unit_{unit_id}": np.asfortranarray(matrix)
+           for unit_id, matrix in zip(unit_ids, values, strict=True)},
     }
     result_path = Path(result_path)
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    # Replace the result only after every unit and the complete JSON are ready.
+    # Passing a stream preserves the .rfmap suffix instead of appending .npz.
     temporary_path = result_path.with_name(result_path.name + ".tmp")
-    temporary_path.write_text(
-        json.dumps(payload, allow_nan=False) + "\n", encoding="utf-8",
-    )
-    temporary_path.replace(result_path)
+    try:
+        with temporary_path.open("wb") as stream:
+            np.savez_compressed(stream, **arrays)
+        temporary_path.replace(result_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def save_egocentric_rfmaps(result_path, rate_maps, session_maps, unit_ids, interval_s):
