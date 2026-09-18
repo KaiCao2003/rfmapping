@@ -13,7 +13,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, overload
 
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
@@ -1669,6 +1668,8 @@ def plot_2d_rfmap(
     dimension is shown horizontally (columns). A singleton y row keeps the
     GUI's 30:7 spatial-map footprint instead of rendering as a thin strip.
     """
+    import matplotlib.pyplot as plt
+
     data = np.asarray(data)
     if data.ndim != 2:
         raise ValueError("data must be a 2D array.")
@@ -1708,6 +1709,8 @@ def plot_2d_rfmap(
 
 def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isNormalize: bool = False, isLineplot: bool = False,
                   isHeatmap: bool = False, offset: float = 1.0, xinDeg: bool = False):
+    import matplotlib.pyplot as plt
+
     # Validation
     if isLineplot == isHeatmap:
         raise ValueError("Exactly one of isLineplot or isHeatmap must be True.")
