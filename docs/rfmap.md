@@ -15,6 +15,7 @@ RF detection is exposed through `RFMap.rf_2d()`, `RFMap.rf_1d()`,
 `RFMapList.rf_2d()`, and `RFMapList.rf_1d()`. The caller chooses between the
 complete mask and its center with one boolean: `is_center=False` returns the
 mask and `is_center=True` returns the center.
+All four methods default to `is_shuffle=False, drop_bins=2`.
 
 ## Quick start
 
@@ -71,7 +72,8 @@ unit axis.
 
 `.rfmap` is a source-data extension, not a result or cache extension:
 
-- A regular pooled map is JSON text and may end in `.json` or `.rfmap`.
+- Regular pooled sources can be legacy JSON (`.json` or `.rfmap`) or MATLAB's
+  indexed NPZ (`.rfmap`). `load_rf_maps()` detects the format from file contents.
 - A free-moving `.rfmap` is HDF5 and follows its own source schema.
 - A reusable detection result ends in `.npz`.
 
@@ -118,6 +120,21 @@ By default, loading divides `unitsSpikeCounts` by the spatial
 `occupancyTimeSec`, producing firing-rate values in Hz without changing any
 array shape. Pass `unit_firing_rate=False` to keep raw spike counts. Raw mode
 is required when `load_regular_rf_trials()` validates reconstructed counts.
+The returned metadata describes the loaded values: `responseUnits` is
+`spike_count` or `Hz`, and conversion to Hz sets `responseNormalization` to
+`occupancyTimeSec`. Sources already stored in Hz retain their normalization.
+
+Zero-occupancy positions remain NaN in rate maps and are excluded from
+non-shuffle RF detection. One-dimensional projections sum observed values;
+a projected bin with no observed values remains NaN.
+
+`occupancyTimeSec` is the display time at each position: the sum of the
+qualifying trials' show times, or `show_time * trial_count` when show time is
+constant. This is the normalization denominator even when the selected
+response window is longer or shorter than show time. Non-shuffle detection
+uses the loaded values directly, without another division by presentation
+counts. Loading raw counts therefore also leaves those counts unnormalized
+when detecting a non-shuffle RF.
 
 | Value | `RFMapList` shape | One `RFMap` shape | Meaning |
 | --- | --- | --- | --- |
@@ -232,6 +249,10 @@ spike times, Kilosort cluster labels, and good-unit labels. It checks the grid,
 unit IDs, response window, repeat structure, and pooled counts against
 `summed`. It returns aligned trial responses, joint spatial labels,
 exchangeability strata, positions, unit IDs, and provenance.
+The onset file may contain exactly one timestamp per trial, or one additional
+terminal boundary. Only the first N timestamps are used for N trials; the
+terminal interval need not equal the stimulus duration. Provenance records
+whether the extra boundary was excluded in `terminal_edge_excluded`.
 
 Exactly one polarity flag must be true. `on=True, off=False` selects
 `Square_Luminance == 1`; `on=False, off=True` selects
@@ -257,8 +278,8 @@ also takes `axis="x"` or `axis="y"`.
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `is_center` | `False` | Return the complete mask; `True` returns its discrete center |
-| `is_shuffle` | `True` | Run cluster-permutation significance testing |
-| `drop_bins` | `1` | No-shuffle only: remove components of this size or smaller |
+| `is_shuffle` | `False` | Run cluster-permutation significance testing when explicitly enabled |
+| `drop_bins` | `2` | No-shuffle only: remove components of this size or smaller |
 | `cluster_forming_z` | `1.5` | Select pixels allowed to form candidate clusters |
 | `alpha` | `0.05` | Cluster-level significance cutoff |
 | `n_permutations` | `10_000` | Number of shuffled null maps |

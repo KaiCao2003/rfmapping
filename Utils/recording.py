@@ -512,7 +512,7 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
                 ],
                 [
                     recording_interval,
-                    recording_interval_indices,
+                    recording_interval_indices.tolist(),
                 ],
                 filename=sync_data_filename,
                 path=f"{base_dir}/data",
@@ -529,18 +529,23 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
         recording_interval = np.asarray(
             sync_data["recording_interval"],
             dtype=float,
-        )
+        ).reshape(-1, 2)
 
-        recording_interval_indices = np.fromstring(
-            sync_data["recording_interval_indices"].strip("[]"),
-            sep=" ",
-            dtype=int,
-        ).tolist()
+        recording_interval_indices = sync_data["recording_interval_indices"]
+        if isinstance(recording_interval_indices, str):
+            recording_interval_indices = np.fromstring(
+                recording_interval_indices.replace("[", "").replace("]", ""),
+                sep=" ",
+                dtype=int,
+            )
+        recording_interval_indices = np.asarray(
+            recording_interval_indices, dtype=int,
+        ).reshape(-1, 2)
 
         raw_interval_table = pd.DataFrame(
             {
-                "start_frame": recording_interval_indices[0],
-                "end_frame": recording_interval_indices[1],
+                "start_frame": recording_interval_indices[:, 0],
+                "end_frame": recording_interval_indices[:, 1],
                 "start": recording_interval[:, 0],
                 "end": recording_interval[:, 1],
             }
@@ -575,5 +580,4 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
             return(False,
                 "\033[91mToo many intervals\033[0m:Multiple recording intervals detected. Manually run it to fix."
             )
-
 

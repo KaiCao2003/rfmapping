@@ -1,5 +1,81 @@
 import numpy as np
 from collections.abc import Mapping
+from scipy.stats import circmean, pearsonr, permutation_test, spearmanr
+
+
+def circular_distance_matrix_deg(angles_deg):
+    """Return shortest angular distances, in degrees, between every pair."""
+    angles_deg = np.asarray(angles_deg, dtype=float)
+    delta = angles_deg[:, None] - angles_deg[None, :]
+    return np.abs((delta + 180.0) % 360.0 - 180.0)
+
+
+def circular_correlation(alpha, beta):
+    """Correlate sine-centered angles supplied in radians."""
+    alpha_centered = np.sin(alpha - circmean(alpha))
+    beta_centered = np.sin(beta - circmean(beta))
+    return float(pearsonr(alpha_centered, beta_centered).statistic)
+
+
+def compare_direction_angles(
+    reference_deg, matched_deg, *, n_permutations=10_000, random_seed=1,
+):
+    """Compare aligned unit directions with circular and Mantel tests.
+
+    Permute unit pairings, not individual distance entries. Mantel statistics
+    use unique off-diagonal pairs; plots may show the full ordered-pair matrix.
+    The reported offset is matched minus reference, wrapped to [-180, 180].
+    """
+    reference_deg = np.asarray(reference_deg, dtype=float)
+    matched_deg = np.asarray(matched_deg, dtype=float)
+    if reference_deg.ndim != 1 or matched_deg.shape != reference_deg.shape:
+        raise ValueError("direction arrays must be one-dimensional and aligned by unit")
+    if reference_deg.size < 3:
+        raise ValueError("direction comparisons require at least three shared units")
+    if not np.all(np.isfinite(reference_deg)) or not np.all(np.isfinite(matched_deg)):
+        raise ValueError("direction comparisons require finite peak angles")
+
+    def permutation_p(values, statistic):
+        result = permutation_test(
+            (values,), statistic, permutation_type="pairings", vectorized=False,
+            n_resamples=n_permutations, alternative="greater",
+            rng=np.random.default_rng(random_seed),
+        )
+        return float(result.pvalue)
+
+    reference_rad = np.deg2rad(reference_deg)
+    matched_rad = np.deg2rad(matched_deg)
+    rho_circ = circular_correlation(reference_rad, matched_rad)
+    p_circ = permutation_p(
+        matched_rad, lambda shuffled: abs(circular_correlation(reference_rad, shuffled)),
+    )
+    residual_vector = np.mean(np.exp(1j * (matched_rad - reference_rad)))
+
+    upper_triangle = np.triu_indices(reference_deg.size, k=1)
+    reference_distances = circular_distance_matrix_deg(reference_deg)[upper_triangle]
+
+    def mantel_statistic(shuffled):
+        distances = circular_distance_matrix_deg(shuffled)[upper_triangle]
+        return float(spearmanr(reference_distances, distances).statistic)
+
+    mantel_rho = mantel_statistic(matched_deg)
+    mantel_p = permutation_p(matched_deg, lambda shuffled: abs(mantel_statistic(shuffled)))
+    unit_count = int(reference_deg.size)
+    return {
+        "same_unit": {
+            "circular_correlation_rho": rho_circ,
+            "permutation_p": p_circ,
+            "one_to_one_offset_deg": float(np.rad2deg(np.angle(residual_vector))),
+            "alignment_resultant": float(abs(residual_vector)),
+            "unit_count": unit_count,
+        },
+        "pairwise": {
+            "spearman_mantel_rho": mantel_rho,
+            "permutation_p": mantel_p,
+            "unit_count": unit_count,
+            "ordered_pair_count": unit_count ** 2,
+        },
+    }
 
 
 def basic_statistics(target: list | np.ndarray) -> None:

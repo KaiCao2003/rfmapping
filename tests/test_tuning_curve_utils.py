@@ -230,6 +230,7 @@ def test_tuning_curve_writes_exact_columnar_contract(
         is_save=True,
         save_path=save_path,
         metadata={"epoch": "arena"},
+        timestamp_reference="adc_exposure_midpoint",
     )
 
     assert tuple(result) == (
@@ -243,6 +244,7 @@ def test_tuning_curve_writes_exact_columnar_contract(
         "unit_data",
     )
     assert result["unit_id"] == unit_ids
+    assert result["metadata"]["timestamp_reference"] == "adc_exposure_midpoint"
     assert result["spike_counts"] == counts_by_unit.tolist()
     assert result["firing_rate_hz"][-2][0] == 1.0
     assert result["firing_rate_hz"][-1][0] == 2.0

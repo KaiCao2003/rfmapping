@@ -1,6 +1,6 @@
 """Strict raw-trial loading for regular sparse-noise RF maps.
 
-The pooled JSON-text ``regular_unitsSpikeCounts`` source files do not retain
+The pooled ``regular_unitsSpikeCounts`` source files do not retain
 the trial axis needed by permutation-based RF detection.  This module
 reconstructs that axis from the original MATLAB trial table and aligned
 Kilosort spikes.
@@ -31,8 +31,6 @@ _SESSION_NAME = re.compile(r"^(?P<date>\d{6})_(?P<recording>\d+)$")
 _REGULAR_RF_SOURCE_NAME = re.compile(
     r"^regular_unitsSpikeCounts_.+\.(?:json|rfmap)$"
 )
-_SYNTHETIC_EDGE_INTERVAL_S = 0.1
-_EDGE_ATOL_S = 1e-9
 
 
 def _regular_source_paths(session: str | Path, probe: str) -> dict[str, Path]:
@@ -178,7 +176,7 @@ def _validate_rf_maps(
         raise TypeError("rf_maps must be an RFMapList")
     if _REGULAR_RF_SOURCE_NAME.fullmatch(rf_maps.source_path.name) is None:
         raise ValueError(
-            "raw trial loading requires a JSON-text regular RF source named "
+            "raw trial loading requires a regular RF source named "
             "regular_unitsSpikeCounts_* with a .json or .rfmap suffix"
         )
     if not rf_maps:
@@ -318,29 +316,19 @@ def _raw_trial_geometry(
 def _aligned_onsets(
     paths: Mapping[str, Path],
     n_trials: int,
-) -> NDArray[np.float64]:
+) -> tuple[NDArray[np.float64], bool]:
     raw_edges = _load_1d_npy(paths["onsets_npy"], "stimulus onset edges")
     _validate_finite_sorted_times(raw_edges, "stimulus onset edges")
-    if raw_edges.size != n_trials + 1:
+    if raw_edges.size not in {n_trials, n_trials + 1}:
         raise ValueError(
-            "on_list_times must contain one onset per trial plus one synthetic "
+            "on_list_times must contain one onset per trial with an optional "
             f"terminal edge; got {raw_edges.size} values for {n_trials} trials"
         )
     if np.any(np.asarray(raw_edges[1:]) <= np.asarray(raw_edges[:-1])):
         raise ValueError("stimulus onset edges must be strictly increasing")
 
-    terminal_interval = float(raw_edges[-1] - raw_edges[-2])
-    if not math.isclose(
-        terminal_interval,
-        _SYNTHETIC_EDGE_INTERVAL_S,
-        rel_tol=0.0,
-        abs_tol=_EDGE_ATOL_S,
-    ):
-        raise ValueError(
-            "final on_list_times value does not match the pipeline's synthetic "
-            "+0.1 s terminal edge"
-        )
-    return np.asarray(raw_edges[:-1], dtype=float)
+    # Only the first N timestamps define trial onsets; a trailing boundary is unused.
+    return np.asarray(raw_edges[:n_trials], dtype=float), raw_edges.size == n_trials + 1
 
 
 def _unit_trial_counts(
@@ -409,7 +397,7 @@ def _validate_pooled_counts(
         if not np.array_equal(pooled_raw, pooled_json):
             max_difference = float(np.max(np.abs(pooled_raw - pooled_json)))
             raise ValueError(
-                "raw trial counts do not match pooled regular RF JSON for "
+                "raw trial counts do not match pooled regular RF source for "
                 f"unit_id {rf_map.unit_id}; maximum absolute difference is "
                 f"{max_difference:g}"
             )
@@ -418,7 +406,7 @@ def _validate_pooled_counts(
             and not np.array_equal(rf_map.presentation_counts, presentation_counts)
         ):
             raise ValueError(
-                "raw trial presentation counts do not match pooled regular RF JSON"
+                "raw trial presentation counts do not match pooled regular RF source"
             )
 
 
@@ -455,9 +443,14 @@ def load_regular_rf_trials(
 
     if not isinstance(validate_pooled, (bool, np.bool_)):
         raise TypeError("validate_pooled must be bool")
+    if validate_pooled and any(rf_map.metadata.get("responseUnits") == "Hz" for rf_map in rf_maps):
+        raise ValueError(
+            "pooled trial validation requires spike counts; "
+            "load_rf_maps(..., unit_firing_rate=False)"
+        )
 
     trials = _trial_records(paths["trials_mat"])
-    onsets = _aligned_onsets(paths, len(trials))
+    onsets, terminal_edge_excluded = _aligned_onsets(paths, len(trials))
     all_position_ids, polarities, all_strata = _raw_trial_geometry(
         trials,
         x_positions,
@@ -493,7 +486,7 @@ def load_regular_rf_trials(
         "spike_times_npy": str(paths["spike_times_npy"]),
         "spike_clusters_npy": str(paths["spike_clusters_npy"]),
         "pooled_rf_json": str(rf_maps.source_path),
-        "synthetic_terminal_edge_excluded": True,
+        "terminal_edge_excluded": terminal_edge_excluded,
         "n_all_trials": len(trials),
         "n_repeat_blocks": int(np.unique(all_strata).size),
     }

@@ -11,13 +11,24 @@ helpers remain here and are copied into that directory when needed.
 
 ## Spatial-cell analysis and plotting
 
-`spatial_cell_analysis.ipynb` saves the final tuning matrices for all selected
-units in one `.rfmap` file with a single time bin. `spatial_cell_plotting.ipynb`
+`spatial_cell_analysis.ipynb` saves four `.rfmap` files for all selected units:
+the full tuning matrices and 360° bearing curves summed over distance bins
+with centers ≤8 cm, 8–16 cm (excluding 8), and >16 cm. Each file has a single
+time bin. `spatial_cell_plotting.ipynb`
 uses the existing RFMap reader and plotter for a selected unit and an angular
-heatmap of all saved units. `is_save` and `is_save_heatmap` save their respective
+heatmap of units with nonzero responses, sorted as in `hd_rf_comparison.ipynb`.
+`is_save` and `is_save_heatmap` save their respective
 figures when set to `True`. Set the Basler/OptiHub2 output bools
 explicitly in the analysis notebook. See [docs/spatial_cells.md](docs/spatial_cells.md)
 for usage and the result format.
+
+`hd_rf_ebc_comparison.ipynb` compares RF2 with HD9/HD12 and EBC profiles,
+including paired peak alignment, session-9 circular boundaries, and RF center
+y versus EBC preferred distance. Run it before `ebc_artifact_controls.ipynb`,
+which adds behavior matching, held-out HD-only Poisson controls, and stability
+checks for all active good units. See
+[docs/hd_rf_ebc_comparison.md](docs/hd_rf_ebc_comparison.md) for configuration,
+saved unit lists, statistical interpretation, and output paths.
 
 ## Python RFMap API
 
@@ -62,9 +73,12 @@ rf_masks_2d = summed.rf_2d(
     result_path=result_path,
     show_progress=True,
 )
-rf_masks_x = summed.rf_1d(trials, axis="x", result_path=result_path)
+rf_masks_x = summed.rf_1d(
+    trials, axis="x", is_shuffle=True, result_path=result_path,
+)
 rf_centers_2d = summed.rf_2d(
     trials,
+    is_shuffle=True,
     is_center=True,
     result_path=result_path,
 )
@@ -81,28 +95,35 @@ array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 `load_rf_maps()` returns firing-rate values by default by dividing the stored
 counts by `occupancyTimeSec`. Pass `unit_firing_rate=False` when raw pooled
 counts are needed, including before `load_regular_rf_trials()` validation.
+`occupancyTimeSec` is the total display time at each position: the sum of the
+qualifying trials' show times. Non-shuffle detection uses the loaded values
+directly and does not divide by presentation counts again.
+
+All single-unit and batch `rf_2d()`/`rf_1d()` calls default to
+`is_shuffle=False, drop_bins=2`. Pass `is_shuffle=True` explicitly for
+trial-label permutation, as in the example above.
 
 `sum(earlier, later)` uses seconds and the half-open interval
 `[earlier, later)`. Both values must resolve to actual `timeBinEdges` entries
 within `1e-12` seconds. Equal edges produce a valid zero-valued singleton time
 axis; reversed intervals are invalid.
 
-`rf_2d()` and `rf_1d()` operate on a single-bin summed object and matching
-trial data. A pooled source does not contain a trial axis and is insufficient
-for label permutation. The regular-data loader reconstructs per-trial
-responses from the authoritative MAT, onset, spike-time, cluster, and good-unit
-files. Set exactly one of `on` and `off`: ON selects
+`rf_2d()` and `rf_1d()` operate on a single-bin summed object. Shuffle detection
+also requires matching trial data. A pooled source does not contain a trial
+axis and is insufficient for label permutation. The regular-data loader
+reconstructs per-trial responses from the authoritative MAT, onset, spike-time,
+cluster, and good-unit files. Set exactly one of `on` and `off`: ON selects
 `Square_Luminance == 1`, while OFF selects `Square_Luminance == 0`.
 Permutations keep responses fixed and shuffle the joint `(x, y)` label within
 verified exchangeability blocks after polarity filtering. Repeat blocks are
 validated against the luminances actually present, including ON-only and
 OFF-only sessions.
 
-Candidate pixels use the configured cluster-forming z threshold. Significance
-comes from the null distribution of the maximum 4-connected cluster mass. The
-1-D RF is a projection of the final 2-D mask, not a separate test. Correction is
-within a unit and does not correct across units, polarities, or separately run
-analyses.
+Candidate pixels use the configured cluster-forming z threshold. With shuffle
+enabled, significance comes from the null distribution of the maximum
+4-connected cluster mass. The 1-D RF is a projection of the final 2-D mask, not
+a separate test. Correction is within a unit and does not correct across
+units, polarities, or separately run analyses.
 
 Batch work can show `Sum`, `Detecting RF`, and `Center` progress bars.
 `is_center=False` returns the complete mask; `is_center=True` returns one
@@ -113,9 +134,9 @@ for silent library use.
 successful run stores both the mask and center, together with enough input and
 parameter identity to reject a stale result. Later center or 1-D calls can
 reuse it without rerunning the permutation. Do not use `.rfmap` for this:
-`.rfmap` remains a raw-source extension (JSON text for regular maps and HDF5
-for free-moving maps). Regular JSON-text sources may end in either `.json` or
-`.rfmap`.
+`.rfmap` remains a raw-source extension (JSON or indexed NPZ for regular maps
+and HDF5 for free-moving maps). `load_rf_maps()` reads both regular formats.
+Legacy JSON sources may end in either `.json` or `.rfmap`.
 
 With `is_shuffle=False`, `drop_bins=1` removes every 4-connected candidate
 component containing one bin; in general, components with size less than or
@@ -149,7 +170,8 @@ saved; this path does not reconstruct spikes from sample indices.
 
 ## Install and validate
 
-Project code is run only on `hhw9l84` with the existing remote virtualenv:
+Python 3.12 or newer is required. Project code is run only on `hhw9l84` with
+the existing remote virtualenv:
 
 ```sh
 ssh hhw9l84 'cd ~/Developer/rfmapping && \
@@ -166,6 +188,13 @@ The optional `analysis` dependency group covers plotting/tuning helpers:
 ```sh
 ssh hhw9l84 'cd ~/Developer/rfmapping && \
   ~/.virtualenvs/rfmapping/bin/pip install -e ".[analysis,test]"'
+```
+
+The optional `waveform` group covers SpikeInterface extraction and probe plots:
+
+```sh
+ssh hhw9l84 'cd ~/Developer/rfmapping && \
+  ~/.virtualenvs/rfmapping/bin/pip install -e ".[waveform,test]"'
 ```
 
 ## MATLAB pipeline

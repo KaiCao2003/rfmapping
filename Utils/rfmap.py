@@ -443,7 +443,7 @@ def _rf_result_manifest(
         "detector_algorithm": (
             "cluster-permutation-v1"
             if parameters["is_shuffle"]
-            else "pooled-spatial-z-v1"
+            else "pooled-spatial-z-v2"
         ),
         "center_algorithm": "response-weighted-medoid-v1",
         "nonshuffle_filter": "drop-small-components-inclusive-v1",
@@ -522,21 +522,17 @@ def _rf_output_arrays(
                     "all RFMaps must share stimulus presentation counts"
                 )
 
-        if presentation_counts is None:
-            position_ids = np.arange(first.n_y * first.n_x, dtype=np.int64)
-            responses = pooled.reshape(len(maps), -1)
-        else:
-            valid_positions = np.asarray(presentation_counts) > 0
-            position_ids = np.flatnonzero(valid_positions).astype(
-                np.int64,
-                copy=False,
-            )
-            if position_ids.size == 0:
-                raise ValueError("pooled RF has no presented spatial positions")
-            responses = (
-                    pooled[:, valid_positions]
-                    / np.asarray(presentation_counts)[valid_positions]
-            )
+        valid_positions = ~np.all(np.isnan(pooled), axis=0)
+        if presentation_counts is not None:
+            valid_positions &= np.asarray(presentation_counts) > 0
+        if "occupancyTimeSec" in first.metadata:
+            valid_positions &= np.asarray(first.metadata["occupancyTimeSec"]).reshape(
+                first.n_y, first.n_x,
+            ) > 0
+        position_ids = np.flatnonzero(valid_positions).astype(np.int64, copy=False)
+        if position_ids.size == 0:
+            raise ValueError("pooled RF has no presented spatial positions")
+        responses = pooled[:, valid_positions]
 
         aligned = {
             "responses": responses,
@@ -864,6 +860,10 @@ class RFMap:
         normalized_axis = _axis_name(axis)
         matrix = self.to_2d_array()
         collapsed_axis = 0 if normalized_axis == "x" else 1
+        if np.isnan(matrix).any():
+            projected = np.nansum(matrix, axis=collapsed_axis)
+            projected[np.all(np.isnan(matrix), axis=collapsed_axis)] = np.nan
+            return _readonly_array(projected)
         return _readonly_array(matrix.sum(axis=collapsed_axis))
 
     # Time-window operations
@@ -1024,8 +1024,8 @@ class RFMap:
             self,
             trials: Mapping[str, Any] | None = None,
             *,
-            is_shuffle: bool = True,
-            drop_bins: int = 1,
+            is_shuffle: bool = False,
+            drop_bins: int = 2,
             is_center: bool = False,
             result_path: str | Path | None = None,
             show_progress: bool = True,
@@ -1063,8 +1063,8 @@ class RFMap:
             trials: Mapping[str, Any] | None = None,
             axis: str = "x",
             *,
-            is_shuffle: bool = True,
-            drop_bins: int = 1,
+            is_shuffle: bool = False,
+            drop_bins: int = 2,
             is_center: bool = False,
             result_path: str | Path | None = None,
             show_progress: bool = True,
@@ -1330,8 +1330,8 @@ class RFMapList(Sequence[RFMap]):
             trials: Mapping[str, Any] | None = None,
             axis: str = "x",
             *,
-            is_shuffle: bool = True,
-            drop_bins: int = 1,
+            is_shuffle: bool = False,
+            drop_bins: int = 2,
             is_center: bool = False,
             result_path: str | Path | None = None,
             show_progress: bool = True,
@@ -1550,7 +1550,7 @@ def load_rf_maps(
     if not _counts_are_numeric(raw["unitsSpikeCounts"], allow_null=stored_rates):
         raise ValueError(
             "unitsSpikeCounts contains a value that is not numeric "
-            "(JSON numbers only; bool is invalid)"
+            "(real numbers only; bool is invalid)"
         )
     try:
         spike_counts = np.asarray(
@@ -1568,7 +1568,6 @@ def load_rf_maps(
             raise ValueError("Saved Hz values must be non-negative numbers or null")
     elif not np.all(np.isfinite(spike_counts)) or np.any(spike_counts < 0):
         raise ValueError("unitsSpikeCounts values must be finite and non-negative")
-    spike_counts.setflags(write=False)
 
     unit_pool = tuple(
         _integer(value, "unitPool value")
@@ -1616,28 +1615,45 @@ def load_rf_maps(
             n_y,
             n_x,
         )
-        zero_presentations = presentation_counts == 0
-        if np.any(spike_counts[:, zero_presentations, :] != 0):
-            raise ValueError(
-                "stimulusPresentationCounts is zero where spike counts are nonzero"
-            )
+
+    occupancy_time_s = None
+    unpresented = np.zeros((n_y, n_x), dtype=bool)
+    if presentation_counts is not None:
+        unpresented |= presentation_counts == 0
+    if "occupancyTimeSec" in raw:
+        occupancy_time_s = np.asarray(raw["occupancyTimeSec"], dtype=np.float64).reshape(
+            n_y, n_x,
+        )
+        if not np.all(np.isfinite(occupancy_time_s)) or np.any(occupancy_time_s < 0):
+            raise ValueError("occupancyTimeSec must contain finite, non-negative seconds")
+        unpresented |= occupancy_time_s == 0
+    absent_values = spike_counts[:, unpresented, :]
+    if np.any(np.isfinite(absent_values) & (absent_values != 0)):
+        raise ValueError("unpresented RF positions must have zero counts or missing rates")
 
     if use_firing_rate and not stored_rates:
-        occupancy_time_s = np.asarray(
-            raw["occupancyTimeSec"],
-            dtype=np.float64,
-        ).reshape(n_y, n_x)
-        spike_counts = (
-            np.asarray(spike_counts, dtype=np.float64)
-            / occupancy_time_s[np.newaxis, :, :, np.newaxis]
+        if occupancy_time_s is None:
+            raise ValueError("occupancyTimeSec is required to convert spike counts to Hz")
+        spike_counts = np.divide(
+            spike_counts,
+            occupancy_time_s[np.newaxis, :, :, np.newaxis],
+            out=np.full(shape, np.nan, dtype=np.float64),
+            where=~unpresented[np.newaxis, :, :, np.newaxis],
         )
-        spike_counts.setflags(write=False)
+    elif stored_rates and np.any(unpresented):
+        spike_counts[:, unpresented, :] = np.nan
+    spike_counts.setflags(write=False)
 
     metadata = {
         key: deepcopy(value)
         for key, value in raw.items()
         if key not in _STRUCTURAL_JSON_FIELDS
     }
+    if not stored_rates:
+        metadata["responseUnits"] = "Hz" if use_firing_rate else "spike_count"
+        metadata["responseNormalization"] = "occupancyTimeSec" if use_firing_rate else "none"
+    if occupancy_time_s is not None:
+        metadata["occupancyTimeSec"] = occupancy_time_s.tolist()
     maps = [
         _make_rf_map(
             unit_index=unit_index,

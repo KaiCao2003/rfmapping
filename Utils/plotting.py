@@ -6,6 +6,9 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.colors import PowerNorm
+
+from Utils.statistic_utils import circular_distance_matrix_deg
 
 
 LIGHT_PLOT_STYLE = {
@@ -31,6 +34,141 @@ def apply_light_plot_style() -> None:
 
 
 apply_light_plot_style()
+
+
+def plot_keyed_heatmap(
+    row_by_key, unit_key_sequence, *, column_order, xticks, xticklabels,
+    xlabel="Direction (°)", title=None,
+    show=True, empty_message="No units to plot.", angle_centers=None,
+):
+    """Plot keyed angular profiles in the supplied row and column order.
+
+    Keys may be unit IDs or (probe, unit_id) pairs. Each row is normalized by
+    its maximum, with missing bins kept blank. Filtering and peak sorting
+    belong to the caller. Tick endpoints define the displayed angular extent;
+    labels may show a different angular convention at those same positions.
+    """
+    n_units = len(unit_key_sequence)
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        fig, ax = plt.subplots(figsize=(10, max(8, .18 * n_units + 1.5)))
+        if n_units:
+            data = np.stack([row_by_key[key] for key in unit_key_sequence])
+            data = data[:, column_order].astype(float)
+            finite = np.isfinite(data)
+            row_max = np.max(np.where(finite, data, -np.inf), axis=1, keepdims=True)
+            data = np.divide(
+                data, row_max, out=np.zeros_like(data),
+                where=np.isfinite(row_max) & (row_max != 0),
+            )
+            data[~finite] = np.nan
+            extent = [xticks[0], xticks[-1], n_units - 0.5, -0.5]
+            if angle_centers is not None:
+                step = angle_centers[1] - angle_centers[0]
+                extent[:2] = [angle_centers[0] - step / 2, angle_centers[-1] + step / 2]
+            image = ax.imshow(
+                data,
+                aspect="auto",
+                cmap="viridis",
+                interpolation="nearest",
+                origin="upper",
+                extent=extent,
+                vmin=0, vmax=1,
+            )
+            ax.set_yticks(np.arange(n_units))
+            ax.set_yticklabels([
+                f"{key[0]}:{key[1]}" if isinstance(key, tuple) else str(key)
+                for key in unit_key_sequence
+            ])
+            ax.set_xticks(xticks, labels=xticklabels)
+            ax.set_xlim(xticks[0], xticks[-1])
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel("Unit ID")
+            fig.colorbar(image, ax=ax, label="Normalized response")
+        else:
+            ax.text(0.5, 0.5, empty_message, ha="center", va="center")
+            ax.set_axis_off()
+        if title is not None:
+            ax.set_title(title)
+        fig.tight_layout()
+        if show:
+            plt.show()
+    return fig, ax
+
+
+def plot_direction_comparison(
+    reference_deg, matched_deg, statistics, *, reference_label, matched_label,
+    angle_ticks, reference_ticklabels, matched_ticklabels,
+    density_bin_count=12, show=True,
+):
+    """Plot directions using the caller's coordinates and angle labels."""
+    same_unit = statistics["same_unit"]
+    pairwise = statistics["pairwise"]
+    annotation = {
+        "ha": "left", "va": "top", "color": "black",
+        "bbox": {"boxstyle": "round", "facecolor": "white", "alpha": 1.0},
+    }
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        scatter_figure, scatter_axis = plt.subplots(figsize=(6, 6))
+        scatter_axis.scatter(reference_deg, matched_deg, s=28, alpha=0.8)
+        scatter_axis.set(
+            xlabel=f"{reference_label} peak direction (deg)",
+            ylabel=f"{matched_label} peak direction (deg)",
+            title=f"Same-unit {reference_label} and {matched_label} peak directions",
+            xlim=(angle_ticks[0], angle_ticks[-1]),
+            ylim=(angle_ticks[0], angle_ticks[-1]),
+            xticks=angle_ticks, yticks=angle_ticks,
+        )
+        scatter_axis.set_xticklabels(reference_ticklabels)
+        scatter_axis.set_yticklabels(matched_ticklabels)
+        scatter_axis.text(
+            0.03, 0.97,
+            f"Circular-circular rho = {same_unit['circular_correlation_rho']:.3f}\n"
+            f"p = {same_unit['permutation_p']:.4g}",
+            transform=scatter_axis.transAxes, **annotation,
+        )
+        scatter_axis.set_aspect("equal", adjustable="box")
+        scatter_axis.grid(color="0.85", linewidth=0.8)
+        scatter_figure.tight_layout()
+        if show:
+            plt.show()
+
+        # Retain the original density plot's ordered pairs, including its diagonal.
+        reference_distances = circular_distance_matrix_deg(reference_deg).ravel()
+        matched_distances = circular_distance_matrix_deg(matched_deg).ravel()
+        bin_width = 180.0 / (density_bin_count - 1)
+        bin_edges = np.linspace(-bin_width / 2, 180.0 + bin_width / 2, density_bin_count + 1)
+        density_figure, density_axis = plt.subplots(figsize=(8, 8))
+        image = density_axis.hist2d(
+            reference_distances, matched_distances, bins=(bin_edges, bin_edges),
+            cmap="viridis", norm=PowerNorm(gamma=0.5, vmin=0),
+        )[3]
+        density_figure.colorbar(image, ax=density_axis, pad=0.02, label="Pair count")
+        density_axis.plot(
+            [0, 180], [0, 180], linestyle="--", linewidth=1.2,
+            color="white", label="Equal pair distance",
+        )
+        density_axis.legend(loc="lower right")
+        density_axis.set(
+            xlabel=f"Pairwise {reference_label} peak-direction distance (deg)",
+            ylabel=f"Pairwise {matched_label} peak-direction distance (deg)",
+            title=(f"Pairwise {reference_label} and {matched_label} peak-distance density "
+                   f"({pairwise['ordered_pair_count']} ordered pairs)"),
+            xlim=(-5, 185), ylim=(-5, 185),
+            xticks=np.arange(0, 181, 45), yticks=np.arange(0, 181, 45),
+        )
+        density_axis.text(
+            0.03, 0.97,
+            f"Spearman Mantel rho = {pairwise['spearman_mantel_rho']:.3f}\n"
+            f"p = {pairwise['permutation_p']:.4g}\n"
+            f"n = {pairwise['unit_count']} units "
+            f"({pairwise['ordered_pair_count']} ordered pairs)",
+            transform=density_axis.transAxes, **annotation,
+        )
+        density_axis.set_aspect("equal", adjustable="box")
+        density_figure.tight_layout()
+        if show:
+            plt.show()
+    return (scatter_figure, scatter_axis), (density_figure, density_axis)
 
 
 def get_tuning_curve_for_cluster(

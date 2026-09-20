@@ -31,20 +31,14 @@ def pre_process_signals(signals, *, return_rising_edge: bool = True, return_fall
     if return_signal_pairs and signals.ndim != 2:
         raise ValueError("signals must be a 2D array when return_signal_pairs is True.")
 
-    if signals.ndim == 1:
-        pass
-    elif signals.ndim == 2:
-        if return_falling_edge:
-            signals = signals[:, -1]
-        if return_signal_pairs:
-            pass  # keep as is
-        signals = signals[:, 0]
-    else:
-        raise ValueError(
-            f"signal must be 1D or 2D (got {signals.ndim}D array with shape {signals.shape})"
-        )
+    if signals.ndim == 1 or return_signal_pairs:
+        return signals
+    if signals.ndim == 2:
+        return signals[:, -1] if return_falling_edge else signals[:, 0]
 
-    return signals
+    raise ValueError(
+        f"signal must be 1D or 2D (got {signals.ndim}D array with shape {signals.shape})"
+    )
 
 
 def classify_pulses(pulse_pairs, expected_gap=3000, tolerance=1000) -> list[int]:

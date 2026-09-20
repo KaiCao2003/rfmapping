@@ -199,6 +199,16 @@ def _json_float(value: float) -> float | None:
     return float(value) if np.isfinite(value) else None
 
 
+def save_hd_unit_lists(tuning_curves, directory):
+    """Save exact class-1 and class-2 IDs next to the tuning curves."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    ids = np.asarray(tuning_curves["unit_id"], dtype=np.int64)
+    classes = np.asarray(tuning_curves["unit_data"]["hd_class"], dtype=object)
+    for label in (1, 2):
+        np.save(directory / f"hd_cells_{label}.npy", np.sort(ids[classes == label]))
+
+
 def tuning_curve(
     base_dir,
     kilosort_dir,
@@ -213,6 +223,7 @@ def tuning_curve(
     is_save: bool = False,
     save_path: str | Path | None = None,
     metadata: dict | None = None,
+    timestamp_reference: str = "saved_camera_timestamps",
 ) -> dict:
     from Utils.kilosort_utils import (
         _compress_times_to_epoch_clock,
@@ -487,7 +498,7 @@ def tuning_curve(
         "kilosort_dir": str(kilosort_dir),
         "timebase": "open_ephys_adc_t0_relative_seconds",
         "adc_time_origin_raw_s": float(adc_time_origin_s),
-        "timestamp_reference": "saved_camera_timestamps",
+        "timestamp_reference": timestamp_reference,
         "angle_convention_note": (
             "head_direction_deg must be calibrated to GUI convention: 0 degrees up, "
             "positive counter-clockwise. This notebook only applies modulo 360."
@@ -687,5 +698,6 @@ def tuning_curve(
         with open(temporary_path, "w") as file:
             file.write(serialized_tuning_curves)
         temporary_path.replace(save_path)
+        save_hd_unit_lists(tuning_curves, save_path.parent)
 
     return tuning_curves
