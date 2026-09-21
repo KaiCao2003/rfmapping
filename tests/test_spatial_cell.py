@@ -129,7 +129,8 @@ def session_maps():
 
 def test_tuning_matrix_preserves_constant_firing_rates(session_maps):
     for values in session_maps.values():
-        values.setflags(write=False)
+        if isinstance(values, np.ndarray):
+            values.setflags(write=False)
     frames = session_maps["frame_times"]
     for spikes_per_frame in (1, 2, 0):
         rates = spatial.compute_tuning_matrix(
@@ -138,6 +139,44 @@ def test_tuning_matrix_preserves_constant_firing_rates(session_maps):
         assert rates.shape == (60, 20)
         assert np.isfinite(rates).any()
         np.testing.assert_allclose(rates[np.isfinite(rates)], spikes_per_frame * 2)
+
+
+def test_shared_projection_preserves_histogram_edges_and_out_of_range_values():
+    first = np.array([[0., 90., 180., 360.]] * 3)
+    second = np.array([
+        [0., 4., 10., np.nextafter(10., np.inf)],
+        [-1., np.nextafter(4., 0.), np.nan, np.inf],
+        [10., 0., 4., -np.inf],
+    ])
+    first_edges = np.array([0., 90., 180., 360.])
+    second_edges = np.array([0., 4., 10.])
+    projection = spatial.prepare_2d_projection(first, second, first_edges, second_edges)
+    for weights in (np.array([1, 3, 2]), np.array([0., .04, .08])):
+        expected = spatial.compute_2d_map(first, second, first_edges, second_edges, weights)
+        np.testing.assert_array_equal((projection @ weights).reshape(expected.shape), expected)
+
+
+def test_projected_tuning_matches_weighted_histogram(session_maps):
+    spikes = np.array([0., .25, .5, .8, 1., 1., 2.5])
+    counts = spatial.count_spikes_by_frame(spikes, session_maps["frame_times"])
+    histogram = spatial.compute_2d_map(
+        session_maps["theta_grid"], session_maps["theta_d_cm"],
+        session_maps["theta_edges"], session_maps["distance_edges"], counts,
+    )
+    expected = spatial.compute_rate_map(
+        histogram, session_maps["smoothed_egocentric_occupancy"],
+        spatial.egocentric_smoothing_sigma, ("wrap", "nearest"),
+    )
+    np.testing.assert_array_equal(spatial.compute_tuning_matrix(spikes, session_maps), expected)
+
+
+def test_spike_grouping_preserves_order_and_empty_selected_units():
+    spikes = np.array([3., 1., 2., 0., 4.])
+    clusters = np.array([7, 9, 7, 99, 9])
+    groups = spatial.group_spike_times(spikes, clusters, [9, 7, 11])
+    assert list(groups) == [9, 7, 11]
+    for unit in groups:
+        np.testing.assert_array_equal(groups[unit], spikes[clusters == unit])
 
 
 def test_unoccupied_bins_remain_nan():

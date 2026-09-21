@@ -171,7 +171,7 @@ def _validated_key_arrays(
     return validated
 
 
-def _hash_chunk(hasher: Any, payload: bytes) -> None:
+def _hash_chunk(hasher: Any, payload: bytes | memoryview) -> None:
     """Hash a length-delimited byte string to avoid concatenation ambiguity."""
 
     hasher.update(len(payload).to_bytes(8, byteorder="big", signed=False))
@@ -212,7 +212,8 @@ def build_rf_result_cache_key(
             hasher,
             json.dumps(array.shape, separators=(",", ":")).encode("ascii"),
         )
-        _hash_chunk(hasher, contiguous.tobytes(order="C"))
+        byte_view = contiguous.view(np.uint8).reshape(-1)
+        _hash_chunk(hasher, memoryview(byte_view))
     return hasher.hexdigest()
 
 

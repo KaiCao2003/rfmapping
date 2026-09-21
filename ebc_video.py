@@ -1,5 +1,6 @@
 """Render EBC overlays and export synchronized electrode-audio videos for good units."""
 
+import argparse
 import json
 import subprocess
 import tempfile
@@ -736,23 +737,28 @@ def export_good_unit_videos(data, video_path, save_path, *, start_s=0., duration
             print(f"Reading {len(channels)} electrode channels once for {len(good_units)} good units")
             tracks = _cache_continuous_audio(source, channels, clock, duration, temporary,
                                             band_hz=audio_band_hz)
+            units_by_channel = {channel: [] for channel in channels}
+            for unit, channel in unit_channels.items():
+                units_by_channel[channel].append(unit)
         else:
             good_units, spike_seconds, _ = _load_audio_spikes(data, overlay)
         pool = ProcessPoolExecutor(max_workers=audio_workers, mp_context=get_context("spawn"))
         try:
             if audio_source == "continuous":
-                futures = [pool.submit(
-                    _mux_continuous_audio, overlay["video"], save_path / f"{unit}.mp4",
-                    unit, data["probe"], tracks[unit_channels[unit]], duration, gain, audio_gate_sigma,
+                futures = {pool.submit(
+                    _export_channel_videos, overlay["video"], save_path,
+                    units, data["probe"], tracks[channel], duration, gain, audio_gate_sigma,
                     audio_expander_ratio,
-                ) for unit in good_units]
+                ): len(units) for channel, units in units_by_channel.items()}
             else:
-                futures = [pool.submit(
+                futures = {pool.submit(
                     _mux_spike_audio, overlay["video"], save_path / f"{unit}.mp4",
                     int(unit), data["probe"], spike_seconds[int(unit)], duration, gain,
-                ) for unit in good_units]
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Good-unit videos", unit="unit"):
-                future.result()
+                ): 1 for unit in good_units}
+            with tqdm(total=len(good_units), desc="Good-unit videos", unit="unit") as progress:
+                for future in as_completed(futures):
+                    future.result()
+                    progress.update(futures[future])
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
     videos = [save_path / f"{unit}.mp4" for unit in good_units]
@@ -955,12 +961,46 @@ def _continuous_pcm(track, gain, gate_sigma=3., expander_ratio=4., *, block_s=1.
 
 def _mux_continuous_audio(video_path, output_path, unit_id, probe, track, duration, gain, gate_sigma=3.,
                           expander_ratio=4.):
-    low, high = track["band_hz"]
-    title = (f"Probe {probe} unit {unit_id}; electrode {track['channel']} (zero-based); "
-             f"continuous voltage {low:g}-{high:g} Hz; OE volume {gain:g}; "
-             f"expander {expander_ratio:g}:1 below {gate_sigma:g} x noise sigma")
+    title = _continuous_audio_title(unit_id, probe, track, gain, gate_sigma, expander_ratio)
     _mux_pcm(video_path, output_path, title, duration,
              _continuous_pcm(track, gain, gate_sigma, expander_ratio), track["sample_rate"])
+
+
+def _continuous_audio_title(unit_id, probe, track, gain, gate_sigma, expander_ratio):
+    low, high = track["band_hz"]
+    return (f"Probe {probe} unit {unit_id}; electrode {track['channel']} (zero-based); "
+             f"continuous voltage {low:g}-{high:g} Hz; OE volume {gain:g}; "
+             f"expander {expander_ratio:g}:1 below {gate_sigma:g} x noise sigma")
+
+
+def _export_channel_videos(video_path, save_path, units, probe, track, duration, gain, gate_sigma,
+                           expander_ratio):
+    # Units sharing an electrode have identical audio. Encode it once on local
+    # scratch, then copy both media streams while retaining each unit's label.
+    audio_path = Path(track["path"]).with_suffix(".m4a")
+    _mux_pcm(None, audio_path, f"Electrode {track['channel']}", duration,
+             _continuous_pcm(track, gain, gate_sigma, expander_ratio), track["sample_rate"])
+    for unit in units:
+        title = _continuous_audio_title(unit, probe, track, gain, gate_sigma, expander_ratio)
+        _mux_encoded_audio(video_path, audio_path, Path(save_path) / f"{unit}.mp4", title, duration)
+
+
+def _mux_encoded_audio(video_path, audio_path, output_path, title, duration):
+    partial = output_path.with_name(f".{output_path.stem}.partial.mp4")
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video_path), "-i", str(audio_path),
+             "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-t", f"{duration:.9f}",
+             "-movflags", "+faststart", "-metadata:s:a:0", f"title={title}",
+             "-metadata:s:a:0", f"handler_name={title}", str(partial)],
+            capture_output=True, text=True,
+        )
+        if result.returncode:
+            raise RuntimeError(f"{output_path.name} audio export failed (ffmpeg exit {result.returncode}):\n"
+                               f"{result.stderr.strip()}")
+        partial.replace(output_path)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def _load_audio_spikes(data, video_result):
@@ -1070,14 +1110,16 @@ def _mux_spike_audio(video_path, output_path, unit_id, probe, spike_seconds, dur
 def _mux_pcm(video_path, output_path, title, duration, blocks, sample_rate):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = output_path.with_name(f".{output_path.stem}.partial.mp4")
-    # Only audio is encoded per unit. PCM is piped directly to ffmpeg, avoiding
-    # a full-recording WAV write/read and keeping worker memory bounded.
+    partial = output_path.with_name(f".{output_path.stem}.partial{output_path.suffix}")
+    video_input = [] if video_path is None else ["-i", str(video_path)]
+    stream_map = [] if video_path is None else ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy"]
+    # Pipe PCM directly to ffmpeg to keep memory bounded; an optional video
+    # input is copied without decoding or re-encoding its frames.
     with tempfile.TemporaryFile() as log:
         process = subprocess.Popen(
-            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video_path),
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", *video_input,
              "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0",
-             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             *stream_map, "-c:a", "aac", "-b:a", "192k",
              "-threads", "1", "-t", f"{duration:.9f}", "-movflags", "+faststart",
              "-metadata:s:a:0", f"title={title}", str(partial)],
             stdin=subprocess.PIPE, stderr=log,
@@ -1103,13 +1145,44 @@ def _mux_pcm(video_path, output_path, title, duration, blocks, sample_rate):
             partial.unlink(missing_ok=True)
 
 
-if __name__ == "__main__":
-    # The guard prevents spawned workers from starting the batch again.
-    video_data = load_video_data(session, probe=probe, phase=phase, arena_type=arena_type, fps=video_fps)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("session", type=Path, nargs="?")
+    parser.add_argument("--probe", default=probe)
+    parser.add_argument("--phase", default=phase)
+    parser.add_argument(
+        "--arena-type", choices=("rectangle", "cylinder"), default=arena_type
+    )
+    args = parser.parse_args(argv)
+
+    selected_session = session if args.session is None else args.session
+    selected_video = video_path if args.session is None else (
+        None
+        if args.arena_type == "cylinder"
+        else selected_session / f"{selected_session.name.split('_')[0]}.avi"
+    )
+    selected_save_path = (
+        save_path
+        if args.session is None
+        else selected_session / "data/spatial_cells/videos"
+    )
+    video_data = load_video_data(
+        selected_session,
+        probe=args.probe,
+        phase=args.phase,
+        arena_type=args.arena_type,
+        fps=video_fps,
+    )
     unit_videos = export_good_unit_videos(
-        video_data, video_path, save_path,
+        video_data, selected_video, selected_save_path,
         start_s=video_start_s, duration_s=video_duration_s, gain=audio_gain,
         workers=video_workers, audio_workers=audio_workers, video_encoder=video_encoder,
         audio_source=audio_source, audio_band_hz=audio_band_hz,
         audio_gate_sigma=audio_gate_sigma, audio_expander_ratio=audio_expander_ratio,
     )
+    return unit_videos
+
+
+if __name__ == "__main__":
+    # The guard prevents spawned workers from starting the batch again.
+    main()

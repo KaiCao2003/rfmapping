@@ -518,7 +518,6 @@ def detect_rf(
 
     if not isinstance(is_shuffle, (bool, np.bool_)):
         raise ValueError("is_shuffle must be bool")
-    run_shuffle = bool(is_shuffle)
     parsed_drop_bins = _integer(drop_bins, "drop_bins", minimum=0)
     if not isinstance(show_progress, (bool, np.bool_)):
         raise ValueError("show_progress must be bool")
@@ -530,7 +529,7 @@ def detect_rf(
     if not 0 < parsed_alpha < 1:
         raise ValueError("alpha must be between zero and one")
     permutation_count = _integer(n_permutations, "n_permutations", minimum=0)
-    if run_shuffle and permutation_count < 1:
+    if is_shuffle and permutation_count < 1:
         raise ValueError("n_permutations must be at least 1 when is_shuffle=True")
     if alternative not in {"greater", "less"}:
         raise ValueError("alternative must be 'greater' or 'less'")
@@ -569,7 +568,7 @@ def detect_rf(
         n_workers = _resolve_n_workers(
             parsed_n_jobs,
             parallel_items,
-            is_shuffle=run_shuffle,
+            is_shuffle=is_shuffle,
         )
     counts = np.bincount(positions, minlength=n_positions).astype(np.float64)
     valid_flat = counts > 0
@@ -651,7 +650,7 @@ def detect_rf(
         cluster_labels[unit_index] = labels
         cluster_mass_list.append(masses)
 
-    if run_shuffle:
+    if is_shuffle:
         null_max_masses = np.empty(
             (n_units, permutation_count),
             dtype=np.float64,
@@ -782,7 +781,7 @@ def detect_rf(
     filled_mask = np.zeros_like(significant_mask)
     final_mask = np.zeros_like(significant_mask)
     for unit_index, masses in enumerate(cluster_mass_list):
-        if run_shuffle:
+        if is_shuffle:
             pvalues = _cluster_pvalues(masses, null_max_masses[unit_index])
             significant_cluster_ids = np.flatnonzero(pvalues <= parsed_alpha) + 1
             significant_labels = np.where(
@@ -844,6 +843,6 @@ def detect_rf(
         "filled_mask": filled_mask,
         "final_mask": final_mask,
         "null_max_masses": null_max_masses,
-        "is_significance_tested": run_shuffle,
+        "is_significance_tested": is_shuffle,
         "n_workers": n_workers,
     }

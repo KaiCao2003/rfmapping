@@ -338,15 +338,20 @@ def _aligned_trial_mapping(
     if np.unique(unit_ids).size != unit_ids.size:
         raise ValueError("trial unit_ids must be unique")
 
+    rows_by_unit_id = {unit_id: index for index, unit_id in enumerate(unit_ids)}
     row_indices: list[int] = []
     for rf_map in maps:
-        matches = np.flatnonzero(unit_ids == rf_map.unit_id)
-        if matches.size == 0:
+        if rf_map.unit_id not in rows_by_unit_id:
             raise KeyError(f"trial responses do not contain unit_id {rf_map.unit_id}")
-        row_indices.append(int(matches[0]))
+        row_indices.append(rows_by_unit_id[rf_map.unit_id])
 
     aligned = dict(trials)
-    aligned["responses"] = responses[row_indices]
+    if row_indices == list(range(unit_ids.size)):
+        aligned["responses"] = responses
+    elif row_indices == list(range(row_indices[0], row_indices[0] + len(maps))):
+        aligned["responses"] = responses[row_indices[0] : row_indices[-1] + 1]
+    else:
+        aligned["responses"] = responses[row_indices]
     aligned["unit_ids"] = np.asarray([item.unit_id for item in maps], dtype=np.int64)
     return aligned
 
@@ -498,7 +503,6 @@ def _rf_output_arrays(
     if run_shuffle:
         if trials is None:
             raise ValueError("trials are required when is_shuffle=True")
-        detector_input = trials
         aligned = _aligned_trial_mapping(trials, maps)
     else:
         first = maps[0]
@@ -547,7 +551,6 @@ def _rf_output_arrays(
             "y_positions": first.y_positions,
             "time_range_s": first.time_window_s,
         }
-        detector_input = aligned
 
     # Hash the inputs even for the in-memory fast path. In no-shuffle mode the
     # key comes only from the pooled map; a supplied trial mapping is ignored.
@@ -599,7 +602,8 @@ def _rf_output_arrays(
 
     if mask is None or center is None:
         result = detect(
-            detector_input,
+            aligned,
+            _aligned=run_shuffle,
             is_shuffle=run_shuffle,
             drop_bins=parsed_drop_bins,
             show_progress=show_progress,
@@ -999,6 +1003,7 @@ class RFMap:
             is_shuffle: bool = True,
             drop_bins: int = 1,
             show_progress: bool = True,
+            _aligned: bool = False,
             **options: Any,
     ) -> dict[str, Any]:
         """Return internal cluster result arrays for this unit."""
@@ -1006,7 +1011,7 @@ class RFMap:
         from Utils.rf_detection import detect_rf
 
         progress = _bool_value(show_progress, "show_progress")
-        aligned = _aligned_trial_mapping(trials, (self,))
+        aligned = trials if _aligned else _aligned_trial_mapping(trials, (self,))
         batch = detect_rf(
             aligned["responses"],
             aligned["position_ids"],
@@ -1266,6 +1271,7 @@ class RFMapList(Sequence[RFMap]):
             is_shuffle: bool = True,
             drop_bins: int = 1,
             show_progress: bool = True,
+            _aligned: bool = False,
             **options: Any,
     ) -> dict[str, Any]:
         """Return plain cluster-permutation arrays for every unit."""
@@ -1273,7 +1279,7 @@ class RFMapList(Sequence[RFMap]):
         from Utils.rf_detection import detect_rf
 
         progress = _bool_value(show_progress, "show_progress")
-        aligned = _aligned_trial_mapping(trials, self._maps)
+        aligned = trials if _aligned else _aligned_trial_mapping(trials, self._maps)
         first = self._maps[0]
         return detect_rf(
             aligned["responses"],

@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter
+from scipy.sparse import csr_matrix
 from Utils.json_tools import read_formatted_json
 from Utils.tuning_curve_utils import get_exposure_timestamps
 
@@ -119,19 +120,55 @@ def compute_rate_map(
     return rate_map
 
 
-def count_spikes_by_frame(spike_times, frame_times):
-    """Count spikes within the sorted frame-time interval loaded by load_data."""
+def nearest_frame_indices(spike_times, frame_times):
+    """Assign in-range spikes to their nearest frame, breaking ties to the left."""
     right = np.searchsorted(frame_times, spike_times)
     left = np.maximum(right - 1, 0)
     use_right = (
             np.abs(frame_times[right] - spike_times)
             < np.abs(frame_times[left] - spike_times)
     )
-    nearest_frame = np.where(use_right, right, left)
+    return np.where(use_right, right, left)
+
+
+def count_spikes_by_frame(spike_times, frame_times):
+    """Count spikes within the sorted frame-time interval loaded by load_data."""
     return np.bincount(
-        nearest_frame,
+        nearest_frame_indices(spike_times, frame_times),
         minlength=len(frame_times),
     )
+
+
+def prepare_2d_projection(coordinate_1, coordinate_2, edges_1, edges_2):
+    """Bin shared frame geometry once, preserving histogram2d's edge rules."""
+    first, second = np.broadcast_arrays(coordinate_1, coordinate_2)
+    bins_1 = np.searchsorted(edges_1, first, side="right") - 1
+    bins_2 = np.searchsorted(edges_2, second, side="right") - 1
+    # Histogram bins are left-closed, except the final bin includes its right edge.
+    bins_1[first == edges_1[-1]] -= 1
+    bins_2[second == edges_2[-1]] -= 1
+    shape = (len(edges_1) - 1, len(edges_2) - 1)
+    valid = (bins_1 >= 0) & (bins_1 < shape[0]) & (bins_2 >= 0) & (bins_2 < shape[1])
+    frames = np.broadcast_to(
+        np.arange(len(first)).reshape((-1,) + (1,) * (first.ndim - 1)), first.shape,
+    )
+    rows = bins_1[valid] * shape[1] + bins_2[valid]
+    return csr_matrix(
+        (np.ones(len(rows)), (rows, frames[valid])),
+        shape=(shape[0] * shape[1], len(first)),
+    )
+
+
+def group_spike_times(spike_times, spike_clusters, unit_ids):
+    """Group selected spikes once so workers do not rescan every cluster ID."""
+    selected = np.isin(spike_clusters, unit_ids)
+    clusters = spike_clusters[selected]
+    order = np.argsort(clusters, kind="stable")
+    times = spike_times[selected][order]
+    ids, starts, counts = np.unique(clusters[order], return_index=True, return_counts=True)
+    groups = {int(unit): times[start:start + count]
+              for unit, start, count in zip(ids, starts, counts)}
+    return {int(unit): groups.get(int(unit), times[:0]) for unit in unit_ids}
 
 
 def read_good_unit_ids(kilosort_dir: Path) -> list[int]:
@@ -269,9 +306,9 @@ def prepare_session_maps(pose, pose_times):
         0, rig_size_cm / 2 * np.sqrt(2), number_of_distance_bins + 1,
     )
     frame_dt_s = float(np.median(np.diff(pose_times)))
-    occupancy = compute_2d_map(
-        theta_grid, theta_d_cm, theta_edges, distance_edges,
-        np.full(len(pose_times), frame_dt_s),
+    projection = prepare_2d_projection(theta_grid, theta_d_cm, theta_edges, distance_edges)
+    occupancy = (projection @ np.full(len(pose_times), frame_dt_s)).reshape(
+        len(theta_edges) - 1, len(distance_edges) - 1,
     )
     return {
         "frame_times": pose_times,
@@ -279,6 +316,7 @@ def prepare_session_maps(pose, pose_times):
         "theta_d_cm": theta_d_cm,
         "theta_edges": theta_edges,
         "distance_edges": distance_edges,
+        "spike_projection": projection,
         "smoothed_egocentric_occupancy": gaussian_filter(
             occupancy, sigma=egocentric_smoothing_sigma, mode=("wrap", "nearest"),
         ),
@@ -287,10 +325,8 @@ def prepare_session_maps(pose, pose_times):
 
 def compute_tuning_matrix(spike_times, session_maps):
     spike_frame_counts = count_spikes_by_frame(spike_times, session_maps["frame_times"])
-    spike_map = compute_2d_map(
-        session_maps["theta_grid"], session_maps["theta_d_cm"],
-        session_maps["theta_edges"], session_maps["distance_edges"],
-        spike_frame_counts,
+    spike_map = (session_maps["spike_projection"] @ spike_frame_counts).reshape(
+        session_maps["smoothed_egocentric_occupancy"].shape,
     )
     return compute_rate_map(
         spike_map, session_maps["smoothed_egocentric_occupancy"],
@@ -303,7 +339,7 @@ def save_egocentric_rfmap(
     *, distance_band_cm=None, metadata=None,
 ):
     """Save full matrices or distance-band sums as a version-2 indexed RFMap."""
-    values = np.stack(rate_maps).astype(np.float64, copy=False)[..., None]
+    values = np.asarray(rate_maps, dtype=np.float64)[..., None]
     distance_edges = session_maps["distance_edges"]
     theta_edges = session_maps["theta_edges"]
     band_metadata = {}
@@ -372,6 +408,7 @@ def save_egocentric_rfmap(
 def save_egocentric_rfmaps(result_path, rate_maps, session_maps, unit_ids, interval_s):
     """Save the full map, then <=8 cm, (8, 16] cm, and >16 cm bearing maps."""
     result_path = Path(result_path)
+    rate_maps = np.asarray(rate_maps, dtype=np.float64)
     save_egocentric_rfmap(result_path, rate_maps, session_maps, unit_ids, interval_s)
     result_paths = [result_path]
     for suffix, lower_cm, upper_cm in distance_bands_cm:
@@ -385,9 +422,9 @@ def save_egocentric_rfmaps(result_path, rate_maps, session_maps, unit_ids, inter
 
 
 def process_unit(selected_unit_id):
-    session_maps, spike_times, spike_clusters = worker_data
+    session_maps, spikes_by_unit = worker_data
     return compute_tuning_matrix(
-        spike_times[spike_clusters == selected_unit_id], session_maps,
+        spikes_by_unit[selected_unit_id], session_maps,
     )
 
 
@@ -426,7 +463,8 @@ def run_analysis(
     if unknown:
         raise ValueError(f"Units absent from good-unit labels: {sorted(unknown)}")
     session_maps = prepare_session_maps(pose, pose_times)
-    worker_data = session_maps, spike_times, spike_clusters
+    worker_data = session_maps, group_spike_times(spike_times, spike_clusters, unit_ids)
+    del spike_times, spike_clusters
     try:
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=get_context("fork"),

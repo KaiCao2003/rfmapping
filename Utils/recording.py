@@ -471,14 +471,9 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
                 mmap_mode="r",
             )
 
-            ADC_continuous_timestamp_data = (
-                    ADC_continuous_timestamp_data_raw
-                    - ADC_continuous_timestamp_data_raw[0]
-            )
-
             print(
                 f"ADC_continuous_timestamp_data: "
-                f"{ADC_continuous_timestamp_data.shape}"
+                f"{ADC_continuous_timestamp_data_raw.shape}"
             )
 
             # ------------------------------------------------------------------
@@ -495,11 +490,11 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
             )
 
             recording_interval = (
-                ADC_continuous_timestamp_data[
+                ADC_continuous_timestamp_data_raw[
                     recording_interval_indices
                 ]
-                .tolist()
-            )
+                - ADC_continuous_timestamp_data_raw[0]
+            ).tolist()
 
             # ------------------------------------------------------------------
             # Save only what is required for interval_table
@@ -580,4 +575,3 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
             return(False,
                 "\033[91mToo many intervals\033[0m:Multiple recording intervals detected. Manually run it to fix."
             )
-

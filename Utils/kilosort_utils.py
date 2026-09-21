@@ -333,6 +333,16 @@ def locate_spikes(cluster_KSLabel_sort: list | np.ndarray, spike_clusters: np.nd
         [list of time points that spikes detected in time]]
 
     """
+    return [
+        [cluster_id, indices.tolist(), times.tolist()]
+        for cluster_id, indices, times in _locate_spike_arrays(
+            cluster_KSLabel_sort, spike_clusters, spike_times
+        )
+    ]
+
+
+def _locate_spike_arrays(cluster_KSLabel_sort, spike_clusters, spike_times):
+    """Group spikes without boxing every sample into a Python list."""
     # Ensure arrays
     cluster_KSLabel_sort = np.asarray(cluster_KSLabel_sort) if not isinstance(cluster_KSLabel_sort,
                                                                               np.ndarray) else cluster_KSLabel_sort
@@ -357,9 +367,9 @@ def locate_spikes(cluster_KSLabel_sort: list | np.ndarray, spike_clusters: np.nd
             e = s + counts_spike_clusters[pos]
             idxs = order[s:e]
             cvals = spike_times_sorted[s:e]
-            out.append([int(v), idxs.tolist(), cvals.tolist()])
+            out.append((int(v), idxs, cvals))
         else:
-            out.append([int(v), [], []])
+            out.append((int(v), order[:0], spike_times_sorted[:0]))
 
     return out
 
@@ -458,13 +468,12 @@ def gen_tuning_curves(base_dir: str | Path, kilosort_dir: str | Path, probe_name
         cluster_KSLabel = pd.read_csv(cluster_KSLabel_dir, sep='\t')
         pbar.update(1)
 
-        sync_spike_time_to_adc_time(
+        spike_times = sync_spike_time_to_adc_time(
             kilosort_raw_spike_times_dir,
             probe_continuous_timestamps_dir,
             output_path=spike_times_dir,
         )
 
-        spike_times = np.load(spike_times_dir)
         print(spike_times.shape)
         print(spike_times[-1])
         pbar.update(1)
@@ -485,7 +494,7 @@ def gen_tuning_curves(base_dir: str | Path, kilosort_dir: str | Path, probe_name
 
         cluster_KSLabel_sort = [[label, grp["cluster_id"].tolist()]
                                 for label, grp in cluster_KSLabel.groupby("KSLabel")]
-        located_spikes_before_filter = locate_spikes(cluster_KSLabel_sort[0][1], spike_clusters,
+        located_spikes_before_filter = _locate_spike_arrays(cluster_KSLabel_sort[0][1], spike_clusters,
                                                      spike_times)  # in time, start from 0, where the recording started
 
         pbar.update(1)
@@ -752,26 +761,36 @@ def get_neuro_summary(base_dir: str | Path, kilosort_dir: str | Path, probe_name
     kilosort_dir = kilosort_folders[0]
 
 
-    tsgroup, time_support, hd_tuning_curves, cluster_KSLabel_sort = gen_tuning_curves(
-        base_dir=base_dir,
-        kilosort_dir=kilosort_dir,
-        probe_name=probe_name,
-        session_info=session_info,
-        interval_pairs=interval_pairs,
-        HD_tsd=HD_tsd,
-        kilosort_info_filename=kilosort_info_filename,
-        num_of_bins_in_hd=num_of_bins_in_hd, )
+    summary_path = Path(save_path) if save_path is not None else Path(base_dir) / "data" / f"tc_summary_Probe{probe_name}.csv"
+    needs_tuning_data = is_return_tsgroup or is_return_time_support or is_return_hd_tcs
+    if summary_path.is_file() and not is_overwrite_shuffle_data and not needs_tuning_data:
+        print("Tuning Curve Summary exists, loading...")
+        hd_summary = pd.read_csv(summary_path)
+        if is_return_cluster_KSLabel:
+            cluster_KSLabel = pd.read_csv(kilosort_dir / "cluster_KSLabel.tsv", sep="\t")
+            cluster_KSLabel_sort = [[label, group["cluster_id"].tolist()]
+                                    for label, group in cluster_KSLabel.groupby("KSLabel")]
+    else:
+        tsgroup, time_support, hd_tuning_curves, cluster_KSLabel_sort = gen_tuning_curves(
+            base_dir=base_dir,
+            kilosort_dir=kilosort_dir,
+            probe_name=probe_name,
+            session_info=session_info,
+            interval_pairs=interval_pairs,
+            HD_tsd=HD_tsd,
+            kilosort_info_filename=kilosort_info_filename,
+            num_of_bins_in_hd=num_of_bins_in_hd, )
 
-    hd_summary = shuffle_neuro_data(
-        base_dir=base_dir,
-        probe_name=probe_name,
-        hd_tuning_curves=hd_tuning_curves,
-        hd_tsd=HD_tsd,
-        time_support=time_support,
-        tsgroup=tsgroup,
-        num_shuffle=num_shuffle,
-        is_overwrite_shuffle_data=is_overwrite_shuffle_data,
-        save_path=save_path)
+        hd_summary = shuffle_neuro_data(
+            base_dir=base_dir,
+            probe_name=probe_name,
+            hd_tuning_curves=hd_tuning_curves,
+            hd_tsd=HD_tsd,
+            time_support=time_support,
+            tsgroup=tsgroup,
+            num_shuffle=num_shuffle,
+            is_overwrite_shuffle_data=is_overwrite_shuffle_data,
+            save_path=save_path)
 
     result: dict = {"hd_summary": hd_summary}
     if is_return_tsgroup:

@@ -1,6 +1,6 @@
 import numpy as np
 from collections.abc import Mapping
-from scipy.stats import circmean, pearsonr, permutation_test, spearmanr
+from scipy.stats import circmean, pearsonr, permutation_test, rankdata
 
 
 def circular_distance_matrix_deg(angles_deg):
@@ -53,13 +53,27 @@ def compare_direction_angles(
 
     upper_triangle = np.triu_indices(reference_deg.size, k=1)
     reference_distances = circular_distance_matrix_deg(reference_deg)[upper_triangle]
+    reference_ranks = rankdata(reference_distances)
+    matched_distances = circular_distance_matrix_deg(matched_deg)
+    matched_ranks = None
+    if np.array_equal(matched_distances, matched_distances.T):
+        matched_ranks = np.zeros_like(matched_distances)
+        matched_ranks[upper_triangle] = rankdata(matched_distances[upper_triangle])
+        matched_ranks[upper_triangle[::-1]] = matched_ranks[upper_triangle]
 
-    def mantel_statistic(shuffled):
-        distances = circular_distance_matrix_deg(shuffled)[upper_triangle]
-        return float(spearmanr(reference_distances, distances).statistic)
+    def mantel_statistic(order):
+        pairs = order[upper_triangle[0]], order[upper_triangle[1]]
+        if matched_ranks is None:
+            # Floating modulo can make reverse distances differ at near ties.
+            # Preserve those directed values and re-rank each permuted sample.
+            ranks = rankdata(matched_distances[pairs])
+        else:
+            ranks = matched_ranks[pairs]
+        return float(np.corrcoef(reference_ranks, ranks)[1, 0])
 
-    mantel_rho = mantel_statistic(matched_deg)
-    mantel_p = permutation_p(matched_deg, lambda shuffled: abs(mantel_statistic(shuffled)))
+    unit_order = np.arange(reference_deg.size)
+    mantel_rho = mantel_statistic(unit_order)
+    mantel_p = permutation_p(unit_order, lambda order: abs(mantel_statistic(order)))
     unit_count = int(reference_deg.size)
     return {
         "same_unit": {
