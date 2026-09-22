@@ -1,0 +1,45 @@
+[project]
+name = "pipeline"
+version = "0.2.0"
+description = "Automated spike sorting pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Tuguldur" }
+]
+
+dependencies = [
+    "numpy>=2.3",
+    "pyyaml>=6.0",
+    "loguru>=0.7.0",
+    "spikeinterface[extractors]>=0.101.0",
+    "probeinterface>=0.2.21",
+    "open-ephys-python-tools>=1.0.1",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "kilosort>=4.1.7",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter>=1.1.1",
+    "ipywidgets>=8.1.8",
+    "cmap>=0.7.2",
+]
+
+[project.scripts]
+pipe = "pipeline.run_script:main"
+sort = "pipeline.sort:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }

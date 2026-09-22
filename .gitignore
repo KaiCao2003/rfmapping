@@ -1,3 +1,49 @@
-/.venv/
-/.codex_tmp/
+# Local environments and editor state
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+.ipynb_checkpoints/
+.codex_tmp/
+.env
+.env.*
+
+# Python and native build artifacts
+__pycache__/
+*.py[cod]
+*.nbc
+*.nbi
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+*.mex*
+
+# Recordings, saved corrections, and generated results
+data/
+Data/
+output/
+*.sqlite*
+*.db
+*.db-*
+*.rfmap
+*.npy
 *.npz
+*.dat
+*.raw
+*.mat
+*.csv
+*.pdf
+*.png
+*.mp4
+*.wav
+
+# Local run configuration
+preprocessing/pipeline/config.yaml
+preprocessing/pipeline/config_result.yaml
+
+# Developer checks and experiments are kept outside the publication
+/tests/
+/decoder/
+/fnn/

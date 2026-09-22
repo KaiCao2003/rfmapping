@@ -14,25 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<10"]
 analysis = [
   "matplotlib>=3.9,<4",
-  "numba>=0.61,<1",
   "pandas>=2.2,<4",
-  "pynapple>=0.9,<1",
-  "scikit-learn>=1.5,<2",
-  "xarray>=2026.4,<2027",
-]
-waveform = [
-  "matplotlib>=3.9,<4",
-  "pandas>=2.2,<4",
-  "spikeinterface>=0.104.8,<0.105",
-  "probeinterface>=0.3.2,<0.4",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["Utils*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

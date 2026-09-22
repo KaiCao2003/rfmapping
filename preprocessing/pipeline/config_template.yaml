@@ -1,0 +1,27 @@
+run_name: "test"
+# OpenEphys sessions to be concatenated (the folders containing the Record Node folder)
+# Should be a list of str
+session_paths:
+
+# output path
+local_output: "E:\\pipeline_output"
+# central storage path
+remote_output:
+per_shank: False
+## --------------------- Default parameters --------------------- ##
+# central storage data copying option
+copy_mode : "newer"  # options: "newer", "prompt", "skip-all", "all"
+# EEG downsampling frequency (Hz)
+target_fs: 1250.0
+verbose: True
+overwrite: False
+# SpikeInterface parallel processing arguments for concatenation
+job_kwargs:
+  n_jobs: 4
+  chunk_duration: '2s'
+  progress_bar: True
+  mp_context: 'spawn'               # for Windows; use 'fork' for macOS/Linux
+# Memory leak related to OMP_NUM_THREADS or OPENBLAS_NUM_THREADS sometimes occurs when running kilosort on Windows
+# See https://github.com/MouseLand/Kilosort/blob/9f8e7052f43fbe12b3462bd185f2de05fceef33a/kilosort/spikedetect.py#L83
+# Comment out the following when running on Linux
+openblas_threads: 24

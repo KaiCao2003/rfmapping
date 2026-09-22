@@ -19,24 +19,31 @@ All four methods default to `is_shuffle=False, drop_bins=2`.
 
 ## Quick start
 
+Use the recording settings from the [main guide](../README.md).
+
 ```python
+import os
 from pathlib import Path
 
 from Utils.rfmap import load_rf_maps
 from Utils.rf_trials import load_regular_rf_trials
 
-session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
+session = Path(os.environ["RF_SESSION_DIR"])
+date = os.environ["RF_DATE"]
+session_id = os.environ["RF_SESSION"]
+probe = os.environ["RF_PROBES"][0]
 rf_source = (
     session
-    / "data/rfmapping/good/-100_400_1ms/ProbeA"
-    / "regular_unitsSpikeCounts_260630_3.json"
+    / "data/rfmapping/good/-100_400_1ms"
+    / f"Probe{probe}"
+    / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
 )
 
 raw = load_rf_maps(rf_source, unit_firing_rate=False)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(
     session,
-    "A",
+    probe,
     summed,
     on=True,
     off=False,
@@ -74,7 +81,6 @@ unit axis.
 
 - Regular pooled sources can be legacy JSON (`.json` or `.rfmap`) or MATLAB's
   indexed NPZ (`.rfmap`). `load_rf_maps()` detects the format from file contents.
-- A free-moving `.rfmap` is HDF5 and follows its own source schema.
 - A reusable detection result ends in `.npz`.
 
 Do not write a result over a `.rfmap` source. `result_path` deliberately
@@ -407,7 +413,9 @@ axis:
 ```python
 masks = summed.rf_2d(
     trials,
+    is_shuffle=True,
     n_permutations=10_000,
+    random_seed=0,
     result_path=result_path,
 )
 
@@ -423,19 +431,21 @@ Keep probe identity separate because unit IDs can overlap between probes:
 ```python
 results_by_probe = {}
 
-for probe in ("A", "B"):
+for probe in os.environ["RF_PROBES"]:
     source = (
         session
         / "data/rfmapping/good/-100_400_1ms"
         / f"Probe{probe}"
-        / "regular_unitsSpikeCounts_260630_3.json"
+        / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
     )
     raw = load_rf_maps(source, unit_firing_rate=False)
     summed = raw.sum(0.0, 0.2)
     trials = load_regular_rf_trials(session, probe, summed)
     results_by_probe[probe] = summed.rf_2d(
         trials,
+        is_shuffle=True,
         n_permutations=10_000,
+        random_seed=0,
         wrap_x=True,
         result_path=source.with_suffix(".npz"),
     )
@@ -449,7 +459,7 @@ to an `RFMap` when setting plot extents:
 ```python
 import matplotlib.pyplot as plt
 
-unit = summed.by_unit_id(127)
+unit = summed.by_index(0)
 unit_mask = unit.rf_2d(trials, wrap_x=True)
 
 plt.imshow(
@@ -493,8 +503,8 @@ used to invent a valid permutation null.
 
 ## Timing caveat
 
-In the regular session used by `locate_rf.ipynb`, stimuli are spaced about
-100 ms apart. A `[0.0, 0.2)` response window therefore overlaps the next
+With regular stimuli spaced about 100 ms apart, a `[0.0, 0.2)` response
+window overlaps the next
 stimulus. Negative bins can likewise overlap the previous stimulus.
 
 The permutation test asks whether response is associated with the assigned
