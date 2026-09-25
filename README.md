@@ -393,7 +393,7 @@ for session_id in $RF_SESSIONS; do
     source_dir="$RFMAP_WORK_DIR/${RF_DATE}_${session_id}"
     target_dir="$RF_MOUSE_DIR/$RF_DATE/${RF_DATE}_${session_id}/$RF_DATE"
     mkdir -p "$target_dir"
-    rsync -rlt --progress "$source_dir/" "$target_dir/"
+    rsync -rlt --info=progress2 "$source_dir/" "$target_dir/"
 done
 ```
 
@@ -717,9 +717,9 @@ Run the later interval-printing and **ADC / Digital / onset-marker** plot
 cells. Inspect the start, end, and abnormal intervals. Change
 `start_time, end_time` in the plot cell to inspect another interval.
 
-Run the timing cell first, then its inspection cells. **Do not use Run All
-before reviewing the configuration and existing outputs**: the main cell
-writes the onset file.
+Run only the timing and inspection cells described above. **Do not use Run All
+on a historical copy of this notebook**: later experiment cells can select
+another recording or overwrite a timing file.
 
 ## 7. Convert the intermediate files to an RF map
 
