@@ -39,18 +39,19 @@ apply_light_plot_style()
 def plot_keyed_heatmap(
     row_by_key, unit_key_sequence, *, column_order, xticks, xticklabels,
     xlabel="Direction (°)", title=None,
-    show=True, empty_message="No units to plot.", angle_centers=None,
+    show=True, empty_message="No units to plot.", angle_centers=None, figsize=(10, 6),
 ):
     """Plot keyed angular profiles in the supplied row and column order.
 
-    Keys may be unit IDs or (probe, unit_id) pairs. Each row is normalized by
+    Keys may be unit IDs or tuples identifying the recording, probe, and unit. Each row is normalized by
     its maximum, with missing bins kept blank. Filtering and peak sorting
     belong to the caller. Tick endpoints define the displayed angular extent;
     labels may show a different angular convention at those same positions.
+    Figure size stays fixed as unit count grows; at most 25 unit labels are shown.
     """
     n_units = len(unit_key_sequence)
     with plt.rc_context(LIGHT_PLOT_STYLE):
-        fig, ax = plt.subplots(figsize=(10, max(8, .18 * n_units + 1.5)))
+        fig, ax = plt.subplots(figsize=figsize)
         if n_units:
             data = np.stack([row_by_key[key] for key in unit_key_sequence])
             data = data[:, column_order].astype(float)
@@ -74,10 +75,12 @@ def plot_keyed_heatmap(
                 extent=extent,
                 vmin=0, vmax=1,
             )
-            ax.set_yticks(np.arange(n_units))
+            label_step = max(1, (n_units + 24) // 25)
+            label_indices = range(0, n_units, label_step)
+            ax.set_yticks(label_indices)
             ax.set_yticklabels([
-                f"{key[0]}:{key[1]}" if isinstance(key, tuple) else str(key)
-                for key in unit_key_sequence
+                ":".join(map(str, key)) if isinstance(key, tuple) else str(key)
+                for key in (unit_key_sequence[index] for index in label_indices)
             ])
             ax.set_xticks(xticks, labels=xticklabels)
             ax.set_xlim(xticks[0], xticks[-1])
@@ -98,9 +101,11 @@ def plot_keyed_heatmap(
 def plot_direction_comparison(
     reference_deg, matched_deg, statistics, *, reference_label, matched_label,
     angle_ticks, reference_ticklabels, matched_ticklabels,
-    density_bin_count=12, show=True,
+    reference_ticks=None, matched_ticks=None, density_bin_count=12, show=True,
 ):
     """Plot directions using the caller's coordinates and angle labels."""
+    reference_ticks = angle_ticks if reference_ticks is None else reference_ticks
+    matched_ticks = angle_ticks if matched_ticks is None else matched_ticks
     same_unit = statistics["same_unit"]
     pairwise = statistics["pairwise"]
     annotation = {
@@ -114,9 +119,9 @@ def plot_direction_comparison(
             xlabel=f"{reference_label} peak direction (deg)",
             ylabel=f"{matched_label} peak direction (deg)",
             title=f"Same-unit {reference_label} and {matched_label} peak directions",
-            xlim=(angle_ticks[0], angle_ticks[-1]),
-            ylim=(angle_ticks[0], angle_ticks[-1]),
-            xticks=angle_ticks, yticks=angle_ticks,
+            xlim=(reference_ticks[0], reference_ticks[-1]),
+            ylim=(matched_ticks[0], matched_ticks[-1]),
+            xticks=reference_ticks, yticks=matched_ticks,
         )
         scatter_axis.set_xticklabels(reference_ticklabels)
         scatter_axis.set_yticklabels(matched_ticklabels)
@@ -1127,7 +1132,20 @@ def plot_egocentric_polar(
     theta_edges,
     distance_edges,
     rate_map,
+    *,
+    hole_fraction=None,
+    colorbar_label="Hz",
 ):
+    """Plot angle-by-distance rates with 0 degrees forward and 90 degrees left.
+
+    ``hole_fraction`` sets the donut hole radius as a fraction of the outer
+    radius. It changes only the radial origin; bin edges and cm labels keep
+    their saved values. None uses the physical distance origin at zero.
+    """
+    if hole_fraction is not None and not 0 <= hole_fraction < 1:
+        raise ValueError("hole_fraction must be between 0 (inclusive) and 1 (exclusive).")
+
+    axis.grid(False)
     image = axis.pcolormesh(
         np.deg2rad(theta_edges),
         distance_edges,
@@ -1138,9 +1156,26 @@ def plot_egocentric_polar(
     axis.set_theta_zero_location("N")
     axis.set_theta_direction(1)
     axis.set_xticks(np.deg2rad([0, 90, 180, 270]))
-    axis.set_xticklabels(["0", "90", "180", "270"])
+    axis.set_xticklabels(["0°", "90°", "180°", "270°"])
+    inner, outer = distance_edges[0], distance_edges[-1]
+    axis.set_ylim(0, outer)
+    axis.set_rorigin(0)
+    if outer > inner:
+        if hole_fraction is not None:
+            # (inner - origin) / (outer - origin) is the visible hole fraction.
+            axis.set_ylim(inner, outer)
+            axis.set_rorigin((inner - hole_fraction * outer) / (1 - hole_fraction))
+        ticks = np.linspace(inner, outer, 5)
+        axis.set_yticks(ticks, labels=[f"{value:.1f}".rstrip("0").rstrip(".") for value in ticks])
+    else:
+        axis.text(0.5, 0.5, "No distance bins in this band.", ha="center", transform=axis.transAxes)
+    axis.set_rlabel_position(135)
+    for label in axis.get_yticklabels():
+        label.set_bbox(dict(facecolor="white", edgecolor="none", pad=1))
+    axis.grid(True, linewidth=0.5)
+    axis.set_xlabel("Distance to boundary (cm)", labelpad=18)
     axis.set_title("Egocentric firing-rate map (polar)")
-    axis.figure.colorbar(image, ax=axis, label="Hz", pad=0.12)
+    axis.figure.colorbar(image, ax=axis, label=colorbar_label, pad=0.12)
     return image
 
 

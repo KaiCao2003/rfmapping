@@ -209,6 +209,59 @@ def save_hd_unit_lists(tuning_curves, directory):
         np.save(directory / f"hd_cells_{label}.npy", np.sort(ids[classes == label]))
 
 
+def make_head_direction_tsd(
+    exposure_timestamps: np.ndarray,
+    frame_indices: np.ndarray,
+    angles_deg: np.ndarray,
+) -> tuple[nap.Tsd, float]:
+    """Keep valid pose runs and the sampling rate of the complete camera clock.
+
+    Each retained pose contributes one nominal camera period to occupancy.
+    Missing poses and camera pauses split the support; half-frame boundaries
+    retain the observed duration of singleton poses without bridging those gaps.
+    """
+    exposure_timestamps = np.asarray(exposure_timestamps, dtype=float)
+    frame_indices = np.asarray(frame_indices)
+    angles_deg = np.asarray(angles_deg, dtype=float)
+    if (
+        exposure_timestamps.ndim != 1
+        or exposure_timestamps.size < 2
+        or not np.all(np.isfinite(exposure_timestamps))
+        or not np.all(np.diff(exposure_timestamps) > 0)
+    ):
+        raise ValueError("Camera timestamps must be finite, increasing, and contain at least two frames.")
+    if (
+        frame_indices.ndim != 1
+        or frame_indices.dtype.kind not in "iu"
+        or angles_deg.shape != frame_indices.shape
+        or not np.all(frame_indices >= 0)
+        or not np.all(frame_indices < len(exposure_timestamps))
+        or not np.all(np.diff(frame_indices) > 0)
+    ):
+        raise ValueError("Pose frame IDs must be increasing integers within the camera timestamp range.")
+
+    frame_period_s = float(np.median(np.diff(exposure_timestamps)))
+    valid = np.isfinite(angles_deg)
+    frame_indices = frame_indices[valid]
+    angles_deg = angles_deg[valid] % 360
+    if not frame_indices.size:
+        raise ValueError("At least one finite head-direction sample is required.")
+    times = exposure_timestamps[frame_indices]
+    # A camera acquisition pause can leave consecutive frame IDs but a long
+    # time gap. It must be excluded just like a missing pose estimate.
+    breaks = (np.diff(frame_indices) > 1) | (np.diff(times) > 1.5 * frame_period_s)
+    run_starts = np.r_[0, np.flatnonzero(breaks) + 1]
+    run_ends = np.r_[np.flatnonzero(breaks), len(times) - 1]
+    support = nap.IntervalSet(
+        start=times[run_starts] - frame_period_s / 2,
+        end=times[run_ends] + frame_period_s / 2,
+    )
+    return (
+        nap.Tsd(t=times, d=angles_deg, time_support=support),
+        1.0 / frame_period_s,
+    )
+
+
 def tuning_curve(
     base_dir,
     kilosort_dir,
@@ -224,6 +277,7 @@ def tuning_curve(
     save_path: str | Path | None = None,
     metadata: dict | None = None,
     timestamp_reference: str = "saved_camera_timestamps",
+    feature_fs_hz: float | None = None,
 ) -> dict:
     from Utils.kilosort_utils import (
         _compress_times_to_epoch_clock,
@@ -283,6 +337,17 @@ def tuning_curve(
     del sorted_clusters, sorted_spike_times
     tsgroup = nap.TsGroup(spikes_dict)
     time_support = convert_time_list_to_nap_tsd(interval_pairs, return_in_list=False)
+    time_support = time_support.intersect(HD_tsd.time_support)
+    feature_times = HD_tsd.index.to_numpy()
+    first_samples = np.searchsorted(feature_times, time_support.start, side="left")
+    last_samples = np.searchsorted(feature_times, time_support.end, side="right")
+    # A requested epoch can clip only the edge of a frame's support without
+    # retaining its sample. Such fragments have no occupancy or shuffle values.
+    occupied_intervals = last_samples > first_samples
+    if not np.any(occupied_intervals):
+        raise ValueError("Selected epochs contain no valid head-direction samples.")
+    time_support = time_support[occupied_intervals]
+    HD_tsd = HD_tsd.restrict(time_support)
 
     hd_spike_counts = nap.compute_tuning_curves(
         data=tsgroup,
@@ -291,6 +356,7 @@ def tuning_curve(
         epochs=time_support,
         range=(0, 360),
         return_counts=True,
+        fs=feature_fs_hz,
     )
     angle_dims = [dim for dim in hd_spike_counts.dims if dim != "unit"]
     if "unit" not in hd_spike_counts.dims or len(angle_dims) != 1:
@@ -500,12 +566,13 @@ def tuning_curve(
         "adc_time_origin_raw_s": float(adc_time_origin_s),
         "timestamp_reference": timestamp_reference,
         "angle_convention_note": (
-            "head_direction_deg must be calibrated to GUI convention: 0 degrees up, "
-            "positive counter-clockwise. This notebook only applies modulo 360."
+            "head_direction_deg follows the input JSON angle convention; "
+            "tuning-curve generation only applies modulo 360."
         ),
         "num_angle_bins": int(num_of_bins_in_hd),
         "feature_fs_hz": feature_fs_hz,
         "epoch_intervals_s": np.asarray(interval_pairs, dtype=float).tolist(),
+        "valid_pose_intervals_s": time_support.values.tolist(),
         "classification": {
             "method": "occupancy_adjusted_rayleigh_or_circular_shift_v1",
             "class_0": "neither significant",

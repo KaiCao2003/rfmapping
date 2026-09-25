@@ -110,8 +110,24 @@ ssh hhw9l84 'cd ~/Developer/rfmapping && \
 
 ## Plotting
 
-Set `result_path` to any of the four `.rfmap` files and choose `unit_id`. The plotting notebook
-uses the existing API directly:
+Set `result_path` to any of the four `.rfmap` files and choose `unit_id`.
+The single-unit cell has three display modes:
+
+```python
+plot_style = "donut"  # "heatmap", "polar", or "donut"
+donut_hole_fraction = 0.45  # Hole radius / outer radius, from 0 up to (but not including) 1.
+```
+
+`polar` and `donut` use `Utils.plotting.plot_egocentric_polar`: angle runs around
+the circle, distance runs along the radius, and color shows the saved firing
+rate. The angle convention is 0° forward (top), 90° left, 180° back, and 270° right.
+The full matrix retains every distance bin; each distance-band file forms one
+colored radial band. Missing bins stay blank. `polar` uses the physical origin
+at 0 cm, so bands starting above 0 cm naturally leave the center empty.
+`donut` sets the hole to `donut_hole_fraction` of the outer radius by moving the
+display origin; the saved distances and cm tick labels stay unchanged.
+
+`heatmap` uses the existing API directly:
 
 ```python
 rf_maps = load_rf_maps(result_path)
@@ -119,8 +135,8 @@ rfmap = rf_maps.by_unit_id(unit_id)
 figure, axis = plot_2d_rfmap(rfmap.to_2d_array())
 ```
 
-The notebook sets distance/angle labels and an Hz colorbar on the returned
-figure, with angle increasing upward and opaque white figure/axes backgrounds.
+The rectangular heatmap sets distance/angle labels with angle increasing upward.
+All modes use opaque white figure/axes backgrounds and dark labels.
 For bearing maps, the singleton distance axis spans the saved band's cm range.
 The colorbar reads `responseUnits` from the RFMap.
 `is_save = False` writes no single-unit image; set it to `True` to save that
@@ -152,7 +168,6 @@ curve directly. These are display projections of the saved rates. The notebook
 passes profiles keyed by unit ID, the sorted unit IDs, and the angular column
 order to `plot_keyed_heatmap()`, which normalizes and renders the stacked curves.
 The shared function also accepts `(probe, unit_id)` keys for HD/RF comparisons.
-The selected unit still uses `plot_2d_rfmap()`.
 Set `is_save_heatmap = True` to save the single population image to
 `all_units_angle_heatmap.png`; its default is `False`.
 

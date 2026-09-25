@@ -1742,11 +1742,12 @@ def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isNormalize: bool
     x_label = "Angle (deg)" if xinDeg else "x"
 
     if isNormalize:
-        max_per_unit = unitsSpikeCounts.max(axis=1, keepdims=True)
+        # Missing occupancy bins must not hide the unit's observed responses.
+        max_per_unit = np.fmax.reduce(unitsSpikeCounts, axis=1, keepdims=True)
         unitsSpikeCounts = np.divide(
             unitsSpikeCounts,
             max_per_unit,
-            out=np.zeros_like(unitsSpikeCounts, dtype=float),
+            out=np.where(np.isnan(unitsSpikeCounts), np.nan, 0.0),
             where=max_per_unit != 0,
         )
 
@@ -1756,8 +1757,12 @@ def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isNormalize: bool
         yticks_height = []
 
         for unit_idx, spikeCounts in enumerate(unitsSpikeCounts):
-            y = spikeCounts + (n_units - 1 - unit_idx) * offset
-            yticks_height.append(np.average(y))
+            unit_offset = (n_units - 1 - unit_idx) * offset
+            y = spikeCounts + unit_offset
+            observed_y = y[~np.isnan(y)]
+            yticks_height.append(
+                np.average(observed_y) if observed_y.size else unit_offset
+            )
             ax.plot(x_values, y, linewidth=1)
 
         ax.set_yticks(yticks_height)

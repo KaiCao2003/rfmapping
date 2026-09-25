@@ -74,7 +74,6 @@ unit axis.
 
 - Regular pooled sources can be legacy JSON (`.json` or `.rfmap`) or MATLAB's
   indexed NPZ (`.rfmap`). `load_rf_maps()` detects the format from file contents.
-- A free-moving `.rfmap` is HDF5 and follows its own source schema.
 - A reusable detection result ends in `.npz`.
 
 Do not write a result over a `.rfmap` source. `result_path` deliberately

@@ -412,6 +412,7 @@ def test_plotting_notebook_displays_unit_and_population_and_saves_when_requested
     plot_cell = next(cell for cell in nb.cells if cell.id == "plot")
     plot_cell.source = (
         f"unit_id = 9\nis_save = {is_save!r}\n"
+        "plot_style = 'heatmap'\ndonut_hole_fraction = 0.45\n"
         "save_path = result_path.with_name(f'unit_{unit_id}.png')\n"
         "plt.style.use('dark_background')\nplt.rcParams['savefig.transparent'] = True\n"
         + plot_cell.source[plot_cell.source.index("rfmap = rf_maps.by_unit_id"):]
@@ -494,6 +495,7 @@ def test_plotting_notebook_reads_distance_bearing_maps(tmp_path, distance_band, 
     plot_cell = next(cell for cell in nb.cells if cell.id == "plot")
     plot_cell.source = (
         "unit_id = 9\nis_save = False\n"
+        "plot_style = 'heatmap'\ndonut_hole_fraction = 0.45\n"
         + plot_cell.source[plot_cell.source.index("rfmap = rf_maps.by_unit_id"):]
         + f"\nassert axis.get_xlim() == {bounds!r}\n"
         "assert axis.get_xlabel() == 'Distance to boundary (cm)'\n"

@@ -175,7 +175,8 @@ def test_tuning_curve_writes_exact_columnar_contract(
             "fs": 100.0,
         },
     )
-    time_support = SimpleNamespace(start=np.asarray([0.0]), end=np.asarray([1.0]))
+    time_support = tuning_curve_utils.nap.IntervalSet(start=0.0, end=1.0)
+    hd_tsd = tuning_curve_utils.nap.Tsd(t=[0.0, 1.0], d=[1.0, 181.0])
 
     monkeypatch.setattr(tuning_curve_utils.nap, "Ts", _FakeTs)
     monkeypatch.setattr(tuning_curve_utils.nap, "TsGroup", _FakeTsGroup)
@@ -222,7 +223,7 @@ def test_tuning_curve_writes_exact_columnar_contract(
         kilosort_dir=kilosort_dir,
         probe_name="A",
         interval_pairs=np.asarray([[0.0, 1.0]]),
-        HD_tsd=object(),
+        HD_tsd=hd_tsd,
         adc_time_origin_s=100.0,
         num_of_bins_in_hd=180,
         num_shuffle=1,
@@ -308,7 +309,8 @@ def test_tuning_curve_skips_unit_without_spikes_in_selected_epoch(
             "fs": 100.0,
         },
     )
-    time_support = SimpleNamespace(start=np.asarray([0.0]), end=np.asarray([1.0]))
+    time_support = tuning_curve_utils.nap.IntervalSet(start=0.0, end=1.0)
+    hd_tsd = tuning_curve_utils.nap.Tsd(t=[0.0, 1.0], d=[1.0, 181.0])
 
     monkeypatch.setattr(tuning_curve_utils.nap, "Ts", _EmptyRestrictedTs)
     monkeypatch.setattr(tuning_curve_utils.nap, "TsGroup", _FakeTsGroup)
@@ -353,7 +355,7 @@ def test_tuning_curve_skips_unit_without_spikes_in_selected_epoch(
         kilosort_dir=kilosort_dir,
         probe_name="A",
         interval_pairs=np.asarray([[0.0, 1.0]]),
-        HD_tsd=object(),
+        HD_tsd=hd_tsd,
         adc_time_origin_s=100.0,
         num_of_bins_in_hd=180,
         num_shuffle=1000,
@@ -364,3 +366,89 @@ def test_tuning_curve_skips_unit_without_spikes_in_selected_epoch(
     assert result["spike_counts"] == [np.zeros(180, dtype=int).tolist()]
     for values in result["unit_data"].values():
         assert values == [None]
+
+
+def test_head_direction_support_excludes_missing_invalid_and_paused_frames():
+    camera_times = np.asarray([0.0, 0.01, 0.02, 0.03, 0.10, 0.11, 0.12, 0.13])
+    frames = np.asarray([0, 1, 3, 4, 5, 6, 7])
+    angles = np.asarray([1.0, np.nan, 21.0, 181.0, 181.0, np.nan, 183.0])
+
+    feature, fs = tuning_curve_utils.make_head_direction_tsd(camera_times, frames, angles)
+
+    assert fs == pytest.approx(100.0)
+    np.testing.assert_allclose(feature.index, camera_times[[0, 3, 4, 5, 7]])
+    np.testing.assert_allclose(feature.values, [1.0, 21.0, 181.0, 181.0, 183.0])
+    np.testing.assert_allclose(feature.time_support.values, [
+        [-0.005, 0.005], [0.025, 0.035], [0.095, 0.115], [0.125, 0.135],
+    ])
+
+
+@pytest.mark.parametrize("shuffle_backend", ["numpy", "numba"])
+@pytest.mark.parametrize("include_singleton", [False, True])
+def test_tracking_gap_spikes_do_not_change_counts_rates_or_shuffle(
+    tmp_path, monkeypatch, shuffle_backend, include_singleton,
+):
+    if shuffle_backend == "numpy":
+        monkeypatch.setattr(kilosort_utils, "_compute_shuffle_r_numba", None)
+    elif kilosort_utils._compute_shuffle_r_numba is None:
+        pytest.skip("Numba is unavailable")
+
+    kilosort_dir = tmp_path / "kilosort"
+    kilosort_dir.mkdir()
+    (kilosort_dir / "cluster_KSLabel.tsv").write_text("cluster_id\tKSLabel\n1\tgood\n")
+    probe_dir = tmp_path / "data/probeA"
+    probe_dir.mkdir(parents=True)
+    camera_times = np.arange(1001) / 100
+    frame_ids = np.r_[np.arange(101), np.arange(900, 1001)]
+    angles = np.r_[np.ones(101), np.full(101, 181.0)]
+    clean_spikes = [0.5, 9.5]
+    expected_support = [[-0.005, 1.005], [8.995, 10.005]]
+    if include_singleton:
+        frame_ids = np.insert(frame_ids, 101, 500)
+        angles = np.insert(angles, 101, 91.0)
+        clean_spikes.insert(1, 5.0)
+        expected_support.insert(1, [4.995, 5.005])
+    feature, fs = tuning_curve_utils.make_head_direction_tsd(camera_times, frame_ids, angles)
+
+    results = []
+    for spikes in (clean_spikes, sorted(clean_spikes + [3.0, 7.0])):
+        np.save(kilosort_dir / "spike_clusters.npy", np.ones(len(spikes), dtype=int))
+        np.save(probe_dir / "adc_spike_time.npy", 100 + np.asarray(spikes))
+        results.append(tuning_curve_utils.tuning_curve(
+            tmp_path, kilosort_dir, "A", [[-0.01, 10.01]], feature, 100,
+            180, 32, 7, feature_fs_hz=fs, is_save=True,
+        ))
+
+    assert results[0] == results[1]
+    result = results[1]
+    counts = np.asarray(result["spike_counts"])[0]
+    assert counts.sum() == 2 + include_singleton
+    assert counts[0] == counts[90] == 1
+    assert counts[45] == include_singleton
+    assert sum(result["occupancy_samples"]) == 202 + include_singleton
+    assert sum(result["occupancy_time_s"]) == pytest.approx(2.02 + include_singleton * 0.01)
+    assert result["metadata"]["feature_fs_hz"] == pytest.approx(100.0)
+    np.testing.assert_allclose(result["metadata"]["valid_pose_intervals_s"], expected_support)
+
+
+def test_tuning_discards_epoch_fragments_without_a_pose_sample(tmp_path):
+    kilosort_dir = tmp_path / "kilosort"
+    kilosort_dir.mkdir()
+    (kilosort_dir / "cluster_KSLabel.tsv").write_text("cluster_id\tKSLabel\n1\tgood\n")
+    np.save(kilosort_dir / "spike_clusters.npy", np.ones(3, dtype=int))
+    probe_dir = tmp_path / "data/probeA"
+    probe_dir.mkdir(parents=True)
+    np.save(probe_dir / "adc_spike_time.npy", [100.003, 100.5, 109.5])
+    camera_times = np.arange(1001) / 100
+    frame_ids = np.r_[0, np.arange(900, 1001)]
+    feature, fs = tuning_curve_utils.make_head_direction_tsd(
+        camera_times, frame_ids, np.ones(len(frame_ids)),
+    )
+
+    result = tuning_curve_utils.tuning_curve(
+        tmp_path, kilosort_dir, "A", [[0.002, 10.01]], feature, 100,
+        180, 4, 0, feature_fs_hz=fs,
+    )
+
+    assert sum(result["spike_counts"][0]) == 1
+    np.testing.assert_allclose(result["metadata"]["valid_pose_intervals_s"], [[8.995, 10.005]])
