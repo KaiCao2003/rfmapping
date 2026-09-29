@@ -36,6 +36,13 @@ def apply_light_plot_style() -> None:
 apply_light_plot_style()
 
 
+def angular_ticks(ticklabels):
+    """Unwrap circular degree labels into one continuous display range."""
+    labels = np.asarray(ticklabels, dtype=float)
+    ticks = np.unwrap(labels, period=360)
+    return ticks - 360 * np.round(ticks[len(ticks) // 2] / 360)
+
+
 def plot_keyed_heatmap(
     row_by_key, unit_key_sequence, *, column_order, xticks, xticklabels,
     xlabel="Direction (°)", title=None,
@@ -100,12 +107,18 @@ def plot_keyed_heatmap(
 
 def plot_direction_comparison(
     reference_deg, matched_deg, statistics, *, reference_label, matched_label,
-    angle_ticks, reference_ticklabels, matched_ticklabels,
-    reference_ticks=None, matched_ticks=None, density_bin_count=12, show=True,
+    reference_ticklabels, matched_ticklabels, angle_ticks=None,
+    reference_ticks=None, matched_ticks=None, density_bin_count=16, show=True,
 ):
-    """Plot directions using the caller's coordinates and angle labels."""
-    reference_ticks = angle_ticks if reference_ticks is None else reference_ticks
-    matched_ticks = angle_ticks if matched_ticks is None else matched_ticks
+    """Plot source directions, deriving each axis from its degree labels."""
+    if reference_ticks is None:
+        reference_ticks = angular_ticks(reference_ticklabels) if angle_ticks is None else angle_ticks
+    if matched_ticks is None:
+        matched_ticks = angular_ticks(matched_ticklabels) if angle_ticks is None else angle_ticks
+    reference_start = min(reference_ticks[0], reference_ticks[-1])
+    matched_start = min(matched_ticks[0], matched_ticks[-1])
+    reference_display = (np.asarray(reference_deg) - reference_start) % 360 + reference_start
+    matched_display = (np.asarray(matched_deg) - matched_start) % 360 + matched_start
     same_unit = statistics["same_unit"]
     pairwise = statistics["pairwise"]
     annotation = {
@@ -114,7 +127,7 @@ def plot_direction_comparison(
     }
     with plt.rc_context(LIGHT_PLOT_STYLE):
         scatter_figure, scatter_axis = plt.subplots(figsize=(6, 6))
-        scatter_axis.scatter(reference_deg, matched_deg, s=28, alpha=0.8)
+        scatter_axis.scatter(reference_display, matched_display, s=28, alpha=0.8)
         scatter_axis.set(
             xlabel=f"{reference_label} peak direction (deg)",
             ylabel=f"{matched_label} peak direction (deg)",
@@ -140,6 +153,7 @@ def plot_direction_comparison(
         # Retain the original density plot's ordered pairs, including its diagonal.
         reference_distances = circular_distance_matrix_deg(reference_deg).ravel()
         matched_distances = circular_distance_matrix_deg(matched_deg).ravel()
+        # Sixteen bins center on 0, 12, ..., 180 degrees, matching 30-bin tuning curves.
         bin_width = 180.0 / (density_bin_count - 1)
         bin_edges = np.linspace(-bin_width / 2, 180.0 + bin_width / 2, density_bin_count + 1)
         density_figure, density_axis = plt.subplots(figsize=(8, 8))
@@ -156,17 +170,15 @@ def plot_direction_comparison(
         density_axis.set(
             xlabel=f"Pairwise {reference_label} peak-direction distance (deg)",
             ylabel=f"Pairwise {matched_label} peak-direction distance (deg)",
-            title=(f"Pairwise {reference_label} and {matched_label} peak-distance density "
-                   f"({pairwise['ordered_pair_count']} ordered pairs)"),
+            title=f"{reference_label} × {matched_label}: pair distances",
             xlim=(-5, 185), ylim=(-5, 185),
             xticks=np.arange(0, 181, 45), yticks=np.arange(0, 181, 45),
         )
         density_axis.text(
             0.03, 0.97,
-            f"Spearman Mantel rho = {pairwise['spearman_mantel_rho']:.3f}\n"
+            f"Mantel ρ = {pairwise['spearman_mantel_rho']:.3f}\n"
             f"p = {pairwise['permutation_p']:.4g}\n"
-            f"n = {pairwise['unit_count']} units "
-            f"({pairwise['ordered_pair_count']} ordered pairs)",
+            f"n = {pairwise['unit_count']}",
             transform=density_axis.transAxes, **annotation,
         )
         density_axis.set_aspect("equal", adjustable="box")

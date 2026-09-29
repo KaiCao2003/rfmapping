@@ -641,7 +641,7 @@ def shuffle_neuro_data(base_dir: str, probe_name: str, hd_tuning_curves: xarray.
             z_rayleigh_all[i] = z_rayleigh
             p_rayleigh_all[i] = p_rayleigh
 
-        rayleigh_significant_all = p_rayleigh_all < 0.05
+        rayleigh_significant_all = p_rayleigh_all <= 0.01
         R_ge_05_all = R_all >= 0.5
 
         # ----------------------

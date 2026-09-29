@@ -10,7 +10,8 @@ from Utils.json_tools import read_formatted_json
 
 
 HD_RAW_BIN_COUNT = 180
-RAYLEIGH_ALPHA = 0.05
+HD_CLASSIFICATION_BIN_COUNT = 30
+RAYLEIGH_ALPHA = 0.01
 SHUFFLE_ALPHA = 0.01
 
 
@@ -278,6 +279,7 @@ def tuning_curve(
     metadata: dict | None = None,
     timestamp_reference: str = "saved_camera_timestamps",
     feature_fs_hz: float | None = None,
+    classification_bins: int = HD_CLASSIFICATION_BIN_COUNT,
 ) -> dict:
     from Utils.kilosort_utils import (
         _compress_times_to_epoch_clock,
@@ -291,6 +293,9 @@ def tuning_curve(
         raise ValueError(
             f"The GUI tuning-curve contract requires exactly {HD_RAW_BIN_COUNT} angle bins."
         )
+    classification_bins = min(num_of_bins_in_hd, classification_bins)
+    if classification_bins < 1 or num_of_bins_in_hd % classification_bins:
+        raise ValueError("Classification bins must be positive and divide the raw angle bins.")
 
     base_dir = Path(base_dir)
     kilosort_dir = Path(kilosort_dir)
@@ -376,7 +381,6 @@ def tuning_curve(
     unit_ids = np.rint(raw_unit_ids).astype(np.int64)
     if len(np.unique(unit_ids)) != len(unit_ids):
         raise ValueError("Tuning-curve unit IDs must be unique.")
-    angle_centers_deg = hd_spike_counts.coords[angle_dim].values.astype(float)
     angle_bin_edges_deg = np.asarray(hd_spike_counts.attrs["bin_edges"][0], dtype=float)
     expected_edges_deg = np.linspace(0.0, 360.0, HD_RAW_BIN_COUNT + 1)
     if (
@@ -428,6 +432,27 @@ def tuning_curve(
         where=occupancy_time_s > 0,
     )
 
+    # Rebin counts and occupancy together; saved curves retain their raw resolution.
+    bins_per_classification_bin = num_of_bins_in_hd // classification_bins
+    classification_counts = spike_counts.reshape(
+        len(unit_ids), classification_bins, bins_per_classification_bin
+    ).sum(axis=2)
+    classification_occupancy_samples = occupancy_samples.reshape(
+        classification_bins, bins_per_classification_bin
+    ).sum(axis=1)
+    classification_occupancy_time_s = classification_occupancy_samples / feature_fs_hz
+    classification_edges_deg = angle_bin_edges_deg[::bins_per_classification_bin]
+    classification_centers_deg = (
+        classification_edges_deg[:-1] + classification_edges_deg[1:]
+    ) / 2
+    classification_rates = np.full(classification_counts.shape, np.nan, dtype=float)
+    np.divide(
+        classification_counts,
+        classification_occupancy_time_s,
+        out=classification_rates,
+        where=classification_occupancy_time_s > 0,
+    )
+
     ep_starts = np.asarray(time_support.start, dtype=float)
     ep_ends = np.asarray(time_support.end, dtype=float)
     ep_lengths = ep_ends - ep_starts
@@ -440,10 +465,10 @@ def tuning_curve(
             ep_ends,
         )
     )
-    angles_rad = np.deg2rad(angle_centers_deg)
+    angles_rad = np.deg2rad(classification_centers_deg)
     cos_angles = np.cos(angles_rad)
     sin_angles = np.sin(angles_rad)
-    shuffle_occupancy_samples = occupancy_samples.copy()
+    shuffle_occupancy_samples = classification_occupancy_samples.copy()
     shuffle_occupancy_samples[shuffle_occupancy_samples == 0] = 1
     compute_shuffle_r = _compute_shuffle_r_numba or _compute_shuffle_r_numpy
     rng = np.random.default_rng(shuffle_seed)
@@ -461,10 +486,13 @@ def tuning_curve(
     }
     with tqdm(total=len(unit_ids), desc="Classifying HD cells", unit="unit") as pbar:
         for unit_index, unit_id in enumerate(unit_ids):
-            unit_rates = firing_rates[unit_index]
             firing_rate_hz.append(
-                [float(value) if np.isfinite(value) else None for value in unit_rates]
+                [
+                    float(value) if np.isfinite(value) else None
+                    for value in firing_rates[unit_index]
+                ]
             )
+            unit_rates = classification_rates[unit_index]
             valid_rates = np.isfinite(unit_rates)
             rate_sum = float(np.sum(unit_rates[valid_rates]))
             rate_mvl = np.nan
@@ -493,12 +521,12 @@ def tuning_curve(
             spike_angles = unit_spikes.value_from(HD_tsd).values
             spike_angle_mrl = mean_resultant_length(spike_angles)
             rayleigh_score, rayleigh_p = rayleigh_test(
-                spike_counts[unit_index],
-                occupancy_time_s,
-                angle_centers_deg,
+                classification_counts[unit_index],
+                classification_occupancy_time_s,
+                classification_centers_deg,
             )
             rayleigh_significant = (
-                bool(rayleigh_p < RAYLEIGH_ALPHA) if np.isfinite(rayleigh_p) else None
+                bool(rayleigh_p <= RAYLEIGH_ALPHA) if np.isfinite(rayleigh_p) else None
             )
 
             compressed_times = _compress_times_to_epoch_clock(
@@ -518,7 +546,7 @@ def tuning_curve(
                 feature_values,
                 feature_segment_starts,
                 feature_segment_ends,
-                angle_bin_edges_deg,
+                classification_edges_deg,
                 shuffle_occupancy_samples,
                 cos_angles,
                 sin_angles,
@@ -575,6 +603,7 @@ def tuning_curve(
         "valid_pose_intervals_s": time_support.values.tolist(),
         "classification": {
             "method": "occupancy_adjusted_rayleigh_or_circular_shift_v1",
+            "num_angle_bins": int(classification_bins),
             "class_0": "neither significant",
             "class_1": "exactly one significant",
             "class_2": "rayleigh and shuffle significant",
@@ -744,7 +773,7 @@ def tuning_curve(
             saved_unit_data["shuffle_significant"],
         ):
             assert rayleigh_significant == (
-                None if rayleigh_p is None else rayleigh_p < RAYLEIGH_ALPHA
+                None if rayleigh_p is None else rayleigh_p <= RAYLEIGH_ALPHA
             )
             assert shuffle_significant == (
                 None if shuffle_p is None else shuffle_p <= SHUFFLE_ALPHA

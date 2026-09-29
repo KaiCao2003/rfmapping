@@ -3,6 +3,27 @@ from collections.abc import Mapping
 from scipy.stats import circmean, pearsonr, permutation_test, rankdata
 
 
+def rayleigh_uniformity(angles_deg):
+    """Test circular uniformity using one unweighted angle per unit.
+
+    ``r`` is the mean resultant length; ``z = n * r**2``. The approximate
+    p-value follows CircStat's ``circ_rtest`` (Zar, equation 27.4), which is
+    sensitive to a single preferred direction. Nonfinite angles are omitted;
+    fewer than three observations produce a NaN p-value.
+    """
+    angles_deg = np.asarray(angles_deg, dtype=float)
+    angles_deg = angles_deg[np.isfinite(angles_deg)]
+    n = int(angles_deg.size)
+    if n == 0:
+        return {"n": 0, "r": np.nan, "z": np.nan, "p": np.nan}
+    radians = np.deg2rad(angles_deg % 360)
+    r = min(float(abs(np.mean(np.exp(1j * radians)))), 1.0)
+    z = n * r ** 2
+    p = float(np.exp(np.sqrt(1 + 4 * n + 4 * (n ** 2 - (n * r) ** 2))
+                     - (1 + 2 * n))) if n >= 3 else np.nan
+    return {"n": n, "r": r, "z": z, "p": p}
+
+
 def circular_distance_matrix_deg(angles_deg):
     """Return shortest angular distances, in degrees, between every pair."""
     angles_deg = np.asarray(angles_deg, dtype=float)

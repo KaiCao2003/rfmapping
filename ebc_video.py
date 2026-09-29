@@ -26,15 +26,13 @@ from Utils.tuning_curve_utils import get_exposure_timestamps
 
 
 # Edit these settings, then run this file in the IDE. No notebook state is used.
-session = Path("/mnt/senzailab/Kai/#Recording/m20/260918/260918_9")
+session = Path("/mnt/senzailab/Kai/#Recording/m20/260921/260921_11")
 probe = "A"
 phase = "baseline"
-arena_type = "cylinder"  # Basler: "rectangle"; Motive session 9: "cylinder".
-video_path = None if arena_type == "cylinder" else session / f"{session.name.split('_')[0]}.avi"
-video_fps = 30.  # Motive animation only; AVI export retains the original frame rate.
+video_path = session / f"{session.name.split('_')[0]}.avi"
 save_path = session / "data/spatial_cells/videos"
 video_start_s = 0.
-video_duration_s = None  # Full Motive phase or full Basler AVI.
+video_duration_s = None  # Full Basler AVI.
 audio_gain = .35  # Fixed OE volume fraction (35%); no per-channel peak normalization.
 audio_source = "continuous"  # Real OE voltage; "clicks" plays only sorted spike times.
 audio_band_hz = (300., 6000.)  # Spike band; OE Audio Monitor itself uses 100–7000 Hz.
@@ -51,16 +49,10 @@ RAY_COLORS = ("#00a6d6", "#f28e2b", "#29b765", "#ee5971",
               "#ac82e8", "#c4a238", "#4dc7c2", "#da6db5")
 HD_COLOR = "#f83ef1"
 BOUNDARY_COLOR = "#41e5e5"
-CYLINDER_RADII_CM = (15., 30.)  # Inner and outer boundaries in the same movie.
-CYLINDER_COLORS = ("#2463ad", "#c26b18")
 
 
-def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectangle", fps=30.):
+def load_video_data(session, *, probe="A", phase="baseline"):
     """Load pose and exposure timing without computing statistical controls."""
-    if arena_type == "cylinder":
-        return _load_cylinder_data(session, probe=probe, phase=phase, fps=fps)
-    if arena_type != "rectangle":
-        raise ValueError("arena_type must be 'rectangle' or 'cylinder'.")
     session = Path(session)
     directory = session / "data"
     info = read_formatted_json(directory / "session_info.json")["session_info"]
@@ -86,75 +78,6 @@ def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectang
                 exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
                 source=dict(kilosort_dir=str(kilosort), selected_interval_s=interval,
                             spike_times_path=str(directory / f"probe{probe}/adc_spike_time.npy")))
-
-
-def _load_cylinder_data(session, *, probe="A", phase="baseline", fps=30.):
-    """Motive XY and world-Z yaw, calibrated exactly as the circular EBC analysis."""
-    if not np.isfinite(fps) or fps <= 0:
-        raise ValueError("Motive animation fps must be positive.")
-    session = Path(session)
-    directory = session / "data"
-    pose = pd.read_csv(directory / "processed/filtered.csv", header=[0, 1, 2, 3])
-    frames = pose.iloc[:, 0].to_numpy(int)
-    xy = pose.xs("Position", level=2, axis=1).to_numpy(float)[:, :2]
-    heading = read_formatted_json(directory / "processed/head_direction.json")["hp4"]
-    hd = pd.Series(heading["head_direction_deg"], index=heading["frames"]).reindex(frames).to_numpy()
-    info = read_formatted_json(directory / "session_info.json")["session_info"]
-    exposures, origin, timing = get_exposure_timestamps(info, directory, camera_ttl_active_high=True)
-    if np.any((frames < 0) | (frames >= len(exposures))) or np.any(np.diff(frames) <= 0):
-        raise ValueError("Motive frame IDs must increase within the exposure timestamp array.")
-    times = exposures[frames]
-    intervals = pd.read_csv(directory / "interval_table.csv")
-    interval = intervals.loc[intervals.interval_type == phase, ["start", "end"]].iloc[0].to_numpy(float)
-    valid = ((times >= interval[0]) & (times <= interval[1])
-             & np.isfinite(xy).all(axis=1) & np.isfinite(hd))
-    if not valid.any():
-        raise ValueError(f"No finite Motive XY/HD in phase {phase}.")
-    # Fit once from every valid pose in the phase, before reducing the display
-    # rate or selecting a clip. Inner/outer geometry then shares one cm scale.
-    center = (xy[valid].min(axis=0) + xy[valid].max(axis=0)) / 2
-    scale = CYLINDER_RADII_CM[0] / np.linalg.norm(xy[valid] - center, axis=1).max()
-    frame_times = interval[0] + np.arange(int(np.ceil(np.diff(interval)[0] * fps))) / fps
-    nearest = _nearest_pose_rows(times, frame_times)
-    selected = valid[nearest] & (abs(times[nearest] - frame_times) <= 1.5 * np.median(np.diff(exposures)))
-    rows = nearest[selected]
-    kilosort = next((session / "kilosort" / f"Probe{probe}").glob("kilosort_*"))
-    return dict(session=session, probe=probe, phase=phase, arena_type="cylinder",
-                xy=(xy[rows] - center) * scale, hd=hd[rows] % 360,
-                frame_ids=np.flatnonzero(selected), times=frame_times[selected], pose_frame_ids=frames[rows],
-                exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
-                fps=float(fps), total_frames=len(frame_times), video_time_origin_s=float(interval[0]),
-                boundary_radii_cm=CYLINDER_RADII_CM, center_raw=center, cm_per_unit=scale,
-                source=dict(kilosort_dir=str(kilosort), selected_interval_s=interval,
-                            spike_times_path=str(directory / f"probe{probe}/adc_spike_time.npy")))
-
-
-def _nearest_pose_rows(times, targets):
-    """Nearest recorded pose; do not interpolate headings through missing tracking."""
-    right = np.clip(np.searchsorted(times, targets), 0, len(times) - 1)
-    left = np.maximum(right - 1, 0)
-    return np.where(abs(targets - times[left]) <= abs(times[right] - targets), left, right)
-
-
-def cylinder_geometry(data):
-    """Forward ray-circle intersections, independently for both enclosing walls.
-
-    Distances have shape (poses, boundaries, bearings). Motive yaw is CCW from
-    +X; screen Y is inverted only when drawing, never in the EBC calculation.
-    """
-    xy, hd = np.asarray(data["xy"]), np.asarray(data["hd"])
-    radii = np.asarray(data["boundary_radii_cm"])
-    angles = np.deg2rad(hd[:, None] + RAY_DEG)
-    direction = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
-    projection = np.sum(xy[:, None, :] * direction, axis=-1)
-    norm2 = np.sum(xy * xy, axis=-1)
-    valid = (np.isfinite(hd)[:, None] & np.isfinite(xy).all(axis=1)[:, None]
-             & (norm2[:, None] <= radii[None, :]**2 + 1e-9))
-    discriminant = projection[:, None, :]**2 + radii[None, :, None]**2 - norm2[:, None, None]
-    distance = np.maximum(-projection[:, None, :] + np.sqrt(np.maximum(discriminant, 0)), 0)
-    distance[~valid] = np.nan
-    endpoints = xy[:, None, None, :] + distance[..., None] * direction[:, None, :, :]
-    return endpoints, distance, valid
 
 
 def overlay_geometry(data):
@@ -285,143 +208,23 @@ class _Overlay:
         return canvas
 
 
-class _CylinderOverlay(_Overlay):
-    """One top-down view with both boundaries and paired distance columns."""
-
-    def __init__(self, data, width, height, fps):
-        self.data, self.width, self.height, self.fps = data, width, height, fps
-        self.font = ImageFont.truetype("DejaVuSans.ttf", 20)
-        self.small = ImageFont.truetype("DejaVuSans.ttf", 16)
-        self.heading = ImageFont.truetype("DejaVuSans.ttf", 26)
-        self.size = (width + 370, height)
-        self.center = np.array([width / 2, height / 2])
-        self.radii = np.asarray(data["boundary_radii_cm"])
-        self.scale = (min(width, height) / 2 - 112) / self.radii[-1]
-        self.positions = self.center + np.asarray(data["xy"]) * self.scale * [1, -1]
-        endpoints, self.distances, self.boundary_valid = cylinder_geometry(data)
-        self.endpoints = self.center + endpoints * self.scale * [1, -1]
-        self.valid = self.boundary_valid.all(axis=1)
-        self.template = Image.new("RGB", self.size, "white")
-        draw = ImageDraw.Draw(self.template)
-        draw.text((32, 24), "Cylinder EBC · Motive top view", font=self.heading, fill="#17212b")
-        for index, (radius, color) in enumerate(zip(self.radii, CYLINDER_COLORS)):
-            r = radius * self.scale
-            cx, cy = self.center
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=4)
-            name = ("Inner", "Outer")[index]
-            draw.text((32 + index * 260, 66), f"{name}: diameter {2 * radius:g} cm",
-                      font=self.font, fill=color)
-        for cm in (-30, -15, 0, 15, 30):
-            x = self.center[0] + cm * self.scale
-            y = self.center[1] - cm * self.scale
-            draw.text((x, height - 72), f"{cm:g}", anchor="mt", font=self.small, fill="#34404b")
-            draw.text((self.center[0] - self.radii[-1] * self.scale - 62, y),
-                      f"{cm:g}", anchor="mm", font=self.small, fill="#34404b")
-        draw.text((width / 2, height - 40), "Motive X (cm)", anchor="mt", font=self.font, fill="#17212b")
-        draw.text((32, height / 2), "Y (cm)", font=self.font, fill="#17212b")
-        x = width + 20
-        for y, text, font in (
-            (24, "Two EBC boundaries", self.heading),
-            (66, f"{data['session'].name} / {data['phase']}", self.font),
-            (224, "Mouse position (cm)", self.font),
-            (340, "HD: 0° = +X / right, positive CCW", self.small),
-            (410, "8 rays × 2 boundaries", self.font),
-            (884, "● inner hit   ○ outer hit", self.small),
-            (914, "0° front · 90° left · 180° back", self.small),
-            (958, "Motive pose · synchronized OE audio", self.small),
-        ):
-            draw.text((x, y), text, font=font, fill="#17212b")
-        for y in (202, 386):
-            draw.line((x, y, x + 330, y), fill="#cbd2d9", width=1)
-        draw.line((x, 312, x + 28, 312), fill=HD_COLOR, width=5)
-        draw.text((x, 453), "Bearing", font=self.small, fill="#17212b")
-        draw.text((x + 122, 453), "Inner cm", font=self.small, fill=CYLINDER_COLORS[0])
-        draw.text((x + 237, 453), "Outer cm", font=self.small, fill=CYLINDER_COLORS[1])
-        for i, (angle, color) in enumerate(zip(RAY_DEG, RAY_COLORS)):
-            y = 496 + i * 41
-            draw.line((x, y + 10, x + 20, y + 10), fill=color, width=4)
-            draw.text((x + 30, y), f"{angle:3.0f}°", font=self.font, fill="#17212b")
-
-    def draw(self, frame, frame_id, row):
-        canvas = self.template.copy()
-        draw = ImageDraw.Draw(canvas)
-
-        def label(point, text):
-            tile, offset = self._label(text)
-            canvas.paste(tile, (round(point[0] + offset[0]), round(point[1] + offset[1])))
-
-        if row >= 0:
-            position = self.positions[row]
-            # Outer rays first; the thicker inner segment and distinct hit markers
-            # keep both distances visible along each common bearing.
-            for boundary in (1, 0):
-                if not self.boundary_valid[row, boundary]:
-                    continue
-                for angle, end, color in zip(RAY_DEG, self.endpoints[row, boundary], RAY_COLORS):
-                    draw.line((tuple(position), tuple(end)), fill=color, width=2 if boundary else 4)
-                    x, y = end
-                    draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill="white" if boundary else color,
-                                 outline=color, width=2)
-                    if boundary:
-                        outward = (end - self.center) / np.linalg.norm(end - self.center)
-                        label(end + 22 * outward, f"{angle:g}°")
-            hd = self.data["hd"][row]
-            direction = np.array([np.cos(np.deg2rad(hd)), -np.sin(np.deg2rad(hd))])
-            tip = position + 70 * direction
-            normal = np.array([-direction[1], direction[0]])
-            draw.line((tuple(position), tuple(tip)), fill="white", width=9)
-            draw.line((tuple(position), tuple(tip)), fill=HD_COLOR, width=5)
-            draw.polygon([tuple(tip), tuple(tip - 16 * direction + 8 * normal),
-                          tuple(tip - 16 * direction - 8 * normal)], fill=HD_COLOR)
-            label(tip + 30 * direction, f"HD {hd:.1f}°")
-            x, y = position
-            draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill="#ff4040", outline="white", width=2)
-        x = self.width + 20
-        pose_frame = str(self.data["pose_frame_ids"][row]) if row >= 0 else "—"
-        draw.text((x, 108), f"Motive frame {pose_frame}", font=self.small, fill="#17212b")
-        draw.text((x, 136), f"Video: {frame_id / self.fps:.2f} s", font=self.small, fill="#17212b")
-        adc_time = self.data["video_time_origin_s"] + frame_id / self.fps
-        draw.text((x, 164), f"ADC time: {adc_time:.3f} s", font=self.small, fill="#17212b")
-        xy = self.data["xy"][row] if row >= 0 else [np.nan, np.nan]
-        text = f"x {xy[0]:5.2f}    y {xy[1]:5.2f}" if row >= 0 else "No valid Motive pose"
-        draw.text((x, 260), text, font=self.small, fill="#17212b")
-        text = f"HD: {self.data['hd'][row]:.1f}°" if row >= 0 else "HD: —"
-        draw.text((x + 40, 297), text, font=self.heading, fill="#17212b")
-        distances = self.distances[row] if row >= 0 else np.full((2, len(RAY_DEG)), np.nan)
-        for boundary, column in enumerate((122, 237)):
-            for i, distance in enumerate(distances[boundary]):
-                text = f"{distance:5.2f}" if np.isfinite(distance) else "—"
-                draw.text((x + column, 496 + i * 41), text, font=self.font, fill=CYLINDER_COLORS[boundary])
-        status = "Both boundaries valid" if row >= 0 and self.valid[row] else (
-            "Outside boundary: ray omitted" if row >= 0 else "Tracking gap: pose omitted")
-        draw.text((x, 840), status, font=self.small, fill="#17212b" if row >= 0 and self.valid[row] else "#b3261e")
-        return canvas
-
-
-def _make_overlay(data, width, height, fps):
-    cls = _CylinderOverlay if data.get("arena_type") == "cylinder" else _Overlay
-    return cls(data, width, height, fps)
-
-
 _render_state = None
 
 
 def _initialize_renderer(data, width, height, fps, memory_name):
     global _render_state
     memory = shared_memory.SharedMemory(name=memory_name)
-    overlay = _make_overlay(data, width, height, fps)
-    input_bytes = 0 if data.get("arena_type") == "cylinder" else width * height * 3
+    overlay = _Overlay(data, width, height, fps)
+    input_bytes = width * height * 3
     _render_state = memory, overlay, input_bytes, overlay.size[0] * height * 3
 
 
 def _render_shared_frame(slot, frame_id, row):
     memory, overlay, input_bytes, output_bytes = _render_state
     offset = slot * (input_bytes + output_bytes)
-    frame = None
-    if input_bytes:
-        pixels = np.ndarray((overlay.height, overlay.width, 3), dtype=np.uint8,
-                            buffer=memory.buf, offset=offset)
-        frame = Image.fromarray(pixels)
+    pixels = np.ndarray((overlay.height, overlay.width, 3), dtype=np.uint8,
+                        buffer=memory.buf, offset=offset)
+    frame = Image.fromarray(pixels)
     canvas = overlay.draw(frame, frame_id, row)
     start = offset + input_bytes
     memory.buf[start:start + output_bytes] = canvas.tobytes()
@@ -432,15 +235,13 @@ class _SharedRenderer:
 
     def __init__(self, data, width, height, fps, workers):
         self.slots = workers * 2
-        self.input_bytes = 0 if data.get("arena_type") == "cylinder" else width * height * 3
+        self.input_bytes = width * height * 3
         self.size = (width + 370, height)
         self.output_bytes = self.size[0] * height * 3
         self.stride = self.input_bytes + self.output_bytes
         self.memory = shared_memory.SharedMemory(create=True, size=self.slots * self.stride)
         # No spike-count matrices are copied to drawing workers.
-        pose = {key: data[key] for key in ("session", "phase", "times", "xy", "hd", "arena_type",
-                                          "pose_frame_ids", "video_time_origin_s", "boundary_radii_cm")
-                if key in data}
+        pose = {key: data[key] for key in ("session", "phase", "times", "xy", "hd")}
         try:
             self.pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=get_context("spawn"),
@@ -521,40 +322,32 @@ def _ffmpeg_error(process, log, operation):
 
 def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=None,
                        workers=1, video_encoder="libx264"):
-    """Export a Basler overlay or a Motive cylinder animation with both walls.
+    """Export a rectangular-arena overlay on the recorded Basler AVI.
 
-    Clip times start at AVI time zero or at the selected Motive phase start.
+    Clip times start at AVI time zero.
     Missing tracking stays in the movie as a labeled gap. Multiple workers
     share bounded frame buffers; the common picture is encoded only once.
     """
-    cylinder = data.get("arena_type") == "cylinder"
-    video_path = Path(video_path) if video_path is not None else None
+    if video_path is None:
+        raise ValueError("A Basler AVI is required.")
+    video_path = Path(video_path)
     output_path = Path(output_path)
-    if output_path.suffix.lower() != ".mp4" or (video_path is not None and video_path.resolve() == output_path.resolve()):
+    if output_path.suffix.lower() != ".mp4" or video_path.resolve() == output_path.resolve():
         raise ValueError("Choose a separate .mp4 output path.")
     if start_s < 0 or (duration_s is not None and duration_s <= 0):
         raise ValueError("start_s must be nonnegative and duration_s must be positive or None.")
     if workers < 1:
         raise ValueError("workers must be at least 1.")
-    if cylinder:
-        if video_path is not None:
-            raise ValueError("Use video_path=None for the Motive cylinder animation.")
-        fps, total = data["fps"], data["total_frames"]
-        fps_text = str(fps)
-        width, height = 1280, 1024
-    else:
-        if video_path is None:
-            raise ValueError("A Basler AVI is required for arena_type='rectangle'.")
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", str(video_path)],
-            check=True, capture_output=True, text=True,
-        )
-        stream = json.loads(probe.stdout)["streams"][0]
-        fps_text = stream["avg_frame_rate"]
-        fps = float(Fraction(fps_text))
-        width, height, total = int(stream["width"]), int(stream["height"]), int(stream["nb_frames"])
-        if (width, height) != (1280, 1024):
-            raise ValueError("Expected the original Basler frame size (1280 × 1024), without cropping/resizing.")
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", str(video_path)],
+        check=True, capture_output=True, text=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    fps_text = stream["avg_frame_rate"]
+    fps = float(Fraction(fps_text))
+    width, height, total = int(stream["width"]), int(stream["height"]), int(stream["nb_frames"])
+    if (width, height) != (1280, 1024):
+        raise ValueError("Expected the original Basler frame size (1280 × 1024), without cropping/resizing.")
     frame_ids = np.asarray(data["frame_ids"], dtype=int)
     if len(frame_ids) != len(data["times"]) or np.any(np.diff(frame_ids) <= 0) or np.any((frame_ids < 0) | (frame_ids >= total)):
         raise ValueError("Pose frame IDs must be increasing zero-based indices into the video timeline.")
@@ -567,7 +360,7 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
     workers = min(workers, stop - first)
     rows = np.full(total, -1, dtype=int)
     rows[frame_ids] = np.arange(len(frame_ids))
-    overlay = _make_overlay(data, width, height, fps)
+    overlay = _Overlay(data, width, height, fps)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     partial = output_path.with_name(f"{output_path.stem}.partial.mp4")
     preview = output_path.with_suffix(".png")
@@ -598,9 +391,8 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
 
     try:
         encoder_log = tempfile.TemporaryFile()
-        if not cylinder:
-            decoder_log = tempfile.TemporaryFile()
-            decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decoder_log)
+        decoder_log = tempfile.TemporaryFile()
+        decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decoder_log)
         if workers > 1:
             renderer = _SharedRenderer(data, width, height, fps, workers)
         print(f"Overlay: {workers} drawing workers, encoder={video_encoder}", flush=True)
@@ -616,25 +408,24 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
                 slot = (frame_id - first) % renderer.slots
                 if len(pending) == renderer.slots:
                     write_next()
-            if not cylinder:
-                if renderer is not None:
-                    count = renderer.read(decoder.stdout, slot)
-                else:
-                    payload = decoder.stdout.read(width * height * 3)
-                    count = len(payload)
-                # A clean EOF handles the Basler AVI's one-frame header overcount.
-                if not count and decoder.wait() == 0 and frame_id > first:
-                    stop = frame_id
-                    break
-                if count != width * height * 3:
-                    if decoder.wait() != 0:
-                        raise _ffmpeg_error(decoder, decoder_log, "AVI decoding")
-                    raise RuntimeError(f"AVI decode stopped at frame {frame_id}; expected {stop} frames.")
+            if renderer is not None:
+                count = renderer.read(decoder.stdout, slot)
+            else:
+                payload = decoder.stdout.read(width * height * 3)
+                count = len(payload)
+            # A clean EOF handles the Basler AVI's one-frame header overcount.
+            if not count and decoder.wait() == 0 and frame_id > first:
+                stop = frame_id
+                break
+            if count != width * height * 3:
+                if decoder.wait() != 0:
+                    raise _ffmpeg_error(decoder, decoder_log, "AVI decoding")
+                raise RuntimeError(f"AVI decode stopped at frame {frame_id}; expected {stop} frames.")
             if renderer is not None:
                 future = renderer.pool.submit(_render_shared_frame, slot, frame_id, int(rows[frame_id]))
                 pending.append((future, slot, frame_id))
             else:
-                frame = None if cylinder else Image.frombytes("RGB", (width, height), payload)
+                frame = Image.frombytes("RGB", (width, height), payload)
                 canvas = overlay.draw(frame, frame_id, int(rows[frame_id]))
                 encoder.stdin.write(canvas.tobytes())
                 if frame_id in (first, preview_frame):
@@ -672,13 +463,10 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
             partial.unlink(missing_ok=True)
     selected = rows[first:stop]
     available = selected >= 0
-    geometry_info = (dict(boundary_radii_cm=list(data["boundary_radii_cm"]),
-                          center_raw=np.asarray(data["center_raw"]).tolist(), cm_per_unit=data["cm_per_unit"],
-                          angle_convention="Motive XY: HD CCW from +X; ray bearing CCW relative to HD")
-                     if cylinder else dict(bounds_px=BASLER_BOUNDS_PX, arena_size_cm=BASLER_SIZE_CM,
-                                           angle_convention="HD: north-zero CCW; ray bearing: CCW relative to HD"))
-    summary = dict(video=str(output_path), source_video=str(video_path) if video_path is not None else None,
-                   preview=str(preview), arena_type="cylinder" if cylinder else "rectangle",
+    geometry_info = dict(bounds_px=BASLER_BOUNDS_PX, arena_size_cm=BASLER_SIZE_CM,
+                         angle_convention="HD: north-zero CCW; ray bearing: CCW relative to HD")
+    summary = dict(video=str(output_path), source_video=str(video_path),
+                   preview=str(preview), arena_type="rectangle",
                    session=str(data["session"]), phase=data["phase"],
                    **geometry_info,
                    ray_bearings_deg=RAY_DEG.tolist(),
@@ -767,14 +555,9 @@ def export_good_unit_videos(data, video_path, save_path, *, start_s=0., duration
 
 
 def _video_audio_clock(data, video_result):
-    """Clip seconds → common OE seconds, for either AVI or real-time animation."""
+    """Map AVI clip seconds to common OE seconds using exposure timestamps."""
     fps, first = video_result["fps"], video_result["source_first_frame"]
     origin = data["adc_time_origin_s"]
-    if data.get("arena_type") == "cylinder":
-        # The animation uses elapsed recording time. Do not compress a camera
-        # pause into a single nominal frame interval as an AVI timeline would.
-        seconds = np.array([0., video_result["frames"] / fps])
-        return seconds, origin + data["video_time_origin_s"] + first / fps + seconds
     return ((np.arange(len(data["exposure_times"])) - first) / fps,
             np.asarray(data["exposure_times"]) + origin)
 
@@ -863,7 +646,7 @@ def _continuous_audio_blocks(source, channels, clock, duration_s, *, band_hz=(30
     volts = np.asarray(source["bit_volts"])[channels]
     # Warm up the high-pass filter using the actual preceding voltage.
     first_time = _clock_times(np.array([0.]), clock)[0]
-    cursor = int(np.searchsorted(times, first_time - .25))
+    cursor = int(np.searchsorted(times, first_time - .25)) if np.isfinite(first_time) else None
     state = None
     previous_times = np.empty(0)
     previous_voltage = np.empty((0, len(channels)))
@@ -872,8 +655,17 @@ def _continuous_audio_blocks(source, channels, clock, duration_s, *, band_hz=(30
     for start in range(0, sample_count, block_samples):
         seconds = np.arange(start, min(start + block_samples, sample_count)) / sample_rate
         targets = _clock_times(seconds, clock)
-        stop = min(len(times), int(np.searchsorted(times, targets[-1], side="right")) + 1)
+        finite = np.isfinite(targets)
         output = np.zeros((len(targets), len(channels)), dtype=np.float32)
+        # Unknown synchronization stays silent; it must not advance the source
+        # cursor or reset the filter before the next measured interval.
+        if not finite.any():
+            yield output
+            continue
+        measured_targets = targets[finite]
+        if cursor is None:
+            cursor = int(np.searchsorted(times, measured_targets[0] - .25))
+        stop = min(len(times), int(np.searchsorted(times, measured_targets[-1], side="right")) + 1)
         if stop > cursor:
             voltage = raw[cursor:stop, channels].astype(np.float32) * volts
             if state is None:
@@ -885,10 +677,10 @@ def _continuous_audio_blocks(source, channels, clock, duration_s, *, band_hz=(30
         else:
             block_times, voltage = previous_times, previous_voltage
         if len(block_times) > 1:
-            left = np.clip(np.searchsorted(block_times, targets, side="right") - 1,
+            left = np.clip(np.searchsorted(block_times, measured_targets, side="right") - 1,
                            0, len(block_times) - 2)
-            fraction = (targets - block_times[left]) / (block_times[left + 1] - block_times[left])
-            output[:] = voltage[left] + fraction[:, None] * (voltage[left + 1] - voltage[left])
+            fraction = (measured_targets - block_times[left]) / (block_times[left + 1] - block_times[left])
+            output[finite] = voltage[left] + fraction[:, None] * (voltage[left + 1] - voltage[left])
             # Keep unavailable acquisition time silent instead of stretching
             # the first/last measured value into the missing part of a clip.
             output[(targets < block_times[0]) | (targets > block_times[-1])] = 0
@@ -1150,17 +942,10 @@ def main(argv=None):
     parser.add_argument("session", type=Path, nargs="?")
     parser.add_argument("--probe", default=probe)
     parser.add_argument("--phase", default=phase)
-    parser.add_argument(
-        "--arena-type", choices=("rectangle", "cylinder"), default=arena_type
-    )
     args = parser.parse_args(argv)
 
     selected_session = session if args.session is None else args.session
-    selected_video = video_path if args.session is None else (
-        None
-        if args.arena_type == "cylinder"
-        else selected_session / f"{selected_session.name.split('_')[0]}.avi"
-    )
+    selected_video = video_path if args.session is None else selected_session / f"{selected_session.name.split('_')[0]}.avi"
     selected_save_path = (
         save_path
         if args.session is None
@@ -1170,8 +955,6 @@ def main(argv=None):
         selected_session,
         probe=args.probe,
         phase=args.phase,
-        arena_type=args.arena_type,
-        fps=video_fps,
     )
     unit_videos = export_good_unit_videos(
         video_data, selected_video, selected_save_path,
