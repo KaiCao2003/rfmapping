@@ -54,7 +54,7 @@ def plot_keyed_heatmap(
     its maximum, with missing bins kept blank. Filtering and peak sorting
     belong to the caller. Tick endpoints define the displayed angular extent;
     labels may show a different angular convention at those same positions.
-    Figure size stays fixed as unit count grows; at most 25 unit labels are shown.
+    Every row is labeled with its unit key; figsize controls the figure size.
     """
     n_units = len(unit_key_sequence)
     with plt.rc_context(LIGHT_PLOT_STYLE):
@@ -82,12 +82,10 @@ def plot_keyed_heatmap(
                 extent=extent,
                 vmin=0, vmax=1,
             )
-            label_step = max(1, (n_units + 24) // 25)
-            label_indices = range(0, n_units, label_step)
-            ax.set_yticks(label_indices)
+            ax.set_yticks(range(n_units))
             ax.set_yticklabels([
                 ":".join(map(str, key)) if isinstance(key, tuple) else str(key)
-                for key in (unit_key_sequence[index] for index in label_indices)
+                for key in unit_key_sequence
             ])
             ax.set_xticks(xticks, labels=xticklabels)
             ax.set_xlim(xticks[0], xticks[-1])
