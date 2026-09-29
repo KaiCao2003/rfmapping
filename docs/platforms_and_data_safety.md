@@ -93,6 +93,9 @@ MATLAB process using `getenv`.
 
 ### Native Windows: change the SQLite connection before manual timing
 
+This is an instruction for a Windows user's checkout. The repository's
+executable code has not been changed by this documentation update.
+
 In [`Utils/session_edits.py`](../Utils/session_edits.py), find
 `SessionEditStore._connect`. The current connection is:
 
