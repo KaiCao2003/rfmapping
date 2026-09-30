@@ -796,6 +796,20 @@ params.probelist = getenv('RF_PROBES');
 
 % Good units and regular square-stimulus geometry.
 params.onlyReadGoodUnits = true;
+
+% Analyze each generated RF file with the configured RF Python environment.
+params.runRfDetection = true;
+params.rfPythonExecutable = getenv('RFMAP_PYTHON');
+params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
+params.rfTimeRange = [0 0.2];
+params.maxMissingBins = 2;
+params.maxZeroBins = 2;
+params.clusterFormingZ2d = 1.8;
+params.clusterFormingZ1d = 1;
+params.dropBins = 2;
+params.rfWrapX = true;
+params.rfCollapseFrom2d = false;
+
 params.isBackgroundMoving = false;
 params.isAllocentricPixelBins = false;
 params.isRotation = false;
@@ -841,6 +855,11 @@ If you prefer the existing `RFmapping.m` wrapper, edit its internal settings
 instead. Creating a `params` variable and then calling `RFmapping` does not
 override those internal settings. The self-contained example above must end
 with **`RFmapping_core(params)`**.
+
+The automatic caller uses POSIX shell quoting on Linux/macOS. For native
+Windows MATLAB, set `params.runRfDetection=false` and run `locate_rf.py`
+separately with the configured Python environment. Setting this flag to
+`false` also selects generation and CSV/PDF export without RF detection.
 
 ### 7.3 Generate the result
 
@@ -958,6 +977,37 @@ indexed NPZ `.rfmap` files. Use the viewer code's own installation/launch
 instructions, then **File → Open**. The file must be accessible to the machine
 running the viewer. Older JSON-only viewers cannot read a binary archive by renaming
 its extension.
+
+### Automatic RF detection
+
+With `params.runRfDetection=true`, MATLAB calls `locate_rf.py` after writing
+each `.rfmap`, before its CSV/PDF exports. The caller passes the probe, response
+window, bin QC limits, cluster thresholds, and projection settings explicitly.
+A Python failure stops that MATLAB run and reports the source file and output.
+
+The default analysis uses 0–200 ms rates, excludes missing and zero-response
+bins from the spatial mean/SD, and keeps units with at most two missing and
+two zero bins. It detects 2-D RFs at mean + 1.8 SD and independent horizontal
+1-D RFs at mean + 1 SD, without shuffling. Each source gets five adjacent files:
+
+| Suffix added to the source stem | Contents |
+| --- | --- |
+| `.npz` | 2-D mask and center |
+| `_1d.npz` | 1-D mask and center |
+| `_units_with_rf.npy` | `(probe, unit_id)` rows with a 2-D RF |
+| `_units_with_rf_1d.npy` | `(probe, unit_id)` rows with a 1-D RF |
+| `_analysis.json` | Parameters, bin QC, and selected units |
+
+To analyze an existing file from the configured Linux/macOS terminal:
+
+```bash
+probe_letter="${RF_PROBES:0:1}"
+rf_source="$RF_SESSION_DIR/data/rfmapping/good/-100_400_1ms/Probe${probe_letter}/regular_unitsSpikeCounts_${RF_DATE}_${RF_SESSION}.rfmap"
+"$RFMAP_PYTHON" "$RFMAP_CODE_DIR/locate_rf.py" "$rf_source" --probe "$probe_letter"
+```
+
+Use `--help` for the detector options. The [RFMap API guide](docs/rfmap.md)
+also describes the shared `analyze_rf_file()` function and result reuse.
 
 ## 9. Variations
 

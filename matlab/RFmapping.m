@@ -2,6 +2,19 @@ function RFmapping
     % RF files use indexed, compressed NPZ storage with a .rfmap extension.
     
     params.onlyReadGoodUnits = true;
+
+    % Run the shared Python RF detector once for each generated map.
+    params.runRfDetection = true;
+    params.rfPythonExecutable = '/home/kai/.virtualenvs/rfmapping/bin/python';
+    params.rfPythonScript = '/home/kai/Developer/rfmapping/locate_rf.py';
+    params.rfTimeRange = [0 0.2];
+    params.maxMissingBins = 2;
+    params.maxZeroBins = 2;
+    params.clusterFormingZ2d = 1.8;
+    params.clusterFormingZ1d = 1;
+    params.dropBins = 2;
+    params.rfWrapX = true;
+    params.rfCollapseFrom2d = false;
     
     % only ONE true
     params.isBackgroundMoving = false;
@@ -9,7 +22,7 @@ function RFmapping
     params.isRotation = false ;
 
     % Stimulus geometry. For vertical bars, set all three coordinate flags above false.
-    params.isVerticalBar = true;
+    params.isVerticalBar = false;
     params.barBinWidthDeg = 3;
 
     params.isFineResolution = false; % Applies only to egocentric, rotation, and allocentric pixel-bin maps.
@@ -22,9 +35,9 @@ function RFmapping
     is_on = true;
     is_off = false;
 
-    params.base_dir = '/mnt/senzailab/Kai/#Recording/m20/';
-    params.date = '260918';
-    params.probelist = 'A';
+    params.base_dir = '/mnt/senzailab/Kai/#Recording/m15/';
+    params.date = '260630';
+    params.probelist = 'AB';
 
     params.sessionList = '3';
 

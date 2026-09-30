@@ -16,6 +16,9 @@ RF detection is exposed through `RFMap.rf_2d()`, `RFMap.rf_1d()`,
 complete mask and its center with one boolean: `is_center=False` returns the
 mask and `is_center=True` returns the center.
 All four methods default to `is_shuffle=False, drop_bins=2`.
+`rf_1d()` defaults to `collapse_from_2d=False`: sum responses along the other
+spatial axis first, then detect RF with `cluster_forming_z=1.0` (mean + 1 SD).
+Set `collapse_from_2d=True` to retain the original projection of a 2-D RF.
 
 ## Quick start
 
@@ -43,7 +46,7 @@ raw = load_rf_maps(rf_source, unit_firing_rate=False)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(
     session,
-    probe,
+    "A",
     summed,
     on=True,
     off=False,
@@ -63,8 +66,8 @@ options = {
 
 mask_2d = summed.rf_2d(trials, **options)
 center_2d = summed.rf_2d(trials, is_center=True, **options)
-mask_x = summed.rf_1d(trials, axis="x", **options)
-mask_y = summed.rf_1d(trials, axis="y", **options)
+mask_x = summed.rf_1d(trials, axis="x", collapse_from_2d=True, **options)
+mask_y = summed.rf_1d(trials, axis="y", collapse_from_2d=True, **options)
 ```
 
 The first call computes the statistical mask and its center and writes both to
@@ -141,6 +144,14 @@ response window is longer or shorter than show time. Non-shuffle detection
 uses the loaded values directly, without another division by presentation
 counts. Loading raw counts therefore also leaves those counts unnormalized
 when detecting a non-shuffle RF.
+
+Pass `exclude_zero_bins=True` to a non-shuffle RF method to compute each unit's
+spatial mean and population SD from its finite, nonzero response bins only.
+Missing and zero bins retain their original grid locations and cannot enter
+the RF mask or be selected as its center. For independent 1-D detection, this
+filter applies after summing onto the requested axis. The default is `False`,
+which retains observed zero responses; trial-label shuffle tests do not support
+this filter.
 
 | Value | `RFMapList` shape | One `RFMap` shape | Meaning |
 | --- | --- | --- | --- |
@@ -279,14 +290,15 @@ must not be passed through it.
 ## RF method arguments
 
 Both `rf_2d()` and `rf_1d()` accept the same statistical arguments; `rf_1d()`
-also takes `axis="x"` or `axis="y"`.
+also takes `axis="x"` or `axis="y"` and `collapse_from_2d=False`.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `is_center` | `False` | Return the complete mask; `True` returns its discrete center |
 | `is_shuffle` | `False` | Run cluster-permutation significance testing when explicitly enabled |
 | `drop_bins` | `2` | No-shuffle only: remove components of this size or smaller |
-| `cluster_forming_z` | `1.5` | Select pixels allowed to form candidate clusters |
+| `exclude_zero_bins` | `False` | No-shuffle only: exclude missing and zero responses from each unit's mean, SD, and candidate mask |
+| `cluster_forming_z` | `1.0` for direct 1-D detection; otherwise `1.5` | Select bins allowed to form candidate clusters |
 | `alpha` | `0.05` | Cluster-level significance cutoff |
 | `n_permutations` | `10_000` | Number of shuffled null maps |
 | `alternative` | `"greater"` | Test increased response; `"less"` tests decreased response |
@@ -372,16 +384,16 @@ The normal output is the complete binary area:
 
 ```python
 mask_2d = summed.rf_2d(trials, is_center=False)
-mask_x = summed.rf_1d(trials, axis="x", is_center=False)
-mask_y = summed.rf_1d(trials, axis="y", is_center=False)
+mask_x = summed.rf_1d(trials, axis="x", collapse_from_2d=True, is_center=False)
+mask_y = summed.rf_1d(trials, axis="y", collapse_from_2d=True, is_center=False)
 ```
 
 Select the center through the same public methods:
 
 ```python
 center_2d = summed.rf_2d(trials, is_center=True)
-center_x = summed.rf_1d(trials, axis="x", is_center=True)
-center_y = summed.rf_1d(trials, axis="y", is_center=True)
+center_x = summed.rf_1d(trials, axis="x", collapse_from_2d=True, is_center=True)
+center_y = summed.rf_1d(trials, axis="y", collapse_from_2d=True, is_center=True)
 ```
 
 Mask calculation is required before center calculation. The implementation
@@ -402,8 +414,77 @@ between bins or outside the final mask. With `wrap_x=True`, horizontal distance
 is circular. A zero total weight falls back to equal RF-bin weights; remaining
 ties prefer the higher local weight and then row-major order.
 
-The 1-D methods use logical projection of the selected 2-D output. They never
-run separate 1-D statistics.
+With `collapse_from_2d=True`, the 1-D methods logically project the selected
+2-D output. By default they instead sum numeric responses before detection:
+for `axis="x"`, a 7-by-30 map becomes one row of 30 values. The default
+threshold is that row's mean + 1 population SD; `drop_bins` still applies.
+The result and center are saved with a singleton collapsed spatial axis.
+The shared file analysis saves both 2-D results (`*.npz`) and independent
+1-D results (`*_1d.npz`), with separate source-specific unit lists.
+
+The file analyzer defaults to `max_missing_bins=2` and `max_zero_bins=2`. A unit
+continues only when both counts are at or below their respective limits and
+at least one finite, nonzero response bin remains. Missing bins have nonfinite
+responses or no stimulus exposure; zero bins have an observed response of zero
+in the selected time window. The counts do not overlap. Both RF detections use
+`exclude_zero_bins=True`, so a 7-by-30 map with two zero bins and no missing
+bins uses the remaining 208 responses for its spatial mean and population SD.
+`rf_bin_qc()` returns the unit IDs, bin counts, and selection mask.
+
+## MATLAB and Python shared analysis
+
+`Utils.rf_analysis.analyze_rf_file()` loads a source, sums its response window,
+applies bin QC, detects 2-D and 1-D RFs, and saves results. Python callers can
+use it directly. MATLAB uses the same function through this sequence:
+
+```text
+RFmapping_core.m writes .rfmap
+  -> RFmapping_run_python.m
+  -> locate_rf.py
+  -> Utils.rf_analysis.analyze_rf_file()
+```
+
+The MATLAB helper is bundled in `matlab/Utils/`. Supply the executable, script
+path, and detection settings explicitly, using the configured terminal paths:
+
+```matlab
+params.runRfDetection = true;
+params.rfPythonExecutable = getenv('RFMAP_PYTHON');
+params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
+params.rfTimeRange = [0 0.2];
+params.maxMissingBins = 2;
+params.maxZeroBins = 2;
+params.clusterFormingZ2d = 1.8;
+params.clusterFormingZ1d = 1;
+params.dropBins = 2;
+params.rfWrapX = true;
+params.rfCollapseFrom2d = false;
+```
+
+`RFmapping_core(params)` callers must supply `runRfDetection`; set it to
+`false` to generate RF maps without running detection. The remaining detector
+fields are used when it is `true`. The detector window is independent of the
+full `VSTimeWindow` saved by MATLAB and must align with its time-bin edges.
+Each output file starts one synchronous Python process. A Python failure
+raises `RFmapping:PythonDetectionFailed` with its output.
+The caller uses POSIX shell quoting on Linux/macOS; native Windows MATLAB
+callers should set `runRfDetection=false` and invoke `locate_rf.py` separately.
+
+For a source `regular_unitsSpikeCounts_260630_3.rfmap`, shared analysis saves:
+
+| Output | Contents |
+| --- | --- |
+| `regular_unitsSpikeCounts_260630_3.npz` | Existing 2-D mask/center cache with retained unit IDs |
+| `regular_unitsSpikeCounts_260630_3_1d.npz` | 1-D detection cache |
+| `regular_unitsSpikeCounts_260630_3_units_with_rf.npy` | `(probe, unit_id)` rows with a 2-D RF |
+| `regular_unitsSpikeCounts_260630_3_units_with_rf_1d.npy` | `(probe, unit_id)` rows with a 1-D RF |
+| `regular_unitsSpikeCounts_260630_3_analysis.json` | Parameters, QC counts for all input units, and selected units |
+
+Unit lists are pickle-free Unicode arrays with shape `(N, 2)`, including
+`(0, 2)` when no retained units have RFs. If every unit fails bin QC, analysis
+raises an error.
+Set `save_results=False` when calling the shared function to inspect results
+without writing these source-specific files.
 
 ## Batch workflow
 
@@ -413,9 +494,7 @@ axis:
 ```python
 masks = summed.rf_2d(
     trials,
-    is_shuffle=True,
     n_permutations=10_000,
-    random_seed=0,
     result_path=result_path,
 )
 
@@ -431,21 +510,19 @@ Keep probe identity separate because unit IDs can overlap between probes:
 ```python
 results_by_probe = {}
 
-for probe in os.environ["RF_PROBES"]:
+for probe in ("A", "B"):
     source = (
         session
         / "data/rfmapping/good/-100_400_1ms"
         / f"Probe{probe}"
-        / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
+        / "regular_unitsSpikeCounts_260630_3.json"
     )
     raw = load_rf_maps(source, unit_firing_rate=False)
     summed = raw.sum(0.0, 0.2)
     trials = load_regular_rf_trials(session, probe, summed)
     results_by_probe[probe] = summed.rf_2d(
         trials,
-        is_shuffle=True,
         n_permutations=10_000,
-        random_seed=0,
         wrap_x=True,
         result_path=source.with_suffix(".npz"),
     )
@@ -459,7 +536,7 @@ to an `RFMap` when setting plot extents:
 ```python
 import matplotlib.pyplot as plt
 
-unit = summed.by_index(0)
+unit = summed.by_unit_id(127)
 unit_mask = unit.rf_2d(trials, wrap_x=True)
 
 plt.imshow(
@@ -503,8 +580,8 @@ used to invent a valid permutation null.
 
 ## Timing caveat
 
-With regular stimuli spaced about 100 ms apart, a `[0.0, 0.2)` response
-window overlaps the next
+In the regular session used by `locate_rf.ipynb`, stimuli are spaced about
+100 ms apart. A `[0.0, 0.2)` response window therefore overlaps the next
 stimulus. Negative bins can likewise overlap the previous stimulus.
 
 The permutation test asks whether response is associated with the assigned
@@ -551,8 +628,8 @@ window, and unit IDs. Do not disable validation merely to obtain a mask.
 
 Confirm that the path ends in `.npz` and that the same aligned trials,
 unit set, grid, response window, and statistical parameters are being used.
-`is_center` and `rf_1d()`'s axis choose a view of the stored result; they do not
-make a new statistical result.
+`is_center` and, with `collapse_from_2d=True`, `rf_1d()`'s axis choose a view
+of the stored result; they do not make a new statistical result.
 
 Never rename a result to `.rfmap`. The latter identifies source data and has a
 different contract.
@@ -590,7 +667,7 @@ writable = np.array(mask_2d, copy=True)
 | `left_rf_map - right_rf_map` | `RFMap` | Elementwise signed difference between compatible singleton-bin maps; keep the left time window |
 | `load_regular_rf_trials(session, probe, summed, on=..., off=...)` | `dict` | Reconstruct aligned ON or OFF regular trials |
 | `summed.rf_2d(trials, is_center=..., result_path=..., ...)` | read-only `uint8` array | Return the full 2-D mask or center |
-| `summed.rf_1d(trials, axis=..., is_center=..., result_path=..., ...)` | read-only `uint8` array | Project the same 2-D mask or center |
+| `summed.rf_1d(trials, axis=..., collapse_from_2d=False, is_center=..., result_path=..., ...)` | read-only `uint8` array | Detect after summing responses; `True` projects the 2-D result |
 | `rf_maps.by_index(index)` | `RFMap` | Select by original source unit index |
 | `rf_maps.by_unit_id(unit_id)` | `RFMap` | Select by recorded unit or cluster ID |
 | `rf_maps.to_4d_array()` | array | Stack pooled count timelines |

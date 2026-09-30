@@ -491,10 +491,10 @@ def load_regular_rf_trials(
         "n_repeat_blocks": int(np.unique(all_strata).size),
     }
     arrays = {
-        "responses": np.array(responses, copy=True),
-        "position_ids": np.array(selected_position_ids, copy=True),
-        "stratum_ids": np.array(selected_strata, copy=True),
-        "unit_ids": np.array(unit_ids, copy=True),
+        "responses": responses,
+        "position_ids": selected_position_ids,
+        "stratum_ids": selected_strata,
+        "unit_ids": unit_ids,
         "x_positions": np.array(x_positions, copy=True),
         "y_positions": np.array(y_positions, copy=True),
     }

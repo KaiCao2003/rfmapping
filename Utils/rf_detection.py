@@ -25,6 +25,19 @@ __all__: list[str] = []
 Alternative = Literal["greater", "less"]
 _AUTO_MAX_THREADS = 2
 
+_RF_DETECTION_OPTION_DEFAULTS: dict[str, Any] = {
+    "cluster_forming_z": 1.5,
+    "alpha": 0.05,
+    "n_permutations": 10_000,
+    "alternative": "greater",
+    "wrap_x": True,
+    "fill_single_holes": False,
+    "min_hole_neighbors": 3,
+    "random_seed": 0,
+    "batch_size": 64,
+    "n_jobs": None,
+}
+
 _SPATIAL_STRUCTURE = np.asarray(
     [[0, 1, 0], [1, 1, 1], [0, 1, 0]],
     dtype=np.uint8,
@@ -452,16 +465,16 @@ def detect_rf(
     unit_ids: Any | None = None,
     is_shuffle: bool = True,
     drop_bins: int = 1,
-    cluster_forming_z: float = 1.5,
-    alpha: float = 0.05,
-    n_permutations: int = 10_000,
-    alternative: Alternative = "greater",
-    wrap_x: bool = True,
-    fill_single_holes: bool = False,
-    min_hole_neighbors: int = 3,
-    random_seed: int | None = 0,
-    batch_size: int = 64,
-    n_jobs: int | None = None,
+    cluster_forming_z: float = _RF_DETECTION_OPTION_DEFAULTS["cluster_forming_z"],
+    alpha: float = _RF_DETECTION_OPTION_DEFAULTS["alpha"],
+    n_permutations: int = _RF_DETECTION_OPTION_DEFAULTS["n_permutations"],
+    alternative: Alternative = _RF_DETECTION_OPTION_DEFAULTS["alternative"],
+    wrap_x: bool = _RF_DETECTION_OPTION_DEFAULTS["wrap_x"],
+    fill_single_holes: bool = _RF_DETECTION_OPTION_DEFAULTS["fill_single_holes"],
+    min_hole_neighbors: int = _RF_DETECTION_OPTION_DEFAULTS["min_hole_neighbors"],
+    random_seed: int | None = _RF_DETECTION_OPTION_DEFAULTS["random_seed"],
+    batch_size: int = _RF_DETECTION_OPTION_DEFAULTS["batch_size"],
+    n_jobs: int | None = _RF_DETECTION_OPTION_DEFAULTS["n_jobs"],
     show_progress: bool = True,
 ) -> dict[str, Any]:
     """Detect trial-level two-dimensional RF clusters for one or more units.

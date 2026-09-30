@@ -1,24 +1,22 @@
 # Source provenance
 
-This publication was assembled on **2026-09-22** from the working sources below. The remote copies were checked against their source files with SHA-256 after copying. All 33 remote source files, including the existing license, are byte-for-byte copies; the hashes below identify the actual snapshot even where the source was uncommitted.
+The initial publication was assembled on **2026-09-22**. The regular MATLAB sources and RFMap Python API were refreshed on **2026-09-30**. The MATLAB source revision is `f8958692bc11ed961e9d7575a35baefd53b44687`; its files were checked against `hhw9l84:/mnt/ssd4.1/Matlab`. The bundled FMAToolbox and preprocessing snapshots remain from September 22. The hashes below identify the published file bytes.
 
 ## Source trees
 
 | Published files | Source | Source HEAD at copy time | Snapshot state |
 | --- | --- | --- | --- |
-| Root Python helpers, notebooks, and documentation | [KaiCao2003/rfmapping](https://github.com/KaiCao2003/rfmapping), local working tree | `320257dcfe89584d2077d475a2f80e34c650c250` | Includes current working changes. The publication narrows the file set, removes notebook outputs and unrelated cells, and updates documentation and packaging. |
-| `matlab/RFmapping.m` and `matlab/Utils/` | [KaiCao2003/rfmapping_matlab](https://github.com/KaiCao2003/rfmapping_matlab), `hhw9l84:/mnt/ssd4.1/Matlab` | `71ee85bf61fee947fdf433a7037bb72a8e59baca` | Current working files, including the modified and untracked files listed below. |
+| Root Python helpers, notebooks, and documentation (initial publication) | [KaiCao2003/rfmapping](https://github.com/KaiCao2003/rfmapping), local working tree | `320257dcfe89584d2077d475a2f80e34c650c250` | Includes current working changes. The publication narrows the file set, removes notebook outputs and unrelated cells, and updates documentation and packaging. |
+| `matlab/RFmapping.m` and `matlab/Utils/` | [KaiCao2003/rfmapping_matlab](https://github.com/KaiCao2003/rfmapping_matlab), `hhw9l84:/mnt/ssd4.1/Matlab` | `f8958692bc11ed961e9d7575a35baefd53b44687` | Tracked regular RF sources, including the MATLAB-to-Python detection caller. |
 | `matlab/buzcode-master/` | The FMAToolbox subset and license already present under `hhw9l84:/mnt/ssd4.1/Matlab/buzcode-master` | No separate upstream commit was available in this source directory | This directory is ignored by the MATLAB source repository. Its contents are identified by file hashes, not by the MATLAB repository HEAD. |
 | `preprocessing/pipeline/` | [8Nero/pipeline](https://github.com/8Nero/pipeline), `hhw9l84:/home/kai/pipeline` | `04bed444276e028b35f694d2333663b18204c68e` | All 11 included files match the clean tracked source files. The upstream working tree also contains local configuration files; those are excluded. |
 | `preprocessing/spikeinterface/` | [KaiCao2003/spikeinterface](https://github.com/KaiCao2003/spikeinterface), `hhw9l84:/home/kai/spikeinterface` | `b190c8c309363ee9f6383a8dae29b037fd03468f` | The splitter is modified and the timestamp exporter is untracked in that source tree. Both are copied from the current working files. |
 
 The source paths in this table are provenance records. Users do not need access to those machines or directories; the included files are available in this repository.
 
-## Uncommitted MATLAB files included
+## MATLAB files included
 
-- Modified: `RFmapping.m`, `Utils/RFmapping_core.m`.
-- Untracked: `Utils/RFmapping_group_spike_times.m`, `Utils/ReadSpikeData.m`, `Utils/SaveRfPatternCsv.m`, `Utils/SaveRfPatternPdf.m`.
-- The other included files in `matlab/Utils/` are tracked and unchanged at the source HEAD above.
+`matlab/RFmapping.m` and all included `matlab/Utils/*.m` files match the tracked MATLAB sources at the revision above. `RFmapping_run_python.m` runs the shared `locate_rf.py` entrypoint after each generated map when `params.runRfDetection=true`.
 
 The regular RF source keeps its existing shared coordinate branches. This publication does not include the dedicated free-moving entry point or core, and the documented regular RF configuration disables the background-motion, allocentric-bin, and rotation options.
 
@@ -34,7 +32,7 @@ No new repository-wide license is assigned by this publication.
 
 ## SHA-256 of copied remote files
 
-These hashes apply to the published file bytes. They were compared with the corresponding authoritative remote working files on the copy date.
+These hashes apply to the published file bytes. MATLAB regular-source hashes were refreshed on September 30; bundled third-party and preprocessing hashes retain the September 22 copy date.
 
 | Published path | SHA-256 |
 | --- | --- |
@@ -47,11 +45,12 @@ These hashes apply to the published file bytes. They were compared with the corr
 | `matlab/buzcode-master/externalPackages/FMAToolbox/Plot/Bright.m` | `3f57004238a890911d2458577015bfb9a63a1d0ef8e774daa0d5d5553d0223b2` |
 | `matlab/buzcode-master/externalPackages/FMAToolbox/Plot/PlotColorMap.m` | `281268ebeab01774cc235f512aa0099aaeb01fdd2c6eaee0cce2ae0565ce11c3` |
 | `matlab/buzcode-master/LICENSE` | `589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2` |
-| `matlab/RFmapping.m` | `06d43dfd41c6786d38e87e804f63af0395b84e03d521f4f225c674d55514c725` |
+| `matlab/RFmapping.m` | `ffe0d4bdd448355c480dc011feb13524e4cfe95ce337849129b56a0d07ae2dc0` |
 | `matlab/Utils/readNPY.m` | `67d5b2ee04ef7480373d0aa9098919e17db09778c6cefd94f571f4306aee4934` |
 | `matlab/Utils/ReadSpikeData.m` | `b318b9fb8f2c71147732388695e6081082b88805673e75943de02c43c255e740` |
 | `matlab/Utils/RFmapping_coarsen_trial_spatial_mask.m` | `3104d009345c8e7cdc1fdbb1c9f4420ac43e9dfe8d1d64922b5cc5a1b123704a` |
-| `matlab/Utils/RFmapping_core.m` | `14cb1fc1f06f520432def4878bfa7d79116f852fc156e920b1cb073265bba269` |
+| `matlab/Utils/RFmapping_core.m` | `2ef6315b2cc194b6174f61af932314bfe6148ef5a712b68351d48fd34fc77bf2` |
+| `matlab/Utils/RFmapping_run_python.m` | `d7d5581ad65749dab5e82c610bb1097c55ad39818500beef06d036afeb27a02b` |
 | `matlab/Utils/RFmapping_group_spike_times.m` | `a80b2e174b79c564bf3d42bc1a9b012f76a99435b24b50ab313c2d3b941ad464` |
 | `matlab/Utils/RFmapping_trial_spatial_mask.m` | `e1bc24cab0159d35fd72f46ba63365d2b6eba2cae544c354bbd9bb26865db18a` |
 | `matlab/Utils/RFmapping_trial_spike_counts.m` | `52ae714656475f3dce91f7de35553888ea2996eaaa28462168102c41d9e7d6be` |
@@ -77,3 +76,15 @@ Source mapping for this table:
 - Strip `matlab/` and append the remaining path to `/mnt/ssd4.1/Matlab/`.
 - Strip `preprocessing/pipeline/` and append the remaining path to `/home/kai/pipeline/`.
 - Strip `preprocessing/spikeinterface/` and append the remaining path to `/home/kai/spikeinterface/`.
+
+## RFMap Python update
+
+The files below were copied from the current working tree at local HEAD `d5d3cb383abbcd7d9d95ea8dbc82fdf7f7f961d3`. Other local analysis changes were excluded.
+
+| Published path | SHA-256 |
+| --- | --- |
+| `Utils/rfmap.py` | `7e75722e3f012e2316f07d6fde9247716a94f66ddd4205da9ba486e2d5cd76bd` |
+| `Utils/rf_detection.py` | `00402b43023a6a6962af2104f59ca93be1c37a27ebd88aeb5224c1510f9f8a5a` |
+| `Utils/rf_trials.py` | `dd4df1ae53f43d5e2a8d483acbb777f034a9b30fbab75b59a59074ec7d1e2f07` |
+| `Utils/rf_analysis.py` | `fc73025c0652636221bf5fd410d498a996f4533ebe7f9511f9cfdb51b74b6ecf` |
+| `locate_rf.py` | `177940342e0a27bcfaee1e9e9e6770b4b8860417d60e17b7c78460e134907432` |
