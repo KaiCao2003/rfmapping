@@ -1,4 +1,4 @@
-"""Signed circular association and a fixed reverse-phase HD/RF conversion."""
+"""Signed circular association and first-harmonic HD-to-RF regression."""
 
 import numpy as np
 
@@ -40,24 +40,36 @@ def fisher_lee_correlation(hd_deg, rf_ego_deg):
     return _fisher_lee_components(hd, rf)[0]
 
 
-def predict_circular_conversion(hd_deg, beta_deg):
-    """Apply RFego=wrap180(beta-HD); return RFallo on [0, 360).
+def predict_circular_conversion(hd_deg, model):
+    """Predict RFego from HD; derive RFallo=wrap360(HD+RFego).
 
-    The slope -1 is the declared coordinate conversion, not an estimated
-    regression coefficient. Nonfinite headings remain NaN in both outputs.
+    Coefficients predict the cosine and sine of RFego on the basis
+    [1, cos(HD), sin(HD)]. Shapes and gaps in HD are preserved. A zero
+    predicted vector has no direction and stays NaN in both outputs.
     """
     hd = np.asarray(hd_deg, dtype=float)
-    beta = np.nan if beta_deg is None else float(beta_deg)
-    rf_ego = (beta - hd + 180.) % 360. - 180.
-    rf_allo = (hd + rf_ego) % 360.
+    finite = np.isfinite(hd)
+    radians = np.deg2rad(np.where(finite, hd, np.nan) % 360.)
+    design = np.stack((np.ones(hd.shape), np.cos(radians), np.sin(radians)), axis=-1)
+    predicted_cos = design @ np.asarray(model["cos_coefficients"], dtype=float)
+    predicted_sin = design @ np.asarray(model["sin_coefficients"], dtype=float)
+    # Unit-vector responses can cancel to zero up to trigonometric/OLS roundoff.
+    defined = finite & (np.hypot(predicted_cos, predicted_sin) > 8 * np.finfo(float).eps)
+    angle = (np.rad2deg(np.arctan2(predicted_sin, predicted_cos)) + 180.) % 360. - 180.
+    rf_ego = np.where(defined, angle, np.nan)
+    rf_allo = (np.where(finite, hd, np.nan) % 360. + rf_ego) % 360.
     return {"rf_ego_deg": rf_ego, "rf_allo_deg": rf_allo}
 
 
 def fit_circular_conversion(hd_deg, rf_ego_deg, *, selected_on_sum=False,
                             n_permutations=10_000, random_seed=1):
-    """Estimate the reverse-phase offset and independently test association.
+    """Fit RFego directly from HD and independently test association.
 
-    beta=circmean(HD+RFego) minimizes mean cosine loss for the fixed slope -1.
+    Separate least squares fits of cos(RFego) and sin(RFego) use the basis
+    [1, cos(HD), sin(HD)]; atan2 gives their predicted direction. Neither
+    the direction of association nor a constant HD+RFego sum is imposed.
+    This is the order-1 trigonometric circular-circular regression described
+    at https://search.r-project.org/CRAN/refmans/CircStats/html/circ.reg.html.
     MAE is an in-sample circular error, not a held-out prediction score.
     The two-sided permutation test shuffles unit pairings and compares |rho|.
     Outcome-selected samples (scheme 3) receive descriptive results only;
@@ -68,12 +80,16 @@ def fit_circular_conversion(hd_deg, rf_ego_deg, *, selected_on_sum=False,
     if n_permutations < 0 or int(n_permutations) != n_permutations:
         raise ValueError("n_permutations must be a nonnegative integer")
     rho, pairs, hd_sine, rf_sine_matrix, denominator = _fisher_lee_components(hd, rf)
-    phase = np.mean(np.exp(1j * (hd + rf)))
-    resultant = min(float(abs(phase)), 1.)
-    beta = float(np.rad2deg(np.angle(phase)) % 360.) if resultant > 1e-12 else None
-    prediction = predict_circular_conversion(hd_deg, beta)
+    design = np.column_stack((np.ones(hd.size), np.cos(hd), np.sin(hd)))
+    coefficients = np.linalg.lstsq(design, np.column_stack((np.cos(rf), np.sin(rf))), rcond=None)[0]
+    model = {
+        "method": "first_harmonic_circular_regression",
+        "cos_coefficients": coefficients[:, 0].tolist(),
+        "sin_coefficients": coefficients[:, 1].tolist(),
+    }
+    prediction = predict_circular_conversion(hd_deg, model)
     residual = (np.asarray(rf_ego_deg) - prediction["rf_ego_deg"] + 180.) % 360. - 180.
-    mae = float(np.mean(abs(residual))) if beta is not None else None
+    mae = float(np.mean(abs(residual))) if np.isfinite(residual).all() else None
 
     p_value = None
     performed = 0
@@ -90,10 +106,8 @@ def fit_circular_conversion(hd_deg, rf_ego_deg, *, selected_on_sum=False,
         p_value = (exceedances + 1.) / (performed + 1.)
 
     return {
-        "method": "reversed_circular_phase",
-        "conversion_slope": -1,
+        **model,
         "n": int(hd.size),
-        "beta_deg": beta,
         "rho": rho,
         "correlation_method": "Fisher-Lee signed circular-circular",
         "permutation_p": p_value,
@@ -101,11 +115,11 @@ def fit_circular_conversion(hd_deg, rf_ego_deg, *, selected_on_sum=False,
         "n_permutations": performed,
         "random_seed": int(random_seed),
         "mae_deg": mae,
-        "fit_resultant_length": resultant,
         "selection_note": (
             "Selected on HD+RF: descriptive only; no permutation p-value"
             if selected_on_sum else "Cohort not selected on HD+RF association"
         ),
-        "fitted_rf_ego_deg": prediction["rf_ego_deg"].tolist() if beta is not None else None,
+        "fitted_rf_ego_deg": [float(value) if np.isfinite(value) else None
+                              for value in prediction["rf_ego_deg"]],
         "observed_rf_allo_deg": ((np.asarray(hd_deg) + np.asarray(rf_ego_deg)) % 360.).tolist(),
     }

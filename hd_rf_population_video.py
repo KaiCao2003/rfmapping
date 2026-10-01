@@ -4,8 +4,8 @@ Set the three render_scheme_* booleans below, then run this file with
 ~/.virtualenvs/rfmapping/bin/python. Each enabled scheme gets one silent MP4.
 For a short check: python hd_rf_population_video.py --start 20 --duration 10
 
-HD comes from generated JSON. The fitted conversion is RF ego=beta-HD, so
-RF allo=beta by construction; it is not a measured time-varying RF.
+HD comes from generated JSON. Each scheme fits RF ego=f(HD) from the paired
+unit directions. The world-frame arrow uses the derived sum HD+RF ego.
 """
 
 import argparse
@@ -91,7 +91,7 @@ class PopulationOverlay:
         scale = np.array([right - left, bottom - top]) / data["arena_size_cm"]
         self.positions = data["xy"] * scale * [1, -1] + [left, bottom]
         model = data["model"]
-        self.prediction = predict_circular_conversion(data["hd"], model["beta_deg"])
+        self.prediction = predict_circular_conversion(data["hd"], model)
         self.rf_ego = np.asarray(self.prediction["rf_ego_deg"])
         self.rf_allo = np.asarray(self.prediction["rf_allo_deg"])
         self.valid = np.isfinite(self.positions).all(axis=1) & np.isfinite(data["hd"])
@@ -109,12 +109,12 @@ class PopulationOverlay:
             (111, SCHEME_LABELS[model["scheme"]], self.font),
             (172, "Current head direction", self.small),
             (267, "Predicted RF egocentric angle", self.small),
-            (362, "Predicted RF allocentric angle", self.small),
-            (471, "RF ego = β − HD", self.font),
-            (505, f"β = {model['beta_deg']:.1f}° · fixed slope −1", self.small),
+            (362, "Derived sum: HD + RF ego", self.small),
+            (471, "RF ego = f(HD)", self.font),
+            (505, "Fitted circular regression", self.small),
             (737, "HD: 0° up, positive clockwise", self.small),
             (768, "RF ego: 0° front, +90° right", self.small),
-            (817, "RF allo = β under this conversion", self.small),
+            (817, "Video arrow: HD + fitted RF ego", self.small),
             (847, "One population movie · no audio", self.small),
             (891, f"Cells: {model['n']} · circular ρ: {model['rho_circular']:.3f}", self.font),
             (925, f"Fitted angular error: {model['fit_mae_deg']:.1f}°", self.small),
@@ -124,11 +124,11 @@ class PopulationOverlay:
             draw.text((x, y), text, font=font, fill=TEXT_COLOR)
         for y in (148, 450, 800):
             draw.line((x, y, x + 328, y), fill="#dce2e7", width=1)
-        draw.text((32, height + 18), "HD and predicted RF direction in the same allocentric frame", font=self.font, fill=TEXT_COLOR)
+        draw.text((32, height + 18), "Continuous HD and fitted RF ego", font=self.font, fill=TEXT_COLOR)
         draw.line((1060, height + 33, 1100, height + 33), fill=HD_COLOR, width=4)
-        draw.text((1110, height + 20), "HD", font=self.font, fill=TEXT_COLOR)
+        draw.text((1110, height + 20), "HD (left)", font=self.font, fill=TEXT_COLOR)
         draw.line((1210, height + 33, 1250, height + 33), fill=RF_COLOR, width=4)
-        draw.text((1260, height + 20), "RF allo", font=self.font, fill=TEXT_COLOR)
+        draw.text((1260, height + 20), "RF ego (right)", font=self.font, fill=TEXT_COLOR)
 
     @staticmethod
     def arrow(draw, start, angle, length, color):
@@ -141,12 +141,13 @@ class PopulationOverlay:
                       tuple(end - 16 * direction - 8 * normal)], fill=color)
 
     def timeline(self, draw, now):
-        left, right, top, bottom = 90, self.size[0] - 45, self.height + 75, self.height + 240
+        left, right, top, bottom = 90, self.size[0] - 100, self.height + 75, self.height + 240
         start = now - self.window_s
         for angle in (0, 90, 180, 270, 360):
             y = bottom - angle / 360 * (bottom - top)
             draw.line((left, y, right, y), fill="#e4e8eb", width=1)
-            draw.text((left - 12, y), f"{angle}°", font=self.small, fill=TEXT_COLOR, anchor="rm")
+            draw.text((left - 12, y), f"{angle}°", font=self.small, fill=HD_COLOR, anchor="rm")
+            draw.text((right + 12, y), f"{angle - 180}°", font=self.small, fill=RF_COLOR, anchor="lm")
         tick_s = self.window_s / 4
         for time in np.arange(np.ceil(start / tick_s) * tick_s, now + .001, tick_s):
             x = left + (time - start) / self.window_s * (right - left)
@@ -154,7 +155,8 @@ class PopulationOverlay:
             draw.text((x, bottom + 17), f"{time:.1f}", font=self.small, fill=TEXT_COLOR, anchor="mt")
         times = np.asarray(self.data["times"])
         lower, upper = np.searchsorted(times, [start, now], side="right")
-        for angles, color in ((self.data["hd"], HD_COLOR), (self.rf_allo, RF_COLOR)):
+        # Separate axes retain HD on [0, 360) and signed ego on [-180, 180).
+        for angles, color in ((self.data["hd"], HD_COLOR), (self.rf_ego + 180., RF_COLOR)):
             for t, a in wrapped_segments(times[lower:upper], angles[lower:upper], 1.5 / self.fps):
                 xs = left + (t - start) / self.window_s * (right - left)
                 ys = bottom - a / 360 * (bottom - top)
@@ -195,10 +197,10 @@ class PopulationOverlay:
             draw.text((x, y), f"{value:.1f}°" if np.isfinite(value) else "undefined", font=self.large, fill=color)
         center, radius = np.array([x + 164, 642.]), 78
         draw.ellipse((center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius), outline="#cbd4da", width=2)
-        draw.text((center[0], center[1] - radius - 16), "0°", font=self.small, fill=TEXT_COLOR, anchor="mm")
-        self.arrow(draw, center, hd, 62, HD_COLOR)
-        if np.isfinite(allo):
-            self.arrow(draw, center, allo, 75, RF_COLOR)
+        draw.text((center[0], center[1] - radius - 16), "Forward · 0°", font=self.small, fill=TEXT_COLOR, anchor="mm")
+        self.arrow(draw, center, 0., 62, HD_COLOR)
+        if np.isfinite(ego):
+            self.arrow(draw, center, ego, 75, RF_COLOR)
         return canvas
 
 
@@ -209,8 +211,8 @@ def load_models(directory, names, session):
         path = Path(directory) / f"{name}_conversion.json"
         payload = path.read_bytes()
         model = json.loads(payload)
-        if model["method"] != "reversed_circular_phase" or model["scheme"] != name:
-            raise ValueError(f"{path}: expected the {name} reversed circular phase conversion.")
+        if model["method"] != "first_harmonic_circular_regression" or model["scheme"] != name:
+            raise ValueError(f"{path}: expected the {name} fitted circular regression.")
         if Path(model["provenance"]["hd_source"]).parents[3].resolve() != Path(session).resolve():
             raise ValueError(f"{path}: HD source session does not match the video session.")
         model.update(model_path=str(path.resolve()), model_sha256=hashlib.sha256(payload).hexdigest())
@@ -230,7 +232,7 @@ def render_scheme(data, model, *, output_dir, start_s, duration_s, trace_window_
                                       workers=1, overlay_type=PopulationOverlay, video_encoder="h264_nvenc")
     first, last = result["source_first_frame"], result["source_last_frame"]
     selected = (data["frame_ids"] >= first) & (data["frame_ids"] <= last)
-    predicted = predict_circular_conversion(data["hd"][selected], model["beta_deg"])
+    predicted = predict_circular_conversion(data["hd"][selected], model)
     table = pd.DataFrame({"video_frame": data["frame_ids"][selected], "adc_time_s": data["times"][selected],
                           "hd_deg": data["hd"][selected], "rf_ego_deg": predicted["rf_ego_deg"],
                           "rf_allo_deg": predicted["rf_allo_deg"]})
@@ -238,13 +240,15 @@ def render_scheme(data, model, *, output_dir, start_s, duration_s, trace_window_
     result.pop("ray_bearings_deg", None)
     result.pop("outside_arena_frames", None)
     result.update(scheme=name, model=model["model_path"], model_kind=model["method"],
-                  model_sha256=model["model_sha256"], beta_deg=model["beta_deg"],
+                  model_sha256=model["model_sha256"],
+                  cos_coefficients=model["cos_coefficients"], sin_coefficients=model["sin_coefficients"],
                   hd_source=str(data["hd_path"]), fit_provenance=model["provenance"],
                   n_cells=model["n"], circular_rho=model["rho_circular"],
                   fitted_angular_error_deg=model["fit_mae_deg"],
                   audio=False, trace_window_s=trace_window_s,
                   angle_convention="HD clockwise from image north; RF ego clockwise/right positive; RF allo=wrap360(HD+RF ego)",
-                  interpretation="Population reverse-phase conversion; slope fixed -1, so RF allo equals fitted beta by construction",
+                  interpretation="RF ego=f(HD) fitted from paired unit directions; RF allo is the derived sum HD+RF ego",
+                  trace_angles="HD on left axis [0, 360); fitted RF ego on right axis [-180, 180)",
                   camera_timing=data["camera_timing"],
                   frame_mapping=data["frame_mapping"],
                   position_source=str(data["position_source"]),

@@ -11,9 +11,13 @@ import hd_rf_population_video as population
 from hd_rf_population_video import PopulationOverlay, screen_direction, wrapped_segments
 
 
-def phase_model(session, scheme="scheme1", beta=40.):
-    return dict(method="reversed_circular_phase", scheme=scheme, n=18,
-                beta_deg=beta, rho_circular=-.2, fit_mae_deg=50.3,
+def regression_model(session, scheme="scheme1"):
+    # RF ego=HD+40 is representable exactly and its world-frame sum varies.
+    angle = np.deg2rad(40.)
+    return dict(method="first_harmonic_circular_regression", scheme=scheme, n=18,
+                cos_coefficients=[0., np.cos(angle), -np.sin(angle)],
+                sin_coefficients=[0., np.sin(angle), np.cos(angle)],
+                rho_circular=1., fit_mae_deg=0.,
                 selected_on_sum=scheme == "scheme3",
                 provenance={"hd_source": str(session / "data/tuning_curves/ProbeA/tuning_curves.json")})
 
@@ -30,20 +34,49 @@ def test_population_rays_use_clockwise_world_angles(monkeypatch):
     session = Path("260827_11")
     data = dict(session=session, probe="A", hd=np.array([90.]),
                 xy=np.array([[20.5, 20.5]]), bounds_px=(370, 920, 210, 760),
-                arena_size_cm=41., model=phase_model(session), times=np.array([.04]),
+                arena_size_cm=41., model=regression_model(session), times=np.array([.04]),
                 exposure_times=np.array([0., .04]), trace_window_s=12.)
     overlay = PopulationOverlay(data, 1280, 1024, 25.)
     np.testing.assert_allclose(overlay.positions[0], [645., 485.])
-    np.testing.assert_allclose(overlay.rf_ego, [-50.], atol=1e-8)
-    np.testing.assert_allclose(overlay.rf_allo, [40.], atol=1e-8)
+    np.testing.assert_allclose(overlay.rf_ego, [130.], atol=1e-8)
+    np.testing.assert_allclose(overlay.rf_allo, [220.], atol=1e-8)
     np.testing.assert_allclose(screen_direction([0., 90., 180., 270.]),
                                [[0., -1.], [1., 0.], [0., 1.], [-1., 0.]], atol=1e-12)
+    arrows = []
+    original_arrow = overlay.arrow
+
+    def record_arrow(draw, start, angle, length, color):
+        arrows.append(angle)
+        original_arrow(draw, start, angle, length, color)
+
+    monkeypatch.setattr(overlay, "arrow", record_arrow)
     canvas = overlay.draw(Image.new("RGB", (1280, 1024), "white"), 1, 0)
+    # World-view arrows use HD and the sum; the ego dial is head-relative.
+    np.testing.assert_allclose(arrows, [90., 220., 0., 130.])
     assert canvas.size == (1650, 1324)
     # Frames without an exposure retain the source picture and show no geometry.
     gap = overlay.draw(Image.new("RGB", (1280, 1024), "white"), 2, -1)
     assert gap.getpixel((645, 485)) == (255, 255, 255)
     assert not any("held-out" in label or "kernel" in label for label in labels)
+
+
+def test_timeline_shows_signed_ego_prediction_on_right_axis(monkeypatch):
+    session = Path("260827_11")
+    data = dict(session=session, probe="A", hd=np.array([0., 90., 180.]),
+                xy=np.ones((3, 2)), bounds_px=(370, 920, 210, 760),
+                arena_size_cm=41., model=regression_model(session),
+                times=np.array([0., .04, .08]), trace_window_s=12.)
+    overlay = PopulationOverlay(data, 1280, 1024, 25.)
+    traces = []
+
+    def record_segments(times, angles, gap):
+        traces.append(np.asarray(angles))
+        return []
+
+    monkeypatch.setattr(population, "wrapped_segments", record_segments)
+    overlay.timeline(ImageDraw.Draw(overlay.template.copy()), .08)
+    np.testing.assert_allclose(traces[0], [0., 90., 180.])
+    np.testing.assert_allclose(traces[1], [220., 310., 40.])
 
 
 def test_trace_breaks_wrap_seams_tracking_gaps_and_missing_values():
@@ -83,24 +116,26 @@ def test_no_enabled_scheme_returns_without_loading_or_rendering(monkeypatch):
 
 def test_load_models_reads_only_enabled_files(tmp_path):
     session = tmp_path / "260827_11"
-    model = phase_model(session, "scheme2")
+    model = regression_model(session, "scheme2")
     (tmp_path / "scheme2_conversion.json").write_text(json.dumps(model))
     # A disabled scheme may be absent or malformed without affecting selection.
     (tmp_path / "scheme3_conversion.json").write_text("not JSON")
     loaded = population.load_models(tmp_path, ["scheme2"], session)
     assert len(loaded) == 1
     assert loaded[0]["scheme"] == "scheme2"
-    assert loaded[0]["beta_deg"] == model["beta_deg"]
+    assert loaded[0]["cos_coefficients"] == model["cos_coefficients"]
 
 
-@pytest.mark.parametrize("change", ["source_session", "method", "scheme"])
+@pytest.mark.parametrize("change", ["source_session", "method", "scheme", "old_phase"])
 def test_load_models_rejects_incompatible_source_and_model(tmp_path, change):
     session = tmp_path / "260827_11"
-    model = phase_model(session)
+    model = regression_model(session)
     if change == "source_session":
         model["provenance"]["hd_source"] = str(tmp_path / "260827_12/data/tuning_curves/ProbeA/tuning_curves.json")
     elif change == "method":
         model["method"] = "circular_kernel"
+    elif change == "old_phase":
+        model["method"] = "reversed_circular_phase"
     else:
         model["scheme"] = "scheme3"
     (tmp_path / "scheme1_conversion.json").write_text(json.dumps(model))
@@ -111,7 +146,7 @@ def test_load_models_rejects_incompatible_source_and_model(tmp_path, change):
 @pytest.mark.parametrize("scheme", ["scheme1", "scheme2", "scheme3"])
 def test_worker_exports_separate_silent_gpu_video_and_exact_frame_angles(tmp_path, monkeypatch, scheme):
     session = tmp_path / "260827_11"
-    model = phase_model(session, scheme)
+    model = regression_model(session, scheme)
     model.update(model_path=f"{scheme}_conversion.json", model_sha256="source-hash")
     data = dict(session=session, video_path=session / "260827.avi", hd_path="head_direction.json",
                 position_source="dark_pose.csv", camera_timing={}, frame_mapping={},
@@ -136,12 +171,13 @@ def test_worker_exports_separate_silent_gpu_video_and_exact_frame_angles(tmp_pat
                             overlay_type=PopulationOverlay, video_encoder="h264_nvenc")
     frames = pd.read_csv(tmp_path / f"{scheme}_frame_angles.csv")
     assert frames.video_frame.tolist() == [1, 3]
-    np.testing.assert_allclose(frames.rf_ego_deg, [-50., 50.])
-    np.testing.assert_allclose(frames.rf_allo_deg, [40., 40.])
+    np.testing.assert_allclose(frames.rf_ego_deg, [130., 30.])
+    np.testing.assert_allclose(frames.rf_allo_deg, [220., 20.])
     saved = json.loads((tmp_path / f"{scheme}.json").read_text())
     assert saved == result and saved["audio"] is False
-    assert saved["model_kind"] == "reversed_circular_phase"
-    assert saved["fitted_angular_error_deg"] == 50.3
+    assert saved["model_kind"] == "first_harmonic_circular_regression"
+    assert saved["fitted_angular_error_deg"] == 0.
+    assert "beta_deg" not in saved
     assert "fit_validation" not in saved and "ray_bearings_deg" not in saved
 
 
@@ -154,7 +190,7 @@ def test_worker_failure_does_not_write_success_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(population, "configure_nvenc", lambda: None)
     monkeypatch.setattr(population.video, "export_ebc_overlay", fail)
     with pytest.raises(RuntimeError, match="NVENC worker failed"):
-        population.render_scheme(dict(video_path=session / "260827.avi"), phase_model(session),
+        population.render_scheme(dict(video_path=session / "260827.avi"), regression_model(session),
                                  output_dir=tmp_path, start_s=0., duration_s=.12, trace_window_s=8.)
     assert not (tmp_path / "scheme1.json").exists()
     assert not (tmp_path / "scheme1_frame_angles.csv").exists()
@@ -165,7 +201,7 @@ def test_main_submits_enabled_models_with_spawn_and_propagates_failures(tmp_path
     for number, flag in enumerate((True, False, True), 1):
         monkeypatch.setattr(population, f"render_scheme_{number}", flag)
     session = tmp_path / "260827/260827_11"
-    models = [phase_model(session, name) for name in ("scheme1", "scheme3")]
+    models = [regression_model(session, name) for name in ("scheme1", "scheme3")]
     data = {"session": session}
     events, submitted, exited = [], [], []
 

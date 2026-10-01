@@ -20,8 +20,25 @@ The analysis notebooks and `.rfmap` generation remain independent of video expor
 `hd_rf_population_video.py` renders the three schemes from
 `hd_rf_correlation_schemes.ipynb`: all Class 3 cells, Class 3 cells with 2D
 RFs, and the latter cells in the three largest HD+RF polar bins. Default
-sources are m19 session 11 TC and session 2 RF. The fitted conversion is
-`RF_ego = wrap180(beta - HD)`, so `RF_allo = beta` by construction.
+sources are m19 session 11 TC and session 2 RF. Each scheme fits RF egocentric
+preferred direction directly from the same units' HD preferred directions.
+The first-harmonic circular regression uses ordinary least squares twice:
+
+```text
+cos(RF_ego) ~ a0 + a1*cos(HD) + a2*sin(HD)
+sin(RF_ego) ~ b0 + b1*cos(HD) + b2*sin(HD)
+h = radians(current_HD_deg)
+predicted_RF_ego_deg = degrees(atan2(b0 + b1*cos(h) + b2*sin(h),
+                                   a0 + a1*cos(h) + a2*sin(h)))
+predicted_RF_allo_deg = wrap360(current_HD_deg + predicted_RF_ego_deg)
+```
+
+Trigonometric calculations use radians; exported angles are degrees. At each
+video frame, the model predicts RF ego from the continuous JSON HD, then adds
+that HD to obtain RF allo. Both coefficient vectors are estimated from the
+unit pairs, so the resulting allocentric direction can vary with HD. This is
+the order-1 circular–circular regression described by
+[CircStats `circ.reg`](https://search.r-project.org/CRAN/refmans/CircStats/html/circ.reg.html).
 
 Three booleans at the top of the script choose the outputs:
 
@@ -35,7 +52,11 @@ Enabled schemes run concurrently in separate processes and produce
 `scheme1.mp4`, `scheme2.mp4`, and/or `scheme3.mp4`. Disabled schemes are not
 loaded or rendered. If all three switches are false, the script exits without
 reading the recording or creating outputs. All videos are silent population
-overlays, with blue HD and orange RF rays and a scrolling angle trace.
+overlays. The arena image shows blue HD and the orange derived RF allo ray.
+The head-relative dial shows blue forward (0°) and orange predicted RF ego.
+The scrolling trace shows blue HD on the left axis (0–360°) and orange
+predicted RF ego on the right axis (−180–180°); the sidebar reports HD, RF ego,
+and their derived sum separately.
 
 ```sh
 cd ~/Developer/rfmapping
@@ -47,7 +68,7 @@ The script defaults to the full recording (`duration_s = None`). A short run:
 ```sh
 ~/.virtualenvs/rfmapping/bin/python hd_rf_population_video.py \
   --start 20 --duration 10 \
-  --output-dir output/hd_rf_population/m19_260827_11_three_schemes_test
+  --output-dir output/hd_rf_population/m19_260827_11_three_schemes_regression_test
 ```
 
 GPU encoding is explicitly `h264_nvenc`; initialization failure stops the
@@ -67,8 +88,14 @@ is a direction marker, not a confidence interval.
 
 Each enabled scheme also saves a PNG, frame-angle CSV, and JSON source/timing
 manifest. `render_manifest.json` is written after all requested outputs finish.
-This is a population conversion applied to behavior. Its constant RF allo
-is the fixed-slope model's definition, not an independent biological finding.
+The movie applies a relationship fitted across units' preferred angles to
+behavioral HD. Its RF ray is a model prediction, not a measured instantaneous
+RF. Reported angular fit error is in-sample. The signed Fisher–Lee correlation
+and its permutation p-value describe association between the original unit
+pairs; they do not measure prediction accuracy. Scheme 3 was selected using
+HD+RF and remains descriptive, without a permutation p-value. A zero fitted
+cosine/sine vector has no defined direction; its length is not a confidence
+interval or probability.
 
 ## Rectangle
 
