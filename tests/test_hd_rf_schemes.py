@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from Utils import hd_rf_schemes
 
@@ -16,7 +17,7 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     tc = tmp_path / "tuning_curves.json"
     tc.write_text(json.dumps({"metadata": {"angle_convention_note": "counter-clockwise"}}))
     before = tc.read_bytes()
-    # Hz: [[10, 6, NaN, NaN], [0, 6, NaN, NaN]]. Global maximum is
+    # Hz: [[10, 6, 0, 0], [0, 6, 0, 0]]. Global maximum is
     # x=-10; both raw-count maximum and horizontal projection favor x=10.
     counts = np.array([
         [[20, 30, 0, 0], [0, 6, 0, 0]],
@@ -30,6 +31,7 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
         unitsSpikeCounts=counts.tolist(), unitsSpikeCountsSize=list(counts.shape),
         unitPool=[7, 8, 9, 10, 12], xPositions=[-10, 10, 90, 150], yPositions=[-20, 20],
         timeBinEdges=[0., .2], occupancyTimeSec=[[2, 5, 0, 0], [1, 1, 0, 0]],
+        stimulusPresentationCounts=[[10, 25, 0, 0], [5, 5, 0, 0]],
     )))
     masks = np.zeros((2, 2, 4), dtype=bool)
     masks[1, 0, 1] = True  # Unit 7 is detected; its global maximum lies outside the mask.
@@ -43,11 +45,11 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     assert rows.loc[7, "rf_peak_y"] == -20.
     assert rows.loc[7, "rf_peak_hz"] == 10.
     assert rows.loc[7, "rf_saved_2d"] and not rows.loc[7, "rf_peak_in_saved_2d_mask"]
-    assert rows.loc[7, "rf_missing_bins"] == 4 and rows.loc[7, "peak_valid"]
+    assert rows.loc[7, "rf_zero_bins"] == 5 and rows.loc[7, "peak_valid"]
     assert rows.loc[8, "rf_peak_ties"] == 4 and rows.loc[8, "peak_valid"]
     assert rows.loc[8, "rf_peak_x_index"] == 0 and rows.loc[8, "rf_peak_y_index"] == 0
     assert rows.loc[9, "exclusion_reason"] == "no_positive_finite_rf_response"
-    assert rows.loc[10, "rf_zero_bins"] == 3 and rows.loc[10, "peak_valid"]
+    assert rows.loc[10, "rf_zero_bins"] == 7 and rows.loc[10, "peak_valid"]
     assert rows.loc[11, "exclusion_reason"] == "missing_rf_map"
     assert rows.loc[7, "hd_native_preferred_deg"] == 18.
     assert rows.loc[7, "hd_preferred_deg"] == 342.
@@ -56,6 +58,39 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     schemes, _ = hd_rf_schemes.select_schemes(pairs)
     assert schemes["scheme1"].unit_id.tolist() == [7, 8, 10]
     assert schemes["scheme2"].unit_id.tolist() == [7]
+
+
+def test_explicit_detection_path_overrides_adjacent_file(tmp_path, monkeypatch):
+    index = pd.MultiIndex.from_tuples([("m20", "260922", "A", 7)],
+                                      names=["mouse", "date", "probe", "unit_id"])
+    hd = pd.DataFrame([[0., 3.]], index=index, columns=[6., 18.])
+    hd.attrs["unit_info"] = {index[0]: {"hd_class": 3}}
+    monkeypatch.setattr(hd_rf_schemes, "load_tc", lambda *a, **k: hd)
+    tc = tmp_path / "tuning_curves.json"
+    tc.write_text(json.dumps({"metadata": {}}))
+    rf = tmp_path / "rf.json"
+    counts = np.array([[[[20], [6]], [[0], [6]]]])
+    rf.write_text(json.dumps(dict(
+        unitsSpikeCounts=counts.tolist(), unitsSpikeCountsSize=list(counts.shape),
+        unitPool=[7], xPositions=[-10, 10], yPositions=[-20, 20],
+        timeBinEdges=[0., .2], occupancyTimeSec=[[1, 1], [1, 1]],
+        stimulusPresentationCounts=[[5, 5], [5, 5]],
+    )))
+    np.savez(rf.with_suffix(".npz"), unit_ids=[7], mask_2d=np.zeros((1, 2, 2)))
+    detection_path = tmp_path / "relation" / "rf_detection.npz"
+    detection_path.parent.mkdir()
+    np.savez(detection_path, unit_ids=[7], mask_2d=[[[0, 1], [0, 0]]])
+
+    pairs, provenance = hd_rf_schemes.load_peak_pairs(
+        tc, rf, mouse="m20", date=260922, probe="A", rf_detection_path=detection_path,
+    )
+
+    assert pairs.loc[0, "rf_saved_2d"]
+    assert not pairs.loc[0, "rf_peak_in_saved_2d_mask"]
+    assert provenance["rf_detection_source"] == str(detection_path)
+    assert str(detection_path) in provenance["sources_sha256"]
+    with pytest.raises(FileNotFoundError):
+        hd_rf_schemes.load_peak_pairs(tc, rf, rf_detection_path=tmp_path / "missing.npz")
 
 
 def test_top_three_bins_are_independent_and_ties_choose_lower_bin():

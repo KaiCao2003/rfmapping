@@ -9,7 +9,7 @@ The video entrances in the repository root are:
 | `ebc_video_circle.py` | Raw camera recording with calibrated circular-screen geometry and VS bearing | All good units; full recording |
 | `ebc_video_sep.py` | Separate world/screen and saved EBC heatmap panels | One selected unit and time range |
 | `ebc_tuning_video.py` | JSON HD, animal-centered 1D EBC curve, and preferred-bearing wall ray | Selected good units, or all units with saved EBC maps |
-| `hd_rf_population_video.py` | JSON HD and predicted RF allocentric rays, plus scrolling angle traces | One population movie, without audio |
+| `hd_rf_population_video.py` | Saved real HD or neural decoded HD, predicted RF rays, and angle traces | Three population schemes, without audio |
 
 The renderers, synchronized-data export, and electrode-audio functions live
 under `Utils`. They are libraries, without additional command-line entrances.
@@ -17,38 +17,84 @@ The analysis notebooks and `.rfmap` generation remain independent of video expor
 
 ## Population HD–RF prediction
 
-`hd_rf_population_video.py` renders the three schemes from
-`hd_rf_correlation_schemes.ipynb`: all Class 3 cells, Class 3 cells with 2D
-RFs, and the latter cells in the three largest HD+RF polar bins. Default
-sources are m19 session 11 TC and session 2 RF. The fitted conversion is
-`RF_ego = wrap180(beta - HD)`, so `RF_allo = beta` by construction.
+`hd_rf_population_video.py` has two explicit stages. Session A supplies RF
+maps and session B supplies saved HD tuning curves; their matched unit
+directions fit the three relations. Session C supplies the video and either
+real `head_direction.json` or its own saved TC and spikes for neural decoding. C may be A,
+B, or a separate session. Defaults are m20 `260922_1` for RF, `260922_3` for
+HD, and `260922_3` for C, Probe A.
 
-Three booleans at the top of the script choose the outputs:
+The three schemes are all valid Class 3 HD/RF pairs, the pairs with detected
+2D RFs, and the latter pairs in the three largest HD+RF histogram bins.
+Current RF maps are explicitly detected in the run's `relation` directory;
+another RF source's masks are never substituted. Each scheme fits RF
+egocentric preferred direction directly from the paired unit directions.
+The first-harmonic circular regression uses ordinary least squares twice:
+
+```text
+cos(RF_ego) ~ a0 + a1*cos(HD) + a2*sin(HD)
+sin(RF_ego) ~ b0 + b1*cos(HD) + b2*sin(HD)
+h = radians(current_HD_deg)
+predicted_RF_ego_deg = degrees(atan2(b0 + b1*cos(h) + b2*sin(h),
+                                   a0 + a1*cos(h) + a2*sin(h)))
+predicted_RF_allo_deg = wrap360(current_HD_deg + predicted_RF_ego_deg)
+```
+
+Trigonometric calculations use radians; exported angles are degrees. At each
+video frame, the model predicts RF ego from the selected real/decoded HD, then adds
+that HD to obtain RF allo. Both coefficient vectors are estimated from the
+unit pairs, so the resulting allocentric direction can vary with HD. This is
+the order-1 circular–circular regression described by
+[CircStats `circ.reg`](https://search.r-project.org/CRAN/refmans/CircStats/html/circ.reg.html).
+
+The top-level settings choose A, B, C, HD mode, and enabled outputs:
 
 ```python
+session_a = base_dir / "260922_1"  # RF
+session_b = base_dir / "260922_3"  # HD
+session_c = base_dir / "260922_3"  # Video
+use_decoded_hd = False
 render_scheme_1 = True
 render_scheme_2 = True
 render_scheme_3 = True
 ```
 
+The script directly reads `data/tuning_curves/ProbeA/tuning_curves.tc` from
+session B and, for decoding, from session C. It never generates TC or searches
+for another source if the configured file is absent. `tc_is_clockwise=False`
+records the current saved TC's documented counter-clockwise convention; HD
+peaks and decoded angles receive the explicit clockwise sign conversion.
+The real JSON HD is read directly without that conversion.
+
 Enabled schemes run concurrently in separate processes and produce
 `scheme1.mp4`, `scheme2.mp4`, and/or `scheme3.mp4`. Disabled schemes are not
 loaded or rendered. If all three switches are false, the script exits without
 reading the recording or creating outputs. All videos are silent population
-overlays, with blue HD and orange RF rays and a scrolling angle trace.
+overlays. The arena image shows blue HD and the orange derived RF allo ray.
+The head-relative dial shows blue forward (0°) and orange predicted RF ego.
+The scrolling trace shows blue HD on the left axis (0–360°) and orange
+predicted RF ego on the right axis (−180–180°); the sidebar reports HD, RF ego,
+and their derived sum separately.
+
+The default is real HD. Select decoded HD for this run:
 
 ```sh
-cd ~/Developer/rfmapping
-~/.virtualenvs/rfmapping/bin/python hd_rf_population_video.py
+ssh hhw9l84 'cd ~/Developer/rfmapping &&
+  ~/.virtualenvs/rfmapping/bin/python hd_rf_population_video.py --decoded-hd'
 ```
 
-The script defaults to the full recording (`duration_s = None`). A short run:
+This renders the full recording (`duration_s = None`). Add `--start 20
+--duration 10` for a short clip. Without `--decoded-hd`, the script uses real
+JSON HD. `--video-session /path/to/C` changes C independently of the training
+sessions. C provides its own Motive XYZ, head-direction JSON, and raw ADC
+recording; decoding also requires its own saved TC and spikes. Its unit IDs are
+selected independently of the A/B fit cohorts.
 
-```sh
-~/.virtualenvs/rfmapping/bin/python hd_rf_population_video.py \
-  --start 20 --duration 10 \
-  --output-dir output/hd_rf_population/m19_260827_11_three_schemes_test
-```
+Outputs are always under C's `data/hd_rf`, by default in
+`hd260922_3_rf260922_1_decoded` or `hd260922_3_rf260922_1_real`. `--output-name`
+changes that subdirectory. The `relation` subdirectory records A/B sources,
+unit pairs, detection, selection, and fitted models. `head_direction.csv`
+records C's selected HD input.
 
 GPU encoding is explicitly `h264_nvenc`; initialization failure stops the
 script. Decoding and overlay drawing use the CPU. On hhw9l84, driver-matched
@@ -57,18 +103,50 @@ directory, and the script sets its process library path. The system driver
 is unchanged. Each encoder uses one overlay worker because the common
 multiworker renderer assumes the original video height.
 
-HD comes only from generated `head_direction.json`; the position CSV
-contributes `front_x/front_y`. For this legacy session the JSON frame ID is
-one-based, so subtract one before joining the zero-based video/position
-frames. Camera TTL polarity and frame mapping come from saved TC metadata.
-`--start` and `--duration` use AVI time; the trace uses ADC-relative measured
-exposure times. Missing tracking stays as a gap. The fixed 12° orange sector
-is a direction marker, not a confidence interval.
+Real HD comes directly from C's `data/processed/head_direction.json`, entity
+`hp4`, field `head_direction_deg`. Motive XYZ comes from C's
+`data/processed/trimmed_input.csv`; it supplies position only, not HD. Decoded HD uses C's
+native saved count/occupancy rates and a uniform-prior Poisson MAP decoder in
+100 ms bins. Zero rates remain zero; no pseudocount, clipping, smoothing,
+interpolation, or behavioral-angle replacement is applied. Silent or
+impossible population bins remain NaN. TC training and decoding can overlap;
+this is a fitted population estimate.
+
+The script constructs the clock from C's raw ADC: Motive channel 1/high/14000,
+Basler channel 2/low/2800, then unique nearest pulse pairing. The explicit
+`video_exposure_stride` and `video_exposure_phase` settings map AVI frames to
+Motive exposure ordinals; they default to 2 and 0 and are not inferred from
+the AVI FPS. The regular mapping must agree with the decoded frame count.
+Recordings with dropped video frames need explicit `video_motive_segments`
+in the script. The existing m20 `260922_3` segments retain 41 unavailable
+frames and approximately 16.67 ms absolute synchronization uncertainty. Those
+frames retain their raw image without synchronized geometry. No precomputed
+`camera_clock` files are required. `--start` is
+measured elapsed time from the first video exposure; `--duration` is measured
+ADC duration. Export uses the measured frame rate rather than the incorrect
+AVI header rate. The fixed 12° orange sector is a direction marker, not a
+confidence interval.
+
+The cylinder overlay projects Motive XYZ and world-space ray endpoints into
+the raw camera image, using the existing `Utils.ebc_camera` geometry. Shared
+setup files live in `config/cylinder_camera_registration.json` and
+`config/cylinder.calib`; `--camera-registration` and `--cylinder-calibration`
+can select another setup. They are independent of A/B/C and can be reused
+while camera placement and Motive world coordinates remain unchanged. The
+registration was restored from the previously validated file, without a new
+fit. JSON HD remains unchanged; `hd_world_zero_deg` specifies its zero in
+Motive world XY for projection only.
 
 Each enabled scheme also saves a PNG, frame-angle CSV, and JSON source/timing
 manifest. `render_manifest.json` is written after all requested outputs finish.
-This is a population conversion applied to behavior. Its constant RF allo
-is the fixed-slope model's definition, not an independent biological finding.
+The movie applies a relationship fitted across units' preferred angles to
+behavioral HD. Its RF ray is a model prediction, not a measured instantaneous
+RF. Reported angular fit error is in-sample. The signed Fisher–Lee correlation
+and its permutation p-value describe association between the original unit
+pairs; they do not measure prediction accuracy. Scheme 3 was selected using
+HD+RF and remains descriptive, without a permutation p-value. A zero fitted
+cosine/sine vector has no defined direction; its length is not a confidence
+interval or probability.
 
 ## Rectangle
 

@@ -594,7 +594,7 @@ is_off = false;
 params.base_dir = '/mnt/senzailab/Kai/#Recording/m20/';
 params.date = '260918';
 params.probelist = 'A';
-params.sessionList = '2';
+params.sessionList = 2;
 
 params.VSTimeWindow = [-0.1 0.4];
 timeBinWidthMs = 1;
@@ -629,11 +629,10 @@ The square branch obtains square size from the first trial. Use it for the
 corresponding constant-size square design. Selecting the bar branch is not a
 general method of increasing square-map resolution.
 
-The regular generator currently loops over characters in `sessionList`:
-`'23'` means sessions **2 and 3**, not session 23. This example uses one
-single-digit session. Do not enter a multi-digit session as a character
-string and assume it selects that recording. The free-moving entry point
-handles session strings differently, as shown below.
+The regular generator takes numeric integer IDs in `sessionList`: `[2 3 10]`
+selects sessions 2, 3, and 10, while `23` selects session 23. Character strings
+such as `'23'` are rejected. The separate free-moving entry point retains its
+existing session-string interface, shown below.
 
 ## 8. Run MATLAB
 
@@ -774,9 +773,13 @@ as waveforms or HD curves require their session files as well.
 
 - `unit_firing_rate=False` loads pooled spike counts. The source has no trial
   axis and has not undergone baseline subtraction.
-- Default `load_rf_maps(rf_path)` divides counts by `occupancyTimeSec`, the
-  total qualifying stimulus-display time at each position. That denominator
-  remains display time when you choose a different response window.
+- Default `load_rf_maps(rf_path)` returns Hz: counts divided by presentation
+  count and time-bin width. New files save `stimulusPresentationCounts`; old
+  files require their session trials and onset boundaries to recover it.
+  `sum(0.0, 0.2)` returns total counts divided by presentation count and 0.2 s
+  in Hz mode. `occupancyTimeSec` remains stimulus-display-time metadata.
+- Loaded null/NaN bins become zero and participate in RF statistics. QC uses
+  one `max_zero_bins` limit, including those filled positions.
 - `sum(0.0, 0.2)` includes `[0, 200 ms)`; its arguments are **seconds**.
   Endpoints must match stored time edges.
 - MATLAB's CSV/PDF exports sum the full generation window. They need not match
@@ -816,7 +819,7 @@ do not remove OFF onsets when generating ON.
 For an actual bar recording, keep the three coordinate flags `false` and set:
 
 ```matlab
-params.sessionList = '3';
+params.sessionList = 3;
 params.isVerticalBar = true;
 params.barBinWidthDeg = 3;
 is_on = true;

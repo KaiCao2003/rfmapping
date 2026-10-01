@@ -370,68 +370,64 @@ def plot_hd_tuning_curve(
     return result
 
 
-def plot_tuning_curves_for_cluster(unitsSpikeCounts: np.ndarray, targetList: list[int], *, isNormalize: bool = False,
-                      isLineplot: bool = False, isHeatmap: bool = False, offset: float = 1.0,
-                      xinDeg: bool = False, plotSize: tuple[int, int]=(10,8)):
-    # Validation
-    if isLineplot == isHeatmap:
-        raise ValueError("Exactly one of isLineplot or isHeatmap must be True.")
+def plot_tuning_curves_for_cluster(
+    unitsSpikeCounts: np.ndarray, targetList: list[int], *, isLineplot: bool = False,
+    isHeatmap: bool = False, offset: float = 1.0, xinDeg: bool = False,
+    plotSize: tuple[int, int] = (10, 8),
+):
+    """Render supplied tuning curves; normalize or transform before calling."""
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        if isLineplot == isHeatmap:
+            raise ValueError("Exactly one of isLineplot or isHeatmap must be True.")
 
-    if unitsSpikeCounts.ndim == 1:
-        unitsSpikeCounts = unitsSpikeCounts[np.newaxis, :]
+        if unitsSpikeCounts.ndim == 1:
+            unitsSpikeCounts = unitsSpikeCounts[np.newaxis, :]
 
-    n_units, n_x = unitsSpikeCounts.shape
+        n_units, n_x = unitsSpikeCounts.shape
 
-    if len(targetList) != n_units:
-        raise ValueError("targetList must have one label per row in unitsSpikeCounts.")
+        if len(targetList) != n_units:
+            raise ValueError("targetList must have one label per row in unitsSpikeCounts.")
 
-    x_values = np.linspace(0, 360, n_x, endpoint=False) if xinDeg else np.arange(n_x)
-    x_label = "Angle (deg)" if xinDeg else "x"
+        x_values = np.linspace(0, 360, n_x, endpoint=False) if xinDeg else np.arange(n_x)
+        x_label = "Angle (deg)" if xinDeg else "x"
 
-    if isNormalize:
-        max_per_unit = unitsSpikeCounts.max(axis=1, keepdims=True)
-        max_per_unit[max_per_unit == 0] = 1  # incase divided by 0 later
+        fig, ax = plt.subplots(figsize=plotSize)
 
-        unitsSpikeCounts = unitsSpikeCounts / max_per_unit
+        if isLineplot:
+            yticks_height = []
 
-    fig, ax = plt.subplots(figsize=plotSize)
+            for unit_idx, spikeCounts in enumerate(unitsSpikeCounts):
+                y = spikeCounts + (n_units - 1 - unit_idx) * offset
+                yticks_height.append(np.average(y))
+                ax.plot(x_values, y, linewidth=1)
 
-    if isLineplot:
-        yticks_height = []
+            ax.set_yticks(yticks_height)
+            ax.set_yticklabels(targetList)
 
-        for unit_idx, spikeCounts in enumerate(unitsSpikeCounts):
-            y = spikeCounts + (n_units - 1 - unit_idx) * offset
-            yticks_height.append(np.average(y))
-            ax.plot(x_values, y, linewidth=1)
+        if isHeatmap:
+            imshow_kwargs = dict(
+                aspect="auto",
+                cmap="viridis",
+                interpolation="nearest",
+            )
+            if xinDeg:
+                imshow_kwargs["extent"] = [0, 360, n_units - 0.5, -0.5]
 
-        ax.set_yticks(yticks_height)
-        ax.set_yticklabels(targetList)
+            im = ax.imshow(unitsSpikeCounts, **imshow_kwargs)
 
-    if isHeatmap:
-        imshow_kwargs = dict(
-            aspect="auto",
-            cmap="viridis",
-            interpolation="nearest",
-        )
+            ax.set_yticks(np.arange(n_units))
+            ax.set_yticklabels(targetList)
+            fig.colorbar(im, ax=ax, label="Response")
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Unit ID")
         if xinDeg:
-            imshow_kwargs["extent"] = [0, 360, n_units - 0.5, -0.5]
+            ax.set_xlim(0, 360)
+            ax.set_xticks(np.arange(0, 361, 60))
 
-        im = ax.imshow(unitsSpikeCounts, **imshow_kwargs)
-
-        ax.set_yticks(np.arange(n_units))
-        ax.set_yticklabels(targetList)
-        fig.colorbar(im, ax=ax, label="Normalized spikes" if isNormalize else "Spikes")
-
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("Unit ID")
-    if xinDeg:
-        ax.set_xlim(0, 360)
-        ax.set_xticks(np.arange(0, 361, 60))
-
-    plt.tight_layout()
-    plt.show()
-
-
+        plt.tight_layout()
+        plt.show()
+        return fig, ax
 
 
 def safe_std(values: np.ndarray) -> float:

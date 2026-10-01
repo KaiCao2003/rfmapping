@@ -93,12 +93,15 @@ unit_ids_with_any_zero_bin = np.asarray(summed.unit_ids)[units_with_any_zero_bin
 array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 ```
 
-`load_rf_maps()` returns firing-rate values by default by dividing the stored
-counts by `occupancyTimeSec`. Pass `unit_firing_rate=False` when raw pooled
-counts are needed, including before `load_regular_rf_trials()` validation.
-`occupancyTimeSec` is the total display time at each position: the sum of the
-qualifying trials' show times. Non-shuffle detection uses the loaded values
-directly and does not divide by presentation counts again.
+`load_rf_maps()` returns Hz by dividing stored counts by each position's
+presentation count times each time bin's width in seconds. New sources save
+`stimulusPresentationCounts`; historical sources require matching session
+trials and onset boundaries to reconstruct it. `sum(start, stop)` gives the
+time-weighted mean Hz across that window. Pass `unit_firing_rate=False` for
+raw pooled counts, including before `load_regular_rf_trials()` validation;
+in that mode `sum()` adds counts. `occupancyTimeSec` remains display-time
+metadata. Loaded null/NaN values become zeros and participate in statistics.
+Non-shuffle detection uses loaded values without another normalization.
 
 All single-unit and batch `rf_2d()`/`rf_1d()` calls default to
 `is_shuffle=False, drop_bins=2`. Pass `is_shuffle=True` explicitly for

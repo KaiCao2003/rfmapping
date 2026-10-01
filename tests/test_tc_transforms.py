@@ -150,8 +150,8 @@ def test_plot_profiles_preserves_signed_zscores_and_explicit_color_scale():
         plt.close(figure)
 
 
-@pytest.mark.parametrize("plot", [comparison.plot_sort, comparison.plot_align, comparison.plot_sum])
-def test_pair_plot_wrappers_forward_display_options_without_rescaling(plot):
+@pytest.mark.parametrize("mode", ["native", "aligned", "sum"])
+def test_prepared_pair_plots_preserve_values_and_display_options(mode, monkeypatch):
     angles = np.arange(-180., 180., 12.)
     reference = comparison.zscore_tc(pd.DataFrame(
         [2 + np.cos(np.deg2rad(angles + 60))], index=[7], columns=angles,
@@ -159,19 +159,24 @@ def test_pair_plot_wrappers_forward_display_options_without_rescaling(plot):
     matched = comparison.zscore_tc(pd.DataFrame(
         [4 + np.sin(np.deg2rad(angles))], index=[7], columns=angles,
     ))
-    result = plot(
-        reference, matched, show=False,
+    result = comparison.prepare_comparison(reference, matched, mode=mode)
+    def unexpected_calculation(*args, **kwargs):
+        raise AssertionError("plot must consume the prepared comparison")
+    monkeypatch.setattr(comparison, "paired_peak_angles", unexpected_calculation)
+    monkeypatch.setattr(comparison, "align_profiles", unexpected_calculation)
+    figures = comparison.plot_comparison_heatmaps(
+        result, show=False,
         cmap="RdBu_r", vmin=-2, vmax=2, colorbar_label="Z-score (SD)",
     )
     try:
         for panel_index, ((figure, axes), source) in enumerate(zip(
-            result["figures"], (reference, matched), strict=True,
+            figures, (reference, matched), strict=True,
         )):
             expected = source.to_numpy()
-            if plot is not comparison.plot_sort:
+            if mode != "native":
                 # A reference peak at -60 degrees shifts alignment by +5 bins;
                 # the matched sum panel shifts by -5 bins instead.
-                shift = -5 if plot is comparison.plot_sum and panel_index == 1 else 5
+                shift = -5 if mode == "sum" and panel_index == 1 else 5
                 expected = np.roll(expected, shift, axis=1)
                 expected = np.c_[expected, expected[:, 0]]
             np.testing.assert_allclose(axes.images[0].get_array(), expected, atol=1e-14)
@@ -179,5 +184,5 @@ def test_pair_plot_wrappers_forward_display_options_without_rescaling(plot):
             assert axes.images[0].get_cmap().name == "RdBu_r"
             assert figure.axes[1].get_ylabel() == "Z-score (SD)"
     finally:
-        for figure, _ in result["figures"]:
+        for figure, _ in figures:
             plt.close(figure)

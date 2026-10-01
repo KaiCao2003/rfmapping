@@ -437,13 +437,15 @@ def _rf_result_manifest(
         "detector_algorithm": (
             "cluster-permutation-v1"
             if parameters["is_shuffle"]
-            else "pooled-spatial-z-v2"
+            else "pooled-spatial-z-v3-zero-filled"
         ),
         "center_algorithm": "response-weighted-medoid-v1",
         "nonshuffle_filter": "drop-small-components-inclusive-v1",
         "grid_shape": [first.n_y, first.n_x],
         "storage_shape": [len(maps), first.n_y, first.n_x],
         "time_range_s": list(first.time_window_s),
+        "response_units": first.metadata.get("responseUnits", "spike_count"),
+        "response_normalization": first.metadata.get("responseNormalization", "none"),
         "parameters": dict(parameters),
     }
 
@@ -522,43 +524,14 @@ def _rf_output_arrays(
         pooled = np.stack(
             [np.asarray(rf_map.to_2d_array(), dtype=np.float64) for rf_map in maps]
         )
+        pooled[np.isnan(pooled)] = 0
         if exclude_zero_bins:
-            pooled[~np.isfinite(pooled)] = np.nan
-        presentation_counts = first.presentation_counts
-        for rf_map in maps[1:]:
-            if (
-                    (rf_map.presentation_counts is None)
-                    != (presentation_counts is None)
-                    or (
-                    presentation_counts is not None
-                    and not np.array_equal(
-                rf_map.presentation_counts,
-                presentation_counts,
-            )
-            )
-            ):
-                raise ValueError(
-                    "all RFMaps must share stimulus presentation counts"
-                )
-
-        valid_positions = ~np.all(np.isnan(pooled), axis=0)
-        if presentation_counts is not None:
-            valid_positions &= np.asarray(presentation_counts) > 0
-        if "occupancyTimeSec" in first.metadata:
-            valid_positions &= np.asarray(first.metadata["occupancyTimeSec"]).reshape(
-                first.n_y, first.n_x,
-            ) > 0
+            pooled[~np.isfinite(pooled)] = 0
         if collapse_axis is not None:
             spatial_axis = 0 if collapse_axis == "x" else 1
-            pooled[:, ~valid_positions] = np.nan
-            missing = np.all(np.isnan(pooled), axis=spatial_axis + 1, keepdims=True)
-            pooled = np.nansum(pooled, axis=spatial_axis + 1, keepdims=True)
-            pooled[missing] = np.nan
-            valid_positions = valid_positions.any(axis=spatial_axis, keepdims=True)
-        position_ids = np.flatnonzero(valid_positions).astype(np.int64, copy=False)
-        if position_ids.size == 0:
-            raise ValueError("pooled RF has no presented spatial positions")
-        responses = pooled[:, valid_positions]
+            pooled = pooled.sum(axis=spatial_axis + 1, keepdims=True)
+        position_ids = np.arange(pooled.shape[1] * pooled.shape[2], dtype=np.int64)
+        responses = pooled.reshape(len(maps), -1)
 
         aligned = {
             "responses": responses,
@@ -934,7 +907,6 @@ class RFMap:
         collapsed_axis = 0 if normalized_axis == "x" else 1
         if np.isnan(matrix).any():
             projected = np.nansum(matrix, axis=collapsed_axis)
-            projected[np.all(np.isnan(matrix), axis=collapsed_axis)] = np.nan
             return _readonly_array(projected)
         return _readonly_array(matrix.sum(axis=collapsed_axis))
 
@@ -1022,17 +994,19 @@ class RFMap:
         )
 
     def sum(self, earlier_s: float, later_s: float) -> RFMap:
-        """Return this unit summed over the half-open interval [earlier, later)."""
+        """Aggregate [earlier, later): sum counts or time-average firing rates."""
 
         start, stop, canonical_start, canonical_stop = self._time_indices(
             earlier_s,
             later_s,
             allow_empty=True,
         )
-        summed_counts = self.spike_counts[..., start:stop].sum(
-            axis=-1,
-            keepdims=True,
-        )
+        if self.metadata.get("responseUnits") == "Hz":
+            from Utils.rf_rates import aggregate_rate
+
+            summed_counts = aggregate_rate(self.spike_counts, self.time_bin_edges_s, start, stop)
+        else:
+            summed_counts = self.spike_counts[..., start:stop].sum(axis=-1, keepdims=True)
         summed_edges = np.asarray(
             [canonical_start, canonical_stop],
             dtype=float,
@@ -1321,7 +1295,7 @@ class RFMapList(Sequence[RFMap]):
             *,
             show_progress: bool = True,
     ) -> RFMapList:
-        """Sum the requested time window independently for every unit."""
+        """Sum counts or time-average rates in the requested window per unit."""
 
         progress = _bool_value(show_progress, "show_progress")
         maps: Any = self._maps
@@ -1567,8 +1541,9 @@ def asrfmap(
             or np.issubdtype(spike_counts.dtype, np.complexfloating)
     ):
         raise ValueError("array values must be real numeric values")
-    if not np.all(np.isfinite(spike_counts)):
-        raise ValueError("array values must be finite")
+    if np.any(np.isinf(spike_counts)):
+        raise ValueError("array values must be finite or NaN")
+    spike_counts[np.isnan(spike_counts)] = 0
     if np.any(spike_counts < 0):
         raise ValueError("array values must be non-negative")
 
@@ -1666,7 +1641,12 @@ def load_rf_maps(
     *,
     unit_firing_rate: bool = True,
 ) -> RFMapList:
-    """Load JSON or indexed NPZ maps, optionally normalizing counts by occupancy."""
+    """Load zero-filled RF maps, optionally converting counts to firing rates.
+
+    Rates use presentation count times lag-bin duration. Older sources without
+    presentation counts obtain them from the matching session's stimulus log.
+    Precomputed rate sources, such as EBC maps, retain their declared Hz units.
+    """
 
     source_path = Path(path)
     use_firing_rate = _bool_value(unit_firing_rate, "unit_firing_rate")
@@ -1696,7 +1676,7 @@ def load_rf_maps(
     n_units, n_y, n_x, n_time_bins = shape
 
     stored_rates = raw.get("responseUnits") == "Hz"
-    if not _counts_are_numeric(raw["unitsSpikeCounts"], allow_null=stored_rates):
+    if not _counts_are_numeric(raw["unitsSpikeCounts"], allow_null=True):
         raise ValueError(
             "unitsSpikeCounts contains a value that is not numeric "
             "(real numbers only; bool is invalid)"
@@ -1705,18 +1685,19 @@ def load_rf_maps(
         spike_counts = np.asarray(
             raw["unitsSpikeCounts"], dtype=float if stored_rates else None,
         )
+        if spike_counts.dtype == object:
+            spike_counts = spike_counts.astype(float)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"Unable to parse unitsSpikeCounts: {exc}") from exc
     if spike_counts.shape != shape:
         raise ValueError(
             f"unitsSpikeCounts has shape {spike_counts.shape}, expected {shape}"
         )
-    if stored_rates:
-        # JSON null preserves unoccupied bins as NaN in a precomputed rate map.
-        if np.any(np.isinf(spike_counts)) or np.any(spike_counts < 0):
-            raise ValueError("Saved Hz values must be non-negative numbers or null")
-    elif not np.all(np.isfinite(spike_counts)) or np.any(spike_counts < 0):
-        raise ValueError("unitsSpikeCounts values must be finite and non-negative")
+    if np.any(np.isinf(spike_counts)) or np.any(spike_counts < 0):
+        raise ValueError("unitsSpikeCounts values must be non-negative numbers or null")
+    if np.isnan(spike_counts).any():
+        spike_counts = spike_counts.copy()
+        spike_counts[np.isnan(spike_counts)] = 0
 
     unit_pool = tuple(
         _integer(value, "unitPool value")
@@ -1780,17 +1761,20 @@ def load_rf_maps(
     if np.any(np.isfinite(absent_values) & (absent_values != 0)):
         raise ValueError("unpresented RF positions must have zero counts or missing rates")
 
-    if use_firing_rate and not stored_rates:
-        if occupancy_time_s is None:
-            raise ValueError("occupancyTimeSec is required to convert spike counts to Hz")
-        spike_counts = np.divide(
-            spike_counts,
-            occupancy_time_s[np.newaxis, :, :, np.newaxis],
-            out=np.full(shape, np.nan, dtype=np.float64),
-            where=~unpresented[np.newaxis, :, :, np.newaxis],
+    legacy_rates = stored_rates and raw.get("responseNormalization") == "occupancyTimeSec"
+    converted_rates = use_firing_rate and (not stored_rates or legacy_rates)
+    presentation_provenance = None
+    if converted_rates:
+        from Utils.rf_rates import RATE_NORMALIZATION, counts_to_rates, resolve_presentation_counts
+
+        presentation_counts, presentation_provenance = resolve_presentation_counts(
+            raw, source_path, x_positions, y_positions,
         )
-    elif stored_rates and np.any(unpresented):
-        spike_counts[:, unpresented, :] = np.nan
+        if legacy_rates:
+            if occupancy_time_s is None:
+                raise ValueError("Legacy display-normalized rates require occupancyTimeSec")
+            spike_counts = spike_counts * occupancy_time_s[np.newaxis, :, :, np.newaxis]
+        spike_counts = counts_to_rates(spike_counts, presentation_counts, time_bin_edges_s)
     spike_counts.setflags(write=False)
 
     metadata = {
@@ -1798,9 +1782,14 @@ def load_rf_maps(
         for key, value in raw.items()
         if key not in _STRUCTURAL_JSON_FIELDS
     }
-    if not stored_rates:
-        metadata["responseUnits"] = "Hz" if use_firing_rate else "spike_count"
-        metadata["responseNormalization"] = "occupancyTimeSec" if use_firing_rate else "none"
+    if converted_rates:
+        metadata["responseUnits"] = "Hz"
+        metadata["responseNormalization"] = RATE_NORMALIZATION
+        metadata["presentationCountSource"] = presentation_provenance
+    elif not stored_rates:
+        metadata["responseUnits"] = "spike_count"
+        metadata["responseNormalization"] = "none"
+    metadata["zeroBinPolicy"] = "null_and_nan_as_zero"
     if occupancy_time_s is not None:
         metadata["occupancyTimeSec"] = occupancy_time_s.tolist()
     maps = [
@@ -1834,103 +1823,52 @@ def plot_2d_rfmap(
     GUI's 30:7 spatial-map footprint instead of rendering as a thin strip.
     """
     import matplotlib.pyplot as plt
+    from Utils.plotting import LIGHT_PLOT_STYLE
 
-    data = np.asarray(data)
-    if data.ndim != 2:
-        raise ValueError("data must be a 2D array.")
-    if 0 in data.shape:
-        raise ValueError("data must not have an empty dimension.")
+    with plt.rc_context(LIGHT_PLOT_STYLE):
+        data = np.asarray(data)
+        if data.ndim != 2:
+            raise ValueError("data must be a 2D array.")
+        if 0 in data.shape:
+            raise ValueError("data must not have an empty dimension.")
 
-    n_rows, n_columns = data.shape
-    fig, ax = plt.subplots()
-    image_aspect: str | float = "equal"
-    if n_rows == 1:
-        image_aspect = n_columns * 7.0 / 30.0
-    image = ax.imshow(
-        data,
-        aspect=image_aspect,
-        cmap=cmap,
-        interpolation="nearest",
-    )
-
-    ax.set_xticks(np.arange(n_columns))
-    ax.set_yticks(np.arange(n_rows))
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
-    fig.colorbar(image, ax=ax)
-    fig.tight_layout()
-
-    if is_save:
-        from pathlib import Path
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-    return fig, ax
-
-
-def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isNormalize: bool = False, isLineplot: bool = False,
-                  isHeatmap: bool = False, offset: float = 1.0, xinDeg: bool = False):
-    import matplotlib.pyplot as plt
-
-    # Validation
-    if isLineplot == isHeatmap:
-        raise ValueError("Exactly one of isLineplot or isHeatmap must be True.")
-
-    n_units, n_x = unitsSpikeCounts.shape
-    x_values = np.linspace(0, 360, n_x, endpoint=False) if xinDeg else np.arange(n_x)
-    x_label = "Angle (deg)" if xinDeg else "x"
-
-    if isNormalize:
-        # Missing occupancy bins must not hide the unit's observed responses.
-        max_per_unit = np.fmax.reduce(unitsSpikeCounts, axis=1, keepdims=True)
-        unitsSpikeCounts = np.divide(
-            unitsSpikeCounts,
-            max_per_unit,
-            out=np.where(np.isnan(unitsSpikeCounts), np.nan, 0.0),
-            where=max_per_unit != 0,
-        )
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    if isLineplot:
-        yticks_height = []
-
-        for unit_idx, spikeCounts in enumerate(unitsSpikeCounts):
-            unit_offset = (n_units - 1 - unit_idx) * offset
-            y = spikeCounts + unit_offset
-            observed_y = y[~np.isnan(y)]
-            yticks_height.append(
-                np.average(observed_y) if observed_y.size else unit_offset
-            )
-            ax.plot(x_values, y, linewidth=1)
-
-        ax.set_yticks(yticks_height)
-        ax.set_yticklabels(label_list)
-
-    if isHeatmap:
-        imshow_kwargs = dict(
-            aspect="auto",
-            cmap="viridis",
+        n_rows, n_columns = data.shape
+        fig, ax = plt.subplots()
+        image_aspect: str | float = "equal"
+        if n_rows == 1:
+            image_aspect = n_columns * 7.0 / 30.0
+        image = ax.imshow(
+            data,
+            aspect=image_aspect,
+            cmap=cmap,
             interpolation="nearest",
         )
-        if xinDeg:
-            imshow_kwargs["extent"] = [0, 360, n_units - 0.5, -0.5]
 
-        im = ax.imshow(unitsSpikeCounts, **imshow_kwargs)
+        ax.set_xticks(np.arange(n_columns))
+        ax.set_yticks(np.arange(n_rows))
+        ax.set_xlabel("Column")
+        ax.set_ylabel("Row")
+        fig.colorbar(image, ax=ax)
+        fig.tight_layout()
 
-        ax.set_yticks(np.arange(n_units))
-        ax.set_yticklabels(label_list)
-        fig.colorbar(im, ax=ax, label="Normalized spikes" if isNormalize else "Spikes")
+        if is_save:
+            from pathlib import Path
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("Unit ID")
-    if xinDeg:
-        ax.set_xlim(0, 360)
-        ax.set_xticks(np.arange(0, 361, 60))
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
-    plt.tight_layout()
-    plt.show()
+        plt.show()
+
+        return fig, ax
+
+
+def plot_1d_rfmap(unitsSpikeCounts: np.ndarray, label_list, *, isLineplot: bool = False,
+                  isHeatmap: bool = False, offset: float = 1.0, xinDeg: bool = False):
+    """Render supplied RF curves with the shared tuning-curve plotter."""
+    from Utils.plotting import plot_tuning_curves_for_cluster
+
+    return plot_tuning_curves_for_cluster(
+        unitsSpikeCounts, label_list, isLineplot=isLineplot, isHeatmap=isHeatmap,
+        offset=offset, xinDeg=xinDeg,
+    )

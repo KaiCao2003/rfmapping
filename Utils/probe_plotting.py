@@ -8,6 +8,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
 from matplotlib.collections import PolyCollection, QuadMesh
+from matplotlib.colors import Colormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.legend import Legend
 from numpy.typing import NDArray
@@ -399,12 +400,12 @@ class WaveformUnitPlotCollection:
         ax.set_xlabel('Probe x (µm)')
         ax.set_ylabel('Probe y (µm)' if show_y_label else '')
 
-    def _finish(self, figure: Figure, filename: str) -> PlotResult:
+    def _finish(self, figure: Figure, filename: str, *, unit_ids: list[int] | None = None) -> PlotResult:
         if self.save_figures:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             figure.savefig(self.output_dir / filename, dpi=200, bbox_inches='tight')
         plt.show()
-        plotted_unit_ids = [unit.unit_id for unit in self.units]
+        plotted_unit_ids = [unit.unit_id for unit in self.units] if unit_ids is None else unit_ids
         return PlotResult(
             figure,
             plotted_unit_ids,
@@ -640,15 +641,36 @@ class WaveformUnitPlotCollection:
         self._hide_unused_axes(axes, panel_count)
         return self._finish(figure, 'spikeinterface_max_ptp_contacts.png')
 
-    def plot_unit_locations(self, *, show_other_units: bool = False) -> PlotResult:
-        figure, ax = plt.subplots(figsize=(7.2, 9.2), constrained_layout=True)
+    def plot_unit_locations(
+            self,
+            *,
+            show_other_units: bool = False,
+            ax: Axes | None = None,
+            unit_values: dict[int, float] | None = None,
+            cmap: str | Colormap = 'twilight',
+            norm: Normalize | None = None,
+            missing_color: str = '#9ca3af',
+    ) -> PlotResult:
+        """Draw saved unit positions, optionally colored by a unit-keyed scalar.
+
+        Scalar maps use summaries only: construct with an empty unit list to avoid
+        loading waveforms. NaN values retain the unit as a gray point. A supplied
+        axis lets callers compose probe panels without showing or saving here.
+        """
+        owns_figure = ax is None
+        if owns_figure:
+            figure, ax = plt.subplots(figsize=(7.2, 9.2), constrained_layout=True)
+        else:
+            figure = ax.figure
+        requested_ids = ([unit.unit_id for unit in self.units]
+                         if unit_values is None else list(unit_values))
         self._plot_probe_background(ax, contact_alpha=0.85)
         if show_other_units:
-            requested_ids = {unit.unit_id for unit in self.units}
+            selected_ids = set(requested_ids)
             other_units = [
                 summary
                 for unit_id, summary in self.store.unit_summaries.items()
-                if unit_id not in requested_ids
+                if unit_id not in selected_ids
             ]
             ax.scatter(
                 [summary.unit_x_um for summary in other_units],
@@ -661,15 +683,34 @@ class WaveformUnitPlotCollection:
                 label=f'{len(other_units)} other units',
                 zorder=3,
             )
-        for unit in self.units:
-            unit.draw_unit_location(ax)
+        if unit_values is None:
+            for unit in self.units:
+                unit.draw_unit_location(ax)
+        else:
+            summaries = [self.store.unit_summaries[unit_id] for unit_id in requested_ids]
+            colors = plt.get_cmap(cmap).with_extremes(bad=missing_color)
+            ax.scatter(
+                [summary.unit_x_um for summary in summaries],
+                [summary.unit_y_um for summary in summaries],
+                c=[unit_values[unit_id] for unit_id in requested_ids],
+                cmap=colors,
+                norm=norm,
+                plotnonfinite=True,
+                s=48,
+                edgecolors='white',
+                linewidths=0.6,
+                zorder=4,
+            )
 
         self._style_probe_axes(ax)
-        legend: Legend = ax.legend(
-            loc='upper right',
-            frameon=True,
-            facecolor='white',
-            edgecolor=self.plot_colors['border'],
-        )
-        legend.get_frame().set_alpha(0.95)
-        return self._finish(figure, 'spikeinterface_unit_locations.png')
+        if unit_values is None:
+            legend: Legend = ax.legend(
+                loc='upper right',
+                frameon=True,
+                facecolor='white',
+                edgecolor=self.plot_colors['border'],
+            )
+            legend.get_frame().set_alpha(0.95)
+        if owns_figure:
+            return self._finish(figure, 'spikeinterface_unit_locations.png', unit_ids=requested_ids)
+        return PlotResult(figure, requested_ids, f'Plotted {len(requested_ids)} unit(s).')

@@ -144,18 +144,26 @@ def peak_direction_sums(hd_profiles, rf_profiles, *, order=None, is_wrap=True):
     })
 
 
-def plot_peak_direction_sums(table, *, hd_label="HD", rf_label="RF", figsize=(6, 4)):
-    """Count paired-unit peak sums and test their circular concentration."""
+def peak_sum_statistics(table):
+    """Calculate histogram counts and circular concentration of paired peak sums."""
     is_wrap = table.attrs.get("is_wrap", True)
     limit = 180 if is_wrap else 360
     values = table.peak_sum_deg.to_numpy()
     values = values[np.isfinite(values)]
-    statistics = rayleigh_uniformity(values)
+    counts, edges = np.histogram(values, bins=np.arange(-limit, limit + 1, 12))
+    return {"counts": counts, "edges": edges, "statistics": rayleigh_uniformity(values)}
+
+
+def plot_peak_direction_sums(summary, *, hd_label="HD", rf_label="RF", figsize=(6, 4)):
+    """Render supplied peak-sum counts and circular statistics."""
+    statistics = summary["statistics"]
+    edges = summary["edges"]
+    limit = edges[-1]
     p_label = f"{statistics['p']:.3g}" if np.isfinite(statistics["p"]) else "—"
     r_label = f"{statistics['r']:.2f}" if np.isfinite(statistics["r"]) else "—"
     with plt.rc_context(LIGHT_PLOT_STYLE):
         figure, axis = plt.subplots(figsize=figsize, layout="constrained")
-        axis.hist(values, bins=np.arange(-limit, limit + 1, 12), edgecolor="white")
+        axis.stairs(summary["counts"], edges, fill=True, edgecolor="white")
         axis.set(title=f"{hd_label} + {rf_label}", xlabel="Peak sum (°)", ylabel="Units",
                  xlim=(-limit, limit), xticks=np.linspace(-limit, limit, 5))
         axis.yaxis.get_major_locator().set_params(integer=True)
@@ -166,8 +174,8 @@ def plot_peak_direction_sums(table, *, hd_label="HD", rf_label="RF", figsize=(6,
     return figure
 
 
-def _interpolate_angles(angles, values, targets, range, *, is_wrap=True):
-    """Interpolate in physical degrees; a partial field leaves its unseen arc blank."""
+def _interpolate_angles(angles, values, targets, range, *, is_wrap=True, fill_value=np.nan):
+    """Interpolate in physical degrees without bridging a partial field's unseen arc."""
     ticks = _range_ticks(range)
     lower, upper = ticks[0], ticks[-1]
     if upper - lower == 360:
@@ -175,29 +183,30 @@ def _interpolate_angles(angles, values, targets, range, *, is_wrap=True):
             return np.interp(targets, angles, values, period=360)
         angles = (np.asarray(angles) + 180) % 360 - 180
         order = np.argsort(angles)
-        return np.interp(targets, angles[order], values[order], left=np.nan, right=np.nan)
+        return np.interp(targets, angles[order], values[order], left=fill_value, right=fill_value)
     angles = (np.asarray(angles) - lower) % 360 + lower
     order = np.argsort(angles)
     angles, values = angles[order], values[order]
     within = (angles >= lower) & (angles <= upper)
     angles, values = angles[within], values[within]
     if not len(angles):
-        return np.full(len(targets), np.nan)
+        return np.full(len(targets), fill_value)
     # Edge bins cover half a bin beyond their centers; never bridge the unseen arc.
     angles = np.r_[lower, angles, upper]
     values = np.r_[values[0], values, values[-1]]
     targets = np.asarray(targets)
     query = (targets - lower) % 360 + lower
-    result = np.interp(query, angles, values, left=np.nan, right=np.nan)
+    result = np.interp(query, angles, values, left=fill_value, right=fill_value)
     if not is_wrap:
-        result[(targets < -180) | (targets >= 180)] = np.nan
+        result[(targets < -180) | (targets >= 180)] = fill_value
     return result
 
 
 def _resample_profiles(profiles, centers):
     angle_range = profiles.attrs["range"]
+    fill_value = 0. if profiles.attrs.get("response_kind") == "RF" else np.nan
     values = np.array([
-        _interpolate_angles(profiles.columns, row, centers, angle_range)
+        _interpolate_angles(profiles.columns, row, centers, angle_range, fill_value=fill_value)
         for row in profiles.to_numpy()
     ]).reshape(len(profiles), len(centers))
     table = pd.DataFrame(values, index=profiles.index, columns=centers)
@@ -210,9 +219,10 @@ def align_profiles(profiles, units, offset_deg, *, is_wrap=True):
     relative_deg = np.arange(-180., 180., 12.) if is_wrap else np.arange(-360., 361., 12.)
     rows = profiles.reindex(units)
     angle_range = profiles.attrs.get("range", tcRange(True))
+    fill_value = 0. if profiles.attrs.get("response_kind") == "RF" else np.nan
     shifted = np.array([
         _interpolate_angles(profiles.columns, row, relative_deg - offset,
-                            angle_range, is_wrap=is_wrap)
+                            angle_range, is_wrap=is_wrap, fill_value=fill_value)
         for row, offset in zip(rows.to_numpy(), offset_deg, strict=True)
     ]).reshape(len(units), len(relative_deg))
     result = pd.DataFrame(shifted, index=rows.index, columns=relative_deg)
@@ -286,122 +296,78 @@ def plot_profiles(profiles, order, name, *, axis=None, sort_name=None,
     )
 
 
-def _plot_pair(
-    reference, matched, *,
-    sorted_by_axis=None, apply_to_axis=None,
-    align=False, order=None, save_dir=None, show=True, figsize=(10, 6),
-    is_wrap=True, labels=None, names=(0, 1), reference_min=False, matched_min=False,
-    cmap="viridis", vmin=None, vmax=None, colorbar_label="Response",
-):
-    """Subtract the reference peak with align=True; add it to the pair with align='sum'.
+def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap=True,
+                       reference_min=False, matched_min=False):
+    """Calculate paired peaks, row order, and explicit angular transformations.
 
-    The caller supplies two tables with the same unit keys. Missing curves are
-    blank; rows without a reference peak go last and remain unshifted.
-    is_wrap controls the peak sum and the matched sum panel.
+    Native keeps source angles. Aligned subtracts the reference direction from
+    both tables. Sum centers the reference and adds its direction to the match.
     """
-    if labels is None:
-        labels = (reference.attrs.get("label", "Reference"), matched.attrs.get("label", "Matched"))
+    if mode not in ("native", "aligned", "sum"):
+        raise ValueError("mode must be 'native', 'aligned', or 'sum'")
     peaks = paired_peak_angles(reference, matched, order=order, is_wrap=is_wrap,
                                reference_min=reference_min, matched_min=matched_min)
     order = peaks.index.tolist()
-    # Without a reference peak there is no defined alignment; keep the row unshifted.
     reference_peak = peaks.reference_peak_deg.fillna(0).to_numpy()
-    offsets = -reference_peak if align else np.zeros(len(order))
-    matched_offsets = reference_peak if align == "sum" else offsets
-    mode = "sum" if align == "sum" else "aligned" if align else "native"
-    missing_reference = peaks.reference_peak_deg.isna().any()
-    directory = Path(save_dir) if save_dir is not None else None
-    if directory is not None:
-        directory.mkdir(parents=True, exist_ok=True)
-    panels = []
-    for name, profiles, axis, shift, layout, label in (
-        (names[0], reference, sorted_by_axis, offsets, bool(align), labels[0]),
-        (names[1], matched, apply_to_axis, matched_offsets, align, labels[1]),
-    ):
-        wrap_panel = is_wrap if layout == "sum" else True
-        panel = align_profiles(profiles, order, shift, is_wrap=wrap_panel) if align else profiles.loc[order]
-        figure, axes = plot_profiles(
-            panel, order, label, axis=axis, sort_name=labels[0], aligned=layout, show=False,
-            figsize=figsize, is_wrap=wrap_panel, reference_min=reference_min,
-            cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
-        )
-        if align and missing_reference:
-            axes.set_title(axes.get_title() + "\nMissing reference peak: no shift")
-            figure.tight_layout()
-        if directory is not None:
-            figure.savefig(directory / f"{names[0]}_{names[1]}_{name}_{mode}.png",
-                           dpi=160, facecolor="white", transparent=False)
-        panels.append((figure, axes))
-        if show:
-            plt.show()
-            plt.close(figure)
+    offsets = np.zeros(len(order)) if mode == "native" else -reference_peak
+    matched_offsets = reference_peak if mode == "sum" else offsets
+    reference_panel = reference.loc[order]
+    matched_panel = matched.loc[order]
+    if mode != "native":
+        reference_panel = align_profiles(reference, order, offsets)
+        matched_panel = align_profiles(matched, order, matched_offsets,
+                                       is_wrap=is_wrap if mode == "sum" else True)
     return {
+        "reference": reference_panel, "matched": matched_panel,
         "order": order, "reference_peak_deg": peaks.reference_peak_deg.to_numpy(),
         "matched_peak_deg": peaks.matched_peak_deg.to_numpy(), "peak_sum_deg": peaks.peak_sum_deg.to_numpy(),
         "offset_deg": offsets, "matched_offset_deg": matched_offsets, "mode": mode,
-        "figures": panels, "peaks": peaks,
+        "peaks": peaks, "is_wrap": is_wrap, "reference_min": reference_min,
     }
 
 
-def plot_comparison_heatmaps(
-    profiles_by_name, *, sorted_by, apply_to,
-    sorted_by_axis=None, apply_to_axis=None,
-    align=False, order=None, save_dir=None, show=True, figsize=(10, 6),
-    is_wrap=True, labels=None, cmap="viridis", vmin=None, vmax=None,
-    colorbar_label="Response",
-):
-    """Select two named tables and compare them, retaining group names in plot exports."""
-    return _plot_pair(
-        profiles_by_name[sorted_by], profiles_by_name[apply_to],
-        sorted_by_axis=sorted_by_axis, apply_to_axis=apply_to_axis, align=align, order=order,
-        save_dir=save_dir, show=show, figsize=figsize, is_wrap=is_wrap,
-        labels=(sorted_by, apply_to) if labels is None else labels, names=(sorted_by, apply_to),
-        cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
-    )
-
-
-def plot_sort(reference, matched, **options):
-    """Plot both curves in the first curve's peak order, at their source angles."""
-    return _plot_pair(reference, matched, align=False, **options)
-
-
-def plot_align(reference, matched, **options):
-    """Sort by the first curve's peak and subtract that peak from both curves."""
-    return _plot_pair(reference, matched, align=True, **options)
-
-
-def plot_sum(reference, matched, **options):
-    """Center the first curve and add its peak to the second curve's angles."""
-    return _plot_pair(reference, matched, align="sum", **options)
-
-
-def compare_both_orders(profiles, first, second, *, first_axis=None,
-                        second_axis=None, align=False, previous=None,
-                        save_dir=None, order_dir=None, figsize=(10, 6), is_wrap=True,
-                        cmap="viridis", vmin=None, vmax=None, colorbar_label="Response"):
-    """Plot the caller's paired tables in each reference order."""
-    result = {}
-    directory = Path(order_dir) if order_dir is not None else None
+def plot_comparison_heatmaps(comparison, *, sorted_by_axis=None, apply_to_axis=None,
+                             save_dir=None, show=True, figsize=(10, 6), labels=None,
+                             names=(0, 1), cmap="viridis", vmin=None, vmax=None,
+                             colorbar_label="Response"):
+    """Render the ordered and transformed tables from prepare_comparison."""
+    reference, matched = comparison["reference"], comparison["matched"]
+    labels = ((reference.attrs.get("label", "Reference"), matched.attrs.get("label", "Matched"))
+              if labels is None else labels)
+    mode = comparison["mode"]
+    directory = Path(save_dir) if save_dir is not None else None
     if directory is not None:
         directory.mkdir(parents=True, exist_ok=True)
-    for reference, matched, reference_axis, matched_axis in (
-        (first, second, first_axis, second_axis), (second, first, second_axis, first_axis),
+    figures = []
+    for name, profiles, axis, layout, label in (
+        (names[0], reference, sorted_by_axis, mode != "native", labels[0]),
+        (names[1], matched, apply_to_axis, "sum" if mode == "sum" else mode != "native", labels[1]),
     ):
-        item = _plot_pair(
-            profiles[reference], profiles[matched], names=(reference, matched), labels=(reference, matched),
-            sorted_by_axis=reference_axis, apply_to_axis=matched_axis, align=align,
-            order=None if previous is None else previous[reference]["order"], save_dir=save_dir,
-            figsize=figsize, is_wrap=is_wrap,
-            cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+        figure, axes = plot_profiles(
+            profiles, comparison["order"], label, axis=axis, sort_name=labels[0], aligned=layout,
+            show=False, figsize=figsize, is_wrap=comparison["is_wrap"] if layout == "sum" else True,
+            reference_min=comparison["reference_min"], cmap=cmap, vmin=vmin, vmax=vmax,
+            colorbar_label=colorbar_label,
         )
-        result[reference] = item
         if directory is not None:
-            pd.DataFrame({"unit": item["order"], **{key: item[key] for key in (
-                "reference_peak_deg", "matched_peak_deg", "peak_sum_deg", "offset_deg", "matched_offset_deg",
-            )}}).to_csv(
-                directory / f"{reference}_{matched}_{item['mode']}_order.csv", index=False,
-            )
-    return result
+            figure.savefig(directory / f"{names[0]}_{names[1]}_{name}_{mode}.png",
+                           dpi=160, facecolor="white", transparent=False)
+        figures.append((figure, axes))
+        if show:
+            plt.show()
+            plt.close(figure)
+    return figures
+
+
+def compare_both_orders(profiles, first, second, *, mode="native", previous=None, is_wrap=True):
+    """Calculate both reference orders without plotting or writing outputs."""
+    return {
+        reference: {**prepare_comparison(
+            profiles[reference], profiles[matched], mode=mode, is_wrap=is_wrap,
+            order=None if previous is None else previous[reference]["order"],
+        ), "reference_name": reference, "matched_name": matched}
+        for reference, matched in ((first, second), (second, first))
+    }
 
 
 def hd_pick(table, hd_class=3):
@@ -414,13 +380,11 @@ def hd_pick(table, hd_class=3):
     return result
 
 
-def rf_pick(table, max_missing_bins=2, max_zero_bins=None):
-    """Copy RF units within native missing/zero-bin limits; None disables a limit."""
+def rf_pick(table, max_zero_bins=2):
+    """Copy RF units within the native zero-bin limit; None keeps every unit."""
     info = table.attrs["unit_info"]
-    selected = (np.ones(len(table), dtype=bool) if max_missing_bins is None else
-                np.asarray([info[key]["missing_bins"] for key in table.index]) <= max_missing_bins)
-    if max_zero_bins is not None:
-        selected &= np.asarray([info[key]["zero_bins"] for key in table.index]) <= max_zero_bins
+    selected = (np.ones(len(table), dtype=bool) if max_zero_bins is None else
+                np.asarray([info[key]["zero_bins"] for key in table.index]) <= max_zero_bins)
     result = table.loc[selected].copy()
     result.attrs["unit_info"] = {key: info[key].copy() for key in result.index}
     return result
@@ -453,7 +417,7 @@ def load_hd_profiles(path, *, probe="A", bins=30, smoothing_deg=0, hd_class=None
 
 
 def load_ebc_profiles(path, *, probe="A"):
-    """Read every EBC unit, retaining zero responses and missing angular bins."""
+    """Read every EBC unit with missing source responses represented by zero."""
     maps = load_rf_maps(path)
     angles = maps[0].y_positions
     profiles = profile_table(maps.to_1d_array(axis="y"), maps.unit_ids, angles, probe=probe)
@@ -462,12 +426,12 @@ def load_ebc_profiles(path, *, probe="A"):
 
 
 def load_rf_profiles(source, *, probe="A", window=(0.0, .2), smoothing_bins=0,
-                     max_missing_bins=None, max_zero_bins=None, rf_type=None,
+                     max_zero_bins=None, rf_type=None,
                      rf_detection="excitatory", range: list[int] | None = None):
     """Project RF units, optionally selecting saved localization and native x bins.
 
-    Count NaN/unmeasured bins and measured zeros separately before smoothing or
-    resampling. None disables each limit. rf_type selects saved '2d', '1d', or
+    Missing responses are zero. Count native zero bins before smoothing or
+    resampling; None disables the zero-bin limit. rf_type selects saved '2d', '1d', or
     'either' detections; None retains all source units without reading localization.
     rf_detection selects excitatory/inhibitory files without changing responses.
     """
@@ -478,23 +442,15 @@ def load_rf_profiles(source, *, probe="A", window=(0.0, .2), smoothing_bins=0,
     source = Path(source)
     maps = load_rf_maps(source, unit_firing_rate=False).sum(*window, show_progress=False)
     responses = maps.to_1d_array(axis="x").astype(float)
-    # Raw counts store unpresented positions as zero, not NaN.
-    unpresented = np.zeros(maps[0].shape[:2], dtype=bool)
-    if maps[0].presentation_counts is not None:
-        unpresented |= maps[0].presentation_counts == 0
-    occupancy = maps[0].metadata.get("occupancyTimeSec")
-    if occupancy is not None:
-        unpresented |= np.asarray(occupancy) == 0
-    responses[:, np.all(unpresented, axis=0)] = np.nan
+    responses = np.where(np.isnan(responses), 0., responses)
     angles = maps[0].x_positions
     profiles = profile_table(responses, maps.unit_ids, angles, probe=probe)
     if range is not None:
         profiles.attrs["range"] = list(range)
+    profiles.attrs["response_kind"] = "RF"
     profiles.attrs["unit_info"] = {
-        key: {"missing_bins": int(missing), "zero_bins": int(zero)}
-        for key, missing, zero in zip(
-            profiles.index, profiles.isna().sum(axis=1), profiles.eq(0).sum(axis=1), strict=True,
-        )
+        key: {"zero_bins": int(zero)}
+        for key, zero in zip(profiles.index, profiles.eq(0).sum(axis=1), strict=True)
     }
     if rf_type is not None:
         detection_source = (source.with_name(f"{source.stem}_inhibitory{source.suffix}")
@@ -512,8 +468,8 @@ def load_rf_profiles(source, *, probe="A", window=(0.0, .2), smoothing_bins=0,
         profiles.attrs["unit_info"] = {
             key: profiles.attrs["unit_info"][key].copy() for key in profiles.index
         }
-    if max_missing_bins is not None or max_zero_bins is not None:
-        profiles = rf_pick(profiles, max_missing_bins, max_zero_bins)
+    if max_zero_bins is not None:
+        profiles = rf_pick(profiles, max_zero_bins)
     return smooth_profiles(profiles, smoothing_bins)
 
 
@@ -570,12 +526,12 @@ def load_tc(path, *, mouse, date, probe="A", label="HD", range: list[int] | None
 
 
 def load_rf(path, *, mouse, date, probe="A", label="RF", range: list[int] | None = None,
-            window=(0.0, .2), smoothing_bins=0, max_missing_bins=None, max_zero_bins=None,
+            window=(0.0, .2), smoothing_bins=0, max_zero_bins=None,
             rf_type=None, rf_detection="excitatory"):
     """Read RF curves; rf_type selects saved detections, bin limits remain optional."""
     angle_range = tcRange(True) if range is None else range
     profiles = load_rf_profiles(
-        Path(path), probe=probe, window=window, smoothing_bins=smoothing_bins, max_missing_bins=max_missing_bins,
+        Path(path), probe=probe, window=window, smoothing_bins=smoothing_bins,
         max_zero_bins=max_zero_bins, rf_type=rf_type, rf_detection=rf_detection, range=angle_range,
     )
     table = _prepare_profiles(profiles, mouse=mouse, date=date, range=angle_range)

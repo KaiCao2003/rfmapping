@@ -17,33 +17,19 @@ __all__ = ["rf_bin_qc", "analyze_rf_file", "save_rf_unit_lists"]
 def rf_bin_qc(
     summed: RFMapList,
     *,
-    max_missing_bins: int = 2,
     max_zero_bins: int = 2,
 ) -> dict[str, np.ndarray]:
-    """Count missing and observed zero bins separately for each unit."""
-    max_missing_bins = _nonnegative_integer(max_missing_bins, "max_missing_bins")
+    """Apply one zero-bin limit, including positions loaded from null/NaN."""
     max_zero_bins = _nonnegative_integer(max_zero_bins, "max_zero_bins")
     pooled = np.stack([rf_map.to_2d_array() for rf_map in summed])
-    missing = ~np.isfinite(pooled)
-    if summed[0].presentation_counts is not None:
-        missing |= summed[0].presentation_counts[None, ...] <= 0
-    if "occupancyTimeSec" in summed[0].metadata:
-        occupancy = np.asarray(summed[0].metadata["occupancyTimeSec"]).reshape(pooled.shape[1:])
-        missing |= occupancy[None, ...] <= 0
-    zero = ~missing & (pooled == 0)
-    missing_counts = missing.sum(axis=(1, 2))
+    zero = np.isnan(pooled) | (pooled == 0)
     zero_counts = zero.sum(axis=(1, 2))
-    valid_counts = (~missing & ~zero).sum(axis=(1, 2))
+    valid_counts = (~zero).sum(axis=(1, 2))
     return {
         "unit_ids": np.asarray(summed.unit_ids),
-        "missing_bins": missing_counts,
         "zero_bins": zero_counts,
         "valid_bins": valid_counts,
-        "keep": (
-            (missing_counts <= max_missing_bins)
-            & (zero_counts <= max_zero_bins)
-            & (valid_counts > 0)
-        ),
+        "keep": (zero_counts <= max_zero_bins) & (valid_counts > 0),
     }
 
 
@@ -53,7 +39,6 @@ def analyze_rf_file(
     probe: str,
     rf_type: str = "excitatory",
     time_range_s: tuple[float, float] = (0.0, 0.2),
-    max_missing_bins: int = 2,
     max_zero_bins: int = 2,
     cluster_forming_z_2d: float | None = None,
     cluster_forming_z_1d: float | None = None,
@@ -65,8 +50,8 @@ def analyze_rf_file(
 ) -> dict[str, Any]:
     """Load one RF file, apply bin QC, and return its 2-D and 1-D detections.
 
-    Counts are normalized by stimulus exposure through ``load_rf_maps``.
-    Missing and zero responses are excluded from the no-shuffle mean and SD.
+    Responses are mean firing rates in the selected window. Loaded null/NaN
+    bins are zero and participate in the spatial mean, SD, and RF detection.
     Saved outputs use the source filename so separate stimulus maps do not
     overwrite each other's unit lists or QC summaries. Inhibitory outputs add
     ``_inhibitory`` to the source stem to preserve excitatory results.
@@ -82,14 +67,12 @@ def analyze_rf_file(
     source_path = Path(path)
     raw = load_rf_maps(source_path)
     summed = raw.sum(*time_range_s, show_progress=show_progress)
-    qc = rf_bin_qc(
-        summed, max_missing_bins=max_missing_bins, max_zero_bins=max_zero_bins,
-    )
+    qc = rf_bin_qc(summed, max_zero_bins=max_zero_bins)
     keep = qc["keep"]
     if not keep.any():
         raise ValueError(
             f"No units in Probe{probe} pass RF bin QC for {source_path} "
-            f"(max_missing_bins={max_missing_bins}, max_zero_bins={max_zero_bins}) "
+            f"(max_zero_bins={max_zero_bins}) "
             "with at least one valid nonzero bin"
         )
     raw = RFMapList(
@@ -119,7 +102,7 @@ def analyze_rf_file(
             "summary": output_source.with_name(f"{output_source.stem}_analysis.json"),
         }
         options = dict(
-            is_shuffle=False, exclude_zero_bins=True, drop_bins=drop_bins,
+            is_shuffle=False, exclude_zero_bins=False, drop_bins=drop_bins,
             wrap_x=wrap_x, show_progress=show_progress, rf_type=detection_type,
         )
         options_2d = dict(
@@ -152,7 +135,6 @@ def analyze_rf_file(
                 "parameters": {
                     "rf_type": detection_type,
                     "time_range_s": list(time_range_s),
-                    "max_missing_bins": max_missing_bins,
                     "max_zero_bins": max_zero_bins,
                     "cluster_forming_z_2d": z_2d,
                     "cluster_forming_z_1d": z_1d,
@@ -160,7 +142,7 @@ def analyze_rf_file(
                     "wrap_x": wrap_x,
                     "collapse_from_2d": collapse_from_2d,
                     "is_shuffle": False,
-                    "exclude_zero_bins": True,
+                    "exclude_zero_bins": False,
                 },
                 "bin_qc": {name: values.tolist() for name, values in qc.items()},
                 "kept_unit_ids": list(summed.unit_ids),

@@ -7,10 +7,14 @@ import numpy as np
 import pytest
 from matplotlib import pyplot as plt
 from PIL import Image
+from scipy.ndimage import gaussian_filter
 
 from Utils import rf_analysis
 from Utils.rf_analysis import analyze_rf_file, save_rf_unit_lists
-from Utils.rf_plotting import export_rf_units, plot_rf_population, plot_rf_unit
+from Utils.rf_plotting import (
+    export_rf_units, plot_rf_population, plot_rf_unit,
+    rf_population_counts, rf_unit_plot_data,
+)
 from Utils.rfmap import RFMapList, load_rf_maps
 
 
@@ -69,19 +73,16 @@ def test_analysis_matches_public_rf_views_and_preserves_rate_window(tmp_path, co
     counts, occupancy = _write_indexed_source(source)
     rf_options = {} if rf_type == "excitatory" else dict(rf_type=rf_type)
     result = analyze_rf_file(source, probe="B", collapse_from_2d=collapse_from_2d, **rf_options)
-    assert result["raw"].unit_ids == [7, 11]
-    assert result["summed"].unit_ids == [7, 11]
-    assert result["raw"][0].metadata["responseNormalization"] == "occupancyTimeSec"
+    assert result["raw"].unit_ids == [7]
+    assert result["summed"].unit_ids == [7]
+    assert result["raw"][0].metadata["responseNormalization"] == "presentation_count_time"
     assert result["summed"][0].time_window_s == (0.0, 0.2)
-    expected_rates = np.divide(
-        counts[:2, ..., 1:].sum(axis=-1), occupancy,
-        out=np.full(counts.shape[:3], np.nan)[:2], where=occupancy > 0,
-    )
-    np.testing.assert_allclose(result["summed"].to_2d_array(), expected_rates, equal_nan=True)
+    expected_rates = counts[:1, ..., 1:].sum(axis=-1) / (2 * 0.2)
+    np.testing.assert_allclose(result["summed"].to_2d_array(), expected_rates)
 
     raw = load_rf_maps(source)
-    expected = RFMapList([raw[0], raw[1]], source).sum(0.0, 0.2)
-    options = dict(exclude_zero_bins=True, show_progress=False, rf_type=rf_type)
+    expected = RFMapList([raw[0]], source).sum(0.0, 0.2)
+    options = dict(exclude_zero_bins=False, show_progress=False, rf_type=rf_type)
     z_2d = 1.5 if rf_type == "inhibitory" else 1.8
     z_1d = 0.75 if rf_type == "inhibitory" else 1.0
     mask_2d = expected.rf_2d(cluster_forming_z=z_2d, **options)
@@ -100,15 +101,15 @@ def test_analysis_matches_public_rf_views_and_preserves_rate_window(tmp_path, co
         np.testing.assert_array_equal(result[key], values)
     qc = result["bin_qc"]
     np.testing.assert_array_equal(qc["unit_ids"], [7, 11, 23])
-    np.testing.assert_array_equal(qc["missing_bins"], [1, 1, 1])
-    np.testing.assert_array_equal(qc["zero_bins"], [0, 2, 3])
+    assert "missing_bins" not in qc
+    np.testing.assert_array_equal(qc["zero_bins"], [1, 3, 4])
     np.testing.assert_array_equal(qc["valid_bins"], [209, 207, 206])
-    np.testing.assert_array_equal(qc["keep"], [True, True, False])
+    np.testing.assert_array_equal(qc["keep"], [True, False, False])
     assert result["units_with_rf"] == [
-        ("B", unit_id) for unit_id, present in zip([7, 11], center_2d.any(axis=(1, 2))) if present
+        ("B", unit_id) for unit_id, present in zip([7], center_2d.any(axis=(1, 2))) if present
     ]
     assert result["units_with_rf_1d"] == [
-        ("B", unit_id) for unit_id, present in zip([7, 11], center_1d.any(axis=1)) if present
+        ("B", unit_id) for unit_id, present in zip([7], center_1d.any(axis=1)) if present
     ]
     expected_paths = _output_paths(source, rf_type)
     assert {key: Path(value) for key, value in result["output_paths"].items()} == expected_paths
@@ -127,7 +128,7 @@ def test_analysis_matches_public_rf_views_and_preserves_rate_window(tmp_path, co
                 np.testing.assert_array_equal(saved["center_2d"].any(axis=1), expected_center)
     summary = json.loads(expected_paths["summary"].read_text())
     assert summary["bin_qc"]["unit_ids"] == [7, 11, 23]
-    assert summary["bin_qc"]["keep"] == [True, True, False]
+    assert summary["bin_qc"]["keep"] == [True, False, False]
     assert summary["parameters"]["time_range_s"] == [0.0, 0.2]
     assert summary["parameters"]["cluster_forming_z_2d"] == z_2d
     assert summary["parameters"]["cluster_forming_z_1d"] == z_1d
@@ -194,7 +195,7 @@ def test_analysis_without_saving_writes_no_outputs(tmp_path):
     source = tmp_path / "read_only.rfmap"
     _write_indexed_source(source)
     result = analyze_rf_file(source, probe="A", save_results=False)
-    assert result["mask_2d"].shape == (2, 7, 30)
+    assert result["mask_2d"].shape == (1, 7, 30)
     assert set(tmp_path.iterdir()) == {source}
     assert not any(Path(path).exists() for path in result["output_paths"].values())
 
@@ -235,7 +236,7 @@ def test_cli_matches_direct_analysis_from_arbitrary_cwd_and_quoted_path(tmp_path
     source = tmp_path / "map input 'quoted'.rfmap"
     _write_indexed_source(source)
     options = dict(
-        time_range_s=(0.0, 0.1), max_missing_bins=2, max_zero_bins=2,
+        time_range_s=(0.0, 0.1), max_zero_bins=2,
         cluster_forming_z_2d=1.2, cluster_forming_z_1d=0.8,
         drop_bins=1, wrap_x=False, collapse_from_2d=collapse_from_2d,
         rf_type=rf_type,
@@ -246,7 +247,7 @@ def test_cli_matches_direct_analysis_from_arbitrary_cwd_and_quoted_path(tmp_path
     cwd.mkdir()
     command = [
         sys.executable, str(script), str(source), "--probe", "C",
-        "--time-range", "0.0", "0.1", "--max-missing-bins", "2",
+        "--time-range", "0.0", "0.1",
         "--max-zero-bins", "2", "--cluster-forming-z-2d", "1.2",
         "--cluster-forming-z-1d", "0.8", "--drop-bins", "1", "--no-wrap-x",
     ]
@@ -323,7 +324,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
         analyze_rf_file=analyze_rf_file, save_rf_unit_lists=save_rf_unit_lists,
         base_dir=tmp_path, probes=probes, is_rotation=False,
         date=260630, sessionID=3, rf_time_range=(0.0, 0.2),
-        max_missing_bins=2, max_zero_bins=2, collapse_from_2d=False,
+        max_zero_bins=2, collapse_from_2d=False,
         is_save=is_save, rf_type=rf_type,
     )
     exec(compile(source, str(notebook), "exec"), namespace)
@@ -367,7 +368,7 @@ def test_unit_preview_uses_selected_rf_and_exports_opaque_white(tmp_path):
     analysis = analyze_rf_file(source, probe="B", rf_type="inhibitory", save_results=False)
     output = tmp_path / "preview"
     with plt.rc_context({"figure.facecolor": "black", "axes.facecolor": "black", "text.color": "white"}):
-        fig, axes = plot_rf_unit(analysis, 17, output_path=output, show=False)
+        fig, axes = plot_rf_unit(rf_unit_plot_data(analysis, 17), output_path=output, show=False)
     np.testing.assert_array_equal(axes[0, 0].images[0].get_array(), analysis["summed"][0].to_2d_array())
     np.testing.assert_array_equal(axes[0, 1].images[0].get_array(), analysis["mask_2d"][0])
     np.testing.assert_array_equal(axes[1, 1].images[0].get_array()[0], analysis["mask_1d"][0])
@@ -393,7 +394,14 @@ def test_population_and_unit_exports_use_all_probes_without_inline_figures(tmp_p
         analyses_by_probe[probe] = analyze_rf_file(source, probe=probe, rf_type="both", save_results=False)
     output_dir = tmp_path / "figures"
     open_figures = set(plt.get_fignums())
-    figures = plot_rf_population(analyses_by_probe, rf_type="inhibitory", output_dir=output_dir, show=False)
+    population_counts = rf_population_counts(analyses_by_probe, rf_type="inhibitory")
+    population_counts["all_smoothed"] = {
+        key: gaussian_filter(values.astype(float), sigma=1.0, mode="nearest")
+        for key, values in population_counts["all"].items()
+    }
+    figures = plot_rf_population(
+        population_counts, rf_type="inhibitory", output_dir=output_dir, show=False,
+    )
     assert set(figures) == {"ProbeA", "ProbeB", "all", "all_smoothed"}
     for probe, analyses in analyses_by_probe.items():
         axes = figures[f"Probe{probe}"][1]

@@ -224,39 +224,35 @@ def test_zero_bin_option_has_distinct_cache_identity_and_reuses_results(tmp_path
     assert len(calls) == 2
 
 
-def test_rf_bin_qc_accepts_inclusive_limits_and_requires_both():
+def test_rf_bin_qc_counts_nan_and_zero_together_with_inclusive_limit():
     accepted = np.ones((7, 30))
     accepted.flat[[0, 1]] = [np.nan, 0]
-    accepted.flat[[2, 3]] = 0
     occupancy = np.ones_like(accepted)
     occupancy.flat[1] = 0
-    too_missing = np.ones_like(accepted)
-    too_missing.flat[[0, 2]] = np.nan
+    too_many = np.ones_like(accepted)
+    too_many.flat[[0, 1, 2]] = [np.nan, np.nan, 0]
     too_zero = np.ones_like(accepted)
     too_zero.flat[[0, 2, 3]] = 0
-    nonfinite = np.ones_like(accepted)
-    nonfinite.flat[[0, 1]] = [np.inf, 0]
     maps = [
         _map(accepted, 10, occupancy=occupancy),
-        _map(too_missing, 11, occupancy=occupancy),
+        _map(too_many, 11, occupancy=occupancy),
         _map(too_zero, 12, occupancy=occupancy),
         _map(np.ones_like(accepted), 13, occupancy=occupancy),
-        _map(nonfinite, 14, occupancy=occupancy),
     ]
     qc = rf_bin_qc(RFMapList(maps, "<array>"))
-    np.testing.assert_array_equal(qc["unit_ids"], [10, 11, 12, 13, 14])
-    np.testing.assert_array_equal(qc["missing_bins"], [2, 3, 1, 1, 2])
-    np.testing.assert_array_equal(qc["zero_bins"], [2, 0, 3, 0, 0])
-    np.testing.assert_array_equal(qc["valid_bins"], [206, 207, 206, 209, 208])
-    np.testing.assert_array_equal(qc["keep"], [True, False, False, True, True])
+    np.testing.assert_array_equal(qc["unit_ids"], [10, 11, 12, 13])
+    assert "missing_bins" not in qc
+    np.testing.assert_array_equal(qc["zero_bins"], [2, 3, 3, 0])
+    np.testing.assert_array_equal(qc["valid_bins"], [208, 207, 207, 210])
+    np.testing.assert_array_equal(qc["keep"], [True, False, False, True])
 
 
-def test_rf_bin_qc_counts_unpresented_zero_as_missing_only():
+def test_rf_bin_qc_has_no_separate_unpresented_position_filter():
     accepted = np.ones((7, 30))
     accepted.flat[0] = np.nan
-    accepted.flat[[1, 2, 3]] = 0
+    accepted.flat[1] = 0
     too_zero = np.ones_like(accepted)
-    too_zero.flat[[1, 2, 3, 4]] = 0
+    too_zero.flat[[1, 2, 3]] = 0
     presentations = np.ones_like(accepted)
     presentations.flat[1] = 0
     maps = [
@@ -264,9 +260,9 @@ def test_rf_bin_qc_counts_unpresented_zero_as_missing_only():
         _map(too_zero, 20, presentations=presentations),
     ]
     qc = rf_bin_qc(RFMapList(maps, "<array>"))
-    np.testing.assert_array_equal(qc["missing_bins"], [2, 1])
+    assert "missing_bins" not in qc
     np.testing.assert_array_equal(qc["zero_bins"], [2, 3])
-    np.testing.assert_array_equal(qc["valid_bins"], [206, 206])
+    np.testing.assert_array_equal(qc["valid_bins"], [208, 207])
     np.testing.assert_array_equal(qc["keep"], [True, False])
 
 
@@ -274,7 +270,7 @@ def test_rf_bin_qc_counts_unpresented_zero_as_missing_only():
 def test_rf_bin_qc_rejects_units_without_valid_bins(fill):
     maps = [_map(np.full((7, 30), fill), 10)]
     qc = rf_bin_qc(
-        RFMapList(maps, "<array>"), max_missing_bins=210, max_zero_bins=210,
+        RFMapList(maps, "<array>"), max_zero_bins=210,
     )
     np.testing.assert_array_equal(qc["valid_bins"], [0])
     np.testing.assert_array_equal(qc["keep"], [False])
@@ -285,5 +281,5 @@ def test_notebook_default_qc_limits_are_two():
     source = "".join(json.loads(notebook.read_text())["cells"][1]["source"])
     namespace = {"Path": Path}
     exec(compile(source, str(notebook), "exec"), namespace)
-    assert namespace["max_missing_bins"] == 2
+    assert "max_missing_bins" not in namespace
     assert namespace["max_zero_bins"] == 2

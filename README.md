@@ -170,6 +170,7 @@ The current regular writer saves a compressed, indexed NPZ archive with the
 | `xPositions`, `yPositions` | Spatial coordinates |
 | `timeBinEdges` | T+1 edges in seconds relative to onset |
 | `occupancyTimeSec` | Total qualifying display time at each `(y, x)` |
+| `stimulusPresentationCounts` | Qualifying stimulus presentations covering each `(y, x)` |
 | `unit_<ID>` | One unit's counts, shape `(y, x, time)` |
 | `metadata` | Dimensions, response units, format, geometry information |
 
@@ -272,8 +273,9 @@ export RF_SESSION_DIR="$RF_MOUSE_DIR/$RF_DATE/${RF_DATE}_${RF_SESSION}"
 export RF_SORT_CONFIG="$RFMAP_WORK_DIR/rf_sorting.yaml"
 ```
 
-`RF_SESSION` is the session being mapped. `RF_SESSIONS` is the ordered sorting
-group: use `"2 3"`, for example, to sort both recordings together.
+`RF_SESSION` selects the session for timing preparation. `RF_SESSIONS` is the
+ordered sorting and MATLAB generation group: use `"2 3 10"`, for example, to
+process those three recordings.
 `RF_PROBES` is `A` or `AB`, not `ProbeA`.
 
 These variables are settings for the examples, not new configuration options
@@ -791,7 +793,7 @@ addpath(RF_MATLAB_DIR);
 params.base_dir = [fullfile(getenv('RECORDING_ROOT'), ...
     getenv('RF_MOUSE')), filesep];
 params.date = getenv('RF_DATE');
-params.sessionList = getenv('RF_SESSION');
+params.sessionList = str2double(strsplit(strtrim(getenv('RF_SESSIONS'))));
 params.probelist = getenv('RF_PROBES');
 
 % Good units and regular square-stimulus geometry.
@@ -802,7 +804,6 @@ params.runRfDetection = true;
 params.rfPythonExecutable = getenv('RFMAP_PYTHON');
 params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
 params.rfTimeRange = [0 0.2];
-params.maxMissingBins = 2;
 params.maxZeroBins = 2;
 params.clusterFormingZ2d = 1.8;
 params.clusterFormingZ1d = 1;
@@ -846,10 +847,9 @@ constant square size and reads it from the first trial.
 display offsets. All three movement/coordinate flags remain false for an
 ordinary screen-coordinate map.
 
-The current regular core loops through characters in `sessionList`.
-`'23'` selects sessions **2 and 3**, not session 23. This example uses the
-single-digit session `2`; a multi-digit regular session is not supported by
-simply entering that number as a character string.
+`sessionList` is a numeric vector of positive integer session IDs. Use
+`[2 3 10]` for three sessions or `23` for session 23. Character strings such
+as `'23'` are rejected.
 
 If you prefer the existing `RFmapping.m` wrapper, edit its internal settings
 instead. Creating a `params` variable and then calling `RFmapping` does not
@@ -907,6 +907,9 @@ counts[unit, position, time_bin]
 
 occupancyTimeSec[position]
     = sum of display durations over those same trials
+
+stimulusPresentationCounts[position]
+    = number of matching trials covering that position
 ```
 
 Matching includes the selected luminance. Regular squares match the recorded
@@ -964,11 +967,15 @@ generation window or bin width, update the folder name to match. Choose a
 summation interval inside the saved window.
 
 - `unit_firing_rate=False` preserves stored spike counts.
-- Default `load_rf_maps(rf_path)` divides counts by `occupancyTimeSec`.
-  That denominator remains display time when a different response window is
-  selected.
+- Default `load_rf_maps(rf_path)` returns firing rate in Hz: each lag bin's
+  count is divided by `stimulusPresentationCounts * bin_width_seconds`.
+  Older files without presentation counts require matching trial inputs to
+  reconstruct that denominator.
 - `sum(0.0, 0.2)` means `[0, 200 ms)`. Arguments are **seconds**, and both
-  endpoints must match stored time edges.
+  endpoints must match stored time edges. It sums stored counts, or takes
+  the duration-weighted mean when the maps contain Hz.
+- Loading fills null/NaN bins with zero. RF detection uses one `max_zero_bins`
+  limit and includes those zeros in the spatial mean and SD.
 - MATLAB CSV/PDF exports sum the full generated time window, so they need not
   match a 0–200 ms view.
 
@@ -1113,7 +1120,7 @@ binaries.
 | Spikes and onsets use different time ranges | Check session identity, original timestamps, and independent zeroing; do not shift streams just to force overlap. |
 | MATLAB loads the wrong helper | Check `which ... -all` against `RF_MATLAB_DIR` and remove archived duplicates from the path. |
 | `FindInInterval` is unavailable | Use a compatible MEX binary or compile the supplied C source for the active MATLAB installation. |
-| Wrong session processed | Check the environment and `params`; remember that `RFmapping` resets its own settings and the regular core loops through session characters. |
+| Wrong session processed | Check the environment and `params`; `sessionList` takes integer IDs, and `RFmapping` resets its own settings. |
 | No good units appear | Check `cluster_KSLabel.tsv` and whether those IDs have spikes in this session. |
 | Bar coverage assertion fails | Verify the supported geometry, selected luminance, timing alignment, and actual horizontal coverage. |
 | `.rfmap` exists after a failed run | Load the source and inspect the failed stage; CSV/PDF export occurs after source writing. |

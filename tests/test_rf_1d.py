@@ -66,11 +66,10 @@ def test_rf_1d_saved_center_reuses_collapsed_result(tmp_path, monkeypatch):
         assert saved["center_2d"].shape == (1, 1, 30)
 
 
-def test_rf_1d_excludes_unpresented_and_all_nan_columns():
+def test_rf_1d_treats_unpresented_and_nan_columns_as_zero():
     values = np.zeros((2, 30))
     values[:, 5:8] = 10
     values[:, 20] = np.nan
-    values[0, 25] = 1000
     presentations = np.ones_like(values)
     presentations[0, 25] = 0
     rf_map = replace(asrfmap(np.zeros_like(values)), spike_counts=values[..., None],
@@ -78,6 +77,7 @@ def test_rf_1d_excludes_unpresented_and_all_nan_columns():
     expected = np.zeros(30, dtype=np.uint8)
     expected[5:8] = 1
     np.testing.assert_array_equal(rf_map.rf_1d(show_progress=False), expected)
+    np.testing.assert_array_equal(rf_map.to_1d_array(), np.nansum(values, axis=0))
 
 
 def test_rf_1d_batch_requires_matching_response_windows():
