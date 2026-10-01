@@ -16,7 +16,7 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     tc = tmp_path / "tuning_curves.json"
     tc.write_text(json.dumps({"metadata": {"angle_convention_note": "counter-clockwise"}}))
     before = tc.read_bytes()
-    # Hz: [[10, 6, NaN, NaN], [0, 6, NaN, NaN]]. Global maximum is
+    # Hz: [[10, 6, 0, 0], [0, 6, 0, 0]]. Global maximum is
     # x=-10; both raw-count maximum and horizontal projection favor x=10.
     counts = np.array([
         [[20, 30, 0, 0], [0, 6, 0, 0]],
@@ -30,6 +30,7 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
         unitsSpikeCounts=counts.tolist(), unitsSpikeCountsSize=list(counts.shape),
         unitPool=[7, 8, 9, 10, 12], xPositions=[-10, 10, 90, 150], yPositions=[-20, 20],
         timeBinEdges=[0., .2], occupancyTimeSec=[[2, 5, 0, 0], [1, 1, 0, 0]],
+        stimulusPresentationCounts=[[10, 25, 0, 0], [5, 5, 0, 0]],
     )))
     masks = np.zeros((2, 2, 4), dtype=bool)
     masks[1, 0, 1] = True  # Unit 7 is detected; its global maximum lies outside the mask.
@@ -43,11 +44,11 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     assert rows.loc[7, "rf_peak_y"] == -20.
     assert rows.loc[7, "rf_peak_hz"] == 10.
     assert rows.loc[7, "rf_saved_2d"] and not rows.loc[7, "rf_peak_in_saved_2d_mask"]
-    assert rows.loc[7, "rf_missing_bins"] == 4 and rows.loc[7, "peak_valid"]
+    assert rows.loc[7, "rf_zero_bins"] == 5 and rows.loc[7, "peak_valid"]
     assert rows.loc[8, "rf_peak_ties"] == 4 and rows.loc[8, "peak_valid"]
     assert rows.loc[8, "rf_peak_x_index"] == 0 and rows.loc[8, "rf_peak_y_index"] == 0
     assert rows.loc[9, "exclusion_reason"] == "no_positive_finite_rf_response"
-    assert rows.loc[10, "rf_zero_bins"] == 3 and rows.loc[10, "peak_valid"]
+    assert rows.loc[10, "rf_zero_bins"] == 7 and rows.loc[10, "peak_valid"]
     assert rows.loc[11, "exclusion_reason"] == "missing_rf_map"
     assert rows.loc[7, "hd_native_preferred_deg"] == 18.
     assert rows.loc[7, "hd_preferred_deg"] == 342.

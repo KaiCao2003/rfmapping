@@ -33,6 +33,7 @@ def test_rf_vertical_profile_uses_rates_and_differs_from_2d_max(tmp_path):
         "unitsSpikeCounts": counts.tolist(), "unitsSpikeCountsSize": list(counts.shape),
         "unitPool": [7], "xPositions": [-10, 10], "yPositions": [-20, 20],
         "timeBinEdges": [0, .2], "occupancyTimeSec": [[2, 1], [1, 1]],
+        "stimulusPresentationCounts": [[10, 5], [5, 5]],
     }))
     profiles, peaks = rf_vertical_profiles(path, mouse="m", date="d", probe="A", rf_type=None)
     np.testing.assert_array_equal(profiles.columns, [-20, 20])

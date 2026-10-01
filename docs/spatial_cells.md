@@ -77,11 +77,12 @@ and `metadata` is UTF-8 JSON stored as uint8, matching the regular RFMap schema.
 The metadata identifies `formatVersion = 2`, `storage = "indexed_npz"`, and
 `responseUnits = "Hz"`. The schema's required `occupancyTimeSec` array contains
 ones and is labeled `normalization_identity_for_precomputed_rates`; it is
-not measured occupancy. The reader returns these already-normalized rates
-unchanged, including when `unit_firing_rate=False`.
+not measured occupancy. The reader preserves these already-normalized finite
+rates, including when `unit_firing_rate=False`, and fills NaNs with zero.
 
-An angular bin with no finite values in the selected distance band stays NaN;
-an empty band produces an all-NaN curve. Visited bins with zero rates stay zero.
+On disk, an angular bin with no finite values in the selected distance band is
+NaN; an empty band produces an all-NaN curve. After RFMap loading both become
+ordinary zero bins. Visited bins with zero rates stay zero.
 No separate NPZ intermediates, metadata manifest, or figures are generated.
 Occupancy and spike counts are used in memory to calculate the final matrices.
 
@@ -122,7 +123,7 @@ donut_hole_fraction = 0.45  # Hole radius / outer radius, from 0 up to (but not 
 the circle, distance runs along the radius, and color shows the saved firing
 rate. The angle convention is 0° forward (top), 90° left, 180° back, and 270° right.
 The full matrix retains every distance bin; each distance-band file forms one
-colored radial band. Missing bins stay blank. `polar` uses the physical origin
+colored radial band. Bins filled during RFMap loading display as zero. `polar` uses the physical origin
 at 0 cm, so bands starting above 0 cm naturally leave the center empty.
 `donut` sets the hole to `donut_hole_fraction` of the outer radius by moving the
 display origin; the saved distances and cm tick labels stay unchanged.
@@ -144,10 +145,10 @@ figure to `save_path`.
 
 The final cell uses `Utils.plotting.plot_keyed_heatmap`, shared with
 `hd_rf_comparison.ipynb`. It first applies a `not_zero` filter to the saved matrices and
-their unit IDs, removing all-zero and entirely missing units before any
+their unit IDs, removing all-zero units before any
 projection, normalization, or peak sorting. It then sums each retained matrix
-over distance (ignoring unvisited bins) and normalizes each curve by its maximum.
-Entirely unvisited angular bins remain blank. All-zero and entirely missing
+over distance and normalizes each curve by its maximum.
+Unvisited angular bins are displayed as zero. All-zero
 profiles are excluded from the plot and listed in `excluded_unit_ids`;
 the cell prints displayed/excluded counts. If no unit has a nonzero response,
 the figure says so instead of drawing empty rows.

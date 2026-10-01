@@ -11,6 +11,9 @@ function RFmapping_core(params)
     date = params.date;
     probelist = params.probelist;
     sessionList = params.sessionList;
+    validateattributes(sessionList, {'numeric'}, ...
+        {'vector', 'integer', 'positive', 'finite'}, mfilename, 'params.sessionList');
+    sessionList = sessionList(:).';
     lum = params.lum;
 
     total_deg = params.total_deg;
@@ -67,7 +70,7 @@ function RFmapping_core(params)
 
 
     for session_raw = sessionList
-        session = ['_', session_raw];
+        session = sprintf('_%d', session_raw);
 
         sessionID = [date, session];
         
@@ -243,6 +246,8 @@ function RFmapping_core(params)
             end
             occupancyTimeSec = reshape(VisStim.duration.' * trialSpatialMask, ...
                 y_num, x_num);
+            stimulusPresentationCounts = reshape(full(sum(trialSpatialMask, 1)), ...
+                y_num, x_num);
 
             spikeTimesByUnit = RFmapping_group_spike_times(spikeTimes, spikeClusters, unitPool);
             RFmap = cell(unitNum, 1);
@@ -271,6 +276,17 @@ function RFmapping_core(params)
             rfmapMetadata.VSTimeWindow = VSTimeWindow;
             rfmapMetadata.timeBinWidthMs = timeBinWidthMs;
             rfmapMetadata.isVerticalBar = isVerticalBar;
+            rfmapMetadata.isBackgroundMoving = isBackgroundMoving;
+            rfmapMetadata.isAllocentricPixelBins = isAllocentricPixelBins;
+            rfmapMetadata.isRotation = isRotation;
+            rfmapMetadata.isFineResolution = isFineResolution;
+            rfmapMetadata.isUseRealCoordinate = isUseRealCoordinate;
+            rfmapMetadata.screenWidthPix = screenWidthPix;
+            rfmapMetadata.screenDeg = screenDeg;
+            rfmapMetadata.total_deg = total_deg;
+            rfmapMetadata.rotationOffsetSign = rotationOffsetSign;
+            rfmapMetadata.barBinWidthDeg = barBinWidthDeg;
+            rfmapMetadata.lum = lum;
             rfmapMetadata.responseUnits = 'spike_count';
             rfmapMetadata.responseNormalization = 'none';
             if isVerticalBar
@@ -352,7 +368,7 @@ function RFmapping_core(params)
             WriteRfmap(rfmapPath, rfmapMetadata, ...
                 unitPool, xPositionsForFile, yPositions, ...
                 linspace(VSTimeWindow(1), VSTimeWindow(2), nbins + 1), ...
-                occupancyTimeSec, RFmap, lumName);
+                occupancyTimeSec, stimulusPresentationCounts, RFmap, lumName);
             if params.runRfDetection
                 RFmapping_run_python(rfmapPath, probe, params);
             end
@@ -386,7 +402,7 @@ function RFmapping_core(params)
 end
 
 function WriteRfmap(fileName, metadata, unitPool, xPositions, yPositions, ...
-        timeBinEdges, occupancyTimeSec, RFmap, lumName)
+        timeBinEdges, occupancyTimeSec, stimulusPresentationCounts, RFmap, lumName)
     % NPZ schema: metadata is UTF-8 JSON in a uint8 NPY array; shared arrays
     % have their field names as keys. unit_<ID> stores float64 [y, x, time].
     % unitPool defines display order; ZIP indexes each unit independently.
@@ -402,6 +418,8 @@ function WriteRfmap(fileName, metadata, unitPool, xPositions, yPositions, ...
     WriteNpyEntry(archive, 'yPositions', yPositions, '<f8', numel(yPositions));
     WriteNpyEntry(archive, 'timeBinEdges', timeBinEdges, '<f8', numel(timeBinEdges));
     WriteNpyEntry(archive, 'occupancyTimeSec', occupancyTimeSec, '<f8', ...
+        metadata.unitsSpikeCountsSize(2:3));
+    WriteNpyEntry(archive, 'stimulusPresentationCounts', stimulusPresentationCounts, '<f8', ...
         metadata.unitsSpikeCountsSize(2:3));
 
     for k = 1:numel(unitPool)

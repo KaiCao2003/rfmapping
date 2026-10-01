@@ -18,8 +18,8 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
                     mouse="m19", date=260827, probe="A"):
     """Keep every existing Class 3 unit and audit undefined HD/RF peaks.
 
-    RF peak is the native full-map maximum after occupancy normalization and
-    the 0–200 ms time sum. Saved detection masks affect membership only.
+    RF peak is the native full-map maximum of the presentation-exposure rate
+    averaged over 0–200 ms. Saved detection masks affect membership only.
     Ties use the first native (y, x) position in row-major source order. For
     documented legacy counter-clockwise HD, negate only the extracted peak.
     """
@@ -49,7 +49,7 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
                    rf_ego_deg=np.nan, rf_peak_x=np.nan, rf_peak_y=np.nan,
                    rf_peak_hz=np.nan, rf_peak_ties=0, rf_peak_x_index=-1, rf_peak_y_index=-1,
                    rf_peak_in_saved_2d_mask=False, rf_finite_bins=0, rf_zero_bins=0,
-                   rf_missing_bins=0, hd_plus_rf_deg=np.nan, peak_valid=False)
+                   hd_plus_rf_deg=np.nan, peak_valid=False)
         reasons = []
         hd = hd_profiles.loc[unit].to_numpy(dtype=float)
         if not np.isfinite(hd).any() or np.nanmax(hd) <= 0:
@@ -67,7 +67,7 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
             rf_map = maps_by_id[unit]
             matrix = rf_map.to_2d_array()
             valid = np.isfinite(matrix)
-            row.update(rf_finite_bins=int(valid.sum()), rf_missing_bins=int((~valid).sum()),
+            row.update(rf_finite_bins=int(valid.sum()),
                        rf_zero_bins=int(np.sum(matrix[valid] == 0)))
             if not valid.any() or np.max(matrix[valid]) <= 0:
                 reasons.append("no_positive_finite_rf_response")
@@ -90,11 +90,11 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
         recording=recording, hd_source=str(hd_path), rf_source=str(rf_path),
         rf_detection_source=str(detection_path), selected_units=unit_ids.tolist(),
         hd_class=3, hd_bins=30, hd_smoothing_deg=0, rf_window_s=[0., .2],
-        rf_peak_method="global maximum of native full 2-D occupancy-normalized Hz map; no spatial projection, interpolation, smoothing or localization-mask restriction",
+        rf_peak_method="global maximum of native full 2-D response-window Hz map; no spatial projection, interpolation, smoothing or localization-mask restriction",
         rf_response_normalization="load_rf_maps(unit_firing_rate=True).sum(0, 0.2).to_2d_array() per unit",
         rf_detection_method="read saved excitatory mask_2d; any true bin marks a detected RF; no detection recomputation",
         peak_tie_rule="first native source-order HD bin; first row-major (y, x) RF bin; all tie counts reported",
-        quality_filters="None: missing/zero bin counts are audit columns only; exclude only missing RF maps or undefined positive finite HD/RF peaks",
+        quality_filters="None: zero bin counts are audit columns only; exclude only missing RF maps or undefined positive finite HD/RF peaks",
         hd_is_clockwise=bool(hd_is_clockwise), hd_angle_sign=1 if hd_is_clockwise else -1,
         hd_angle_conversion="native peak modulo 360" if hd_is_clockwise else "(-native TC peak) modulo 360; profile/classification unchanged",
         hd_source_angle_note=read_formatted_json(hd_path).get("metadata", {}).get("angle_convention_note"),

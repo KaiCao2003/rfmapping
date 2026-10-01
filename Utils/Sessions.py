@@ -124,6 +124,9 @@ class Session:
         *probes, self.continuous_ADC_folder = [
             e.get("folder_name").rstrip("/\\") for e in data.get("continuous")
         ]
+        assert "adc" in self.continuous_ADC_folder.lower(), (
+            f"Last continuous stream must be ADC, got {self.continuous_ADC_folder}"
+        )
         self.probe_count: int = len(probes)
 
         self.continuous_probe_A_folder, self.continuous_probe_B_folder, self.continuous_probe_C_folder, self.continuous_probe_D_folder = (

@@ -15,7 +15,6 @@ def main() -> None:
     parser.add_argument("--rf-type", choices=("excitatory", "inhibitory", "both"), default="excitatory",
                         help="Use 'both' to save excitatory and inhibitory results together")
     parser.add_argument("--time-range", nargs=2, type=float, default=(0.0, 0.2), metavar=("START", "STOP"))
-    parser.add_argument("--max-missing-bins", type=int, default=2)
     parser.add_argument("--max-zero-bins", type=int, default=2)
     parser.add_argument("--cluster-forming-z-2d", type=float,
                         help="Default: 1.5 for inhibitory, 1.8 for excitatory")
@@ -27,7 +26,7 @@ def main() -> None:
     args = parser.parse_args()
     analyses = analyze_rf_file(
         args.source, probe=args.probe, rf_type=args.rf_type, time_range_s=tuple(args.time_range),
-        max_missing_bins=args.max_missing_bins, max_zero_bins=args.max_zero_bins,
+        max_zero_bins=args.max_zero_bins,
         cluster_forming_z_2d=args.cluster_forming_z_2d,
         cluster_forming_z_1d=args.cluster_forming_z_1d, drop_bins=args.drop_bins,
         wrap_x=not args.no_wrap_x, collapse_from_2d=args.collapse_from_2d,

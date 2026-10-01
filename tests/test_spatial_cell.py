@@ -245,7 +245,7 @@ def test_rfmap_export_preserves_matrices_units_coordinates_and_nan(tmp_path):
         maps = load_rf_maps(path, **options)
         assert maps.shape == (2, 3, 2, 1)
         assert maps.unit_ids == [9, 7]
-        np.testing.assert_array_equal(maps.to_2d_array(), expected)
+        np.testing.assert_array_equal(maps.to_2d_array(), np.nan_to_num(expected))
         np.testing.assert_array_equal(maps[0].x_positions, [2, 7])
         np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 270])
         np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
@@ -293,7 +293,7 @@ def test_four_rfmap_exports_partition_bin_centers_and_preserve_missing_values(tm
     ]
     assert set(tmp_path.iterdir()) == set(paths)
     np.testing.assert_array_equal(values, original)
-    np.testing.assert_array_equal(load_rf_maps(paths[0]).to_2d_array(), values)
+    np.testing.assert_array_equal(load_rf_maps(paths[0]).to_2d_array(), np.nan_to_num(values))
     expected_curves = [
         [[3, 3, np.nan, 0], [6, 1, 0, np.nan]],
         [[4, np.nan, np.nan, 0], [8, 3, 0, np.nan]],
@@ -317,7 +317,7 @@ def test_four_rfmap_exports_partition_bin_centers_and_preserve_missing_values(tm
             maps = load_rf_maps(path, **options)
             assert maps.shape == (2, 4, 1, 1)
             assert maps.unit_ids == [9, 7]
-            np.testing.assert_array_equal(maps.to_2d_array()[:, :, 0], expected)
+            np.testing.assert_array_equal(maps.to_2d_array()[:, :, 0], np.nan_to_num(expected))
             np.testing.assert_array_equal(maps[0].x_positions, [np.mean(bounds)])
             np.testing.assert_array_equal(maps[0].y_positions, [45, 135, 225, 315])
             np.testing.assert_array_equal(maps[0].time_bin_edges_s, [5.0, 8.5])
@@ -335,7 +335,7 @@ def test_empty_distance_bands_save_missing_curves(tmp_path):
     for path, bounds in zip(paths[2:], ([8, 16], [16, 16])):
         maps = load_rf_maps(path)
         assert maps.shape == (1, 4, 1, 1)
-        assert np.isnan(maps.to_2d_array()).all()
+        assert (maps.to_2d_array() == 0).all()
         assert maps[0].metadata["distanceBinCentersCm"] == []
         assert maps[0].metadata["xBinEdges"] == bounds
 
@@ -452,7 +452,7 @@ def test_plotting_notebook_displays_unit_and_population_and_saves_when_requested
         "assert angle_profiles.shape == (3, 4)",
         "assert peak_bin.shape == (3,)",
         "expected_heatmap = np.array([",
-        "    [1, 0, 0, 0], [0, 1, 0.5, 0], [0.5, 0.25, 1, np.nan],",
+        "    [1, 0, 0, 0], [0, 1, 0.5, 0], [0.5, 0.25, 1, 0],",
         "])",
         "np.testing.assert_array_equal(",
         "    np.ma.filled(heatmap_axis.images[0].get_array(), np.nan), expected_heatmap,",

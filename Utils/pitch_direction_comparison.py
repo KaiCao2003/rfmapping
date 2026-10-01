@@ -185,7 +185,7 @@ def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
                          rf_type="2d", y_to_elevation_sign=-1):
     """Return native elevation profiles and the distinct 2-D maximum-bin elevation.
 
-    Rates are occupancy-normalized before summing [start, stop) and horizontal
+    Rates use presentation count and response-window duration, then sum horizontal
     positions. The stimulus PTB coordinate has positive Y downward, so elevation
     is -yPositions. No circular transform, smoothing, or baseline subtraction.
     """

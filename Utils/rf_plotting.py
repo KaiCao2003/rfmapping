@@ -4,11 +4,9 @@ from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
-from scipy.ndimage import gaussian_filter
-
 from Utils.plotting import LIGHT_PLOT_STYLE
 
-__all__ = ["plot_rf_unit", "plot_rf_population", "export_rf_units"]
+__all__ = ["rf_unit_plot_data", "rf_population_counts", "plot_rf_unit", "plot_rf_population", "export_rf_units"]
 
 
 def _finish_figure(fig, output_path, show):
@@ -38,20 +36,27 @@ def _heatmap(fig, ax, values, title, *, binary=False):
     fig.colorbar(image, ax=ax, label="RF mask" if binary else "Response")
 
 
-def plot_rf_unit(analysis, unit_id, *, title=None, output_path=None, show=True):
-    """Show the response, 2-D RF and center, and independent 1-D RF together."""
+def rf_unit_plot_data(analysis, unit_id):
+    """Extract one unit's arrays and calculate its horizontal response."""
     maps = analysis["summed"]
     index = maps.unit_ids.index(unit_id)
-    response = maps[index].to_2d_array()
-    response_1d = maps[index].to_1d_array("x")
-    mask_2d = analysis["mask_2d"][index]
-    mask_1d = analysis["mask_1d"][index]
+    return {
+        "unit_id": unit_id, "response": maps[index].to_2d_array(),
+        "response_1d": maps[index].to_1d_array("x"),
+        **{key: analysis[key][index] for key in ("mask_2d", "mask_1d", "center_2d", "center_1d")},
+    }
+
+
+def plot_rf_unit(data, *, title=None, output_path=None, show=True):
+    """Render supplied unit responses, RF masks, and centers."""
+    response, response_1d = data["response"], data["response_1d"]
+    mask_2d, mask_1d = data["mask_2d"], data["mask_1d"]
     with plt.rc_context(LIGHT_PLOT_STYLE):
         fig, axes = plt.subplots(2, 2, figsize=(11, 7), layout="constrained")
-        fig.suptitle(title or f"Unit {unit_id}")
+        fig.suptitle(title or f"Unit {data['unit_id']}")
         _heatmap(fig, axes[0, 0], response, "Response in detection window")
         _heatmap(fig, axes[0, 1], mask_2d, "2-D RF and center", binary=True)
-        rows, columns = np.nonzero(analysis["center_2d"][index])
+        rows, columns = np.nonzero(data["center_2d"])
         axes[0, 1].scatter(columns, rows, marker="x", color="#b91c1c", s=60)
         axes[1, 0].plot(response_1d, color="black")
         columns = np.flatnonzero(mask_1d)
@@ -59,7 +64,7 @@ def plot_rf_unit(analysis, unit_id, *, title=None, output_path=None, show=True):
         axes[1, 0].set(title="Horizontal response", xlabel="Column", ylabel="Response")
         axes[1, 0].legend()
         _heatmap(fig, axes[1, 1], mask_1d[None, :], "1-D RF and center", binary=True)
-        columns = np.flatnonzero(analysis["center_1d"][index])
+        columns = np.flatnonzero(data["center_1d"])
         axes[1, 1].scatter(columns, np.zeros(columns.size), marker="x", color="#b91c1c", s=60)
         _finish_figure(fig, output_path, show)
     return fig, axes
@@ -80,8 +85,8 @@ def _population_figure(counts, title, output_path, show):
     return fig, axes
 
 
-def plot_rf_population(analyses_by_probe, *, rf_type="excitatory", output_dir=None, show=True):
-    """Plot a selected RF type from the notebook's dual-type analysis results."""
+def rf_population_counts(analyses_by_probe, *, rf_type="excitatory"):
+    """Count masks and centers for each probe and their pooled population."""
     keys = ("mask_2d", "center_2d", "mask_1d", "center_1d")
     counts_by_probe = {
         probe: {key: analyses[rf_type][key].sum(axis=0, dtype=np.int64) for key in keys}
@@ -91,14 +96,13 @@ def plot_rf_population(analyses_by_probe, *, rf_type="excitatory", output_dir=No
         key: np.sum([counts[key] for counts in counts_by_probe.values()], axis=0)
         for key in keys
     }
-    counts_smoothed = {
-        key: gaussian_filter(values.astype(float), sigma=1.0, mode="nearest")
-        for key, values in counts_all.items()
-    }
-    panels = [(f"Probe{probe}", counts) for probe, counts in counts_by_probe.items()]
-    panels.extend((("all", counts_all), ("all_smoothed", counts_smoothed)))
+    return {**{f"Probe{probe}": counts for probe, counts in counts_by_probe.items()}, "all": counts_all}
+
+
+def plot_rf_population(counts_by_panel, *, rf_type="excitatory", output_dir=None, show=True):
+    """Render supplied population arrays, including any explicitly smoothed panel."""
     figures = {}
-    for name, counts in panels:
+    for name, counts in counts_by_panel.items():
         output_path = (
             _figure_dir(output_dir, rf_type) / name / "rf_summary"
             if output_dir is not None else None
@@ -114,8 +118,9 @@ def export_rf_units(analyses_by_probe, output_dir, *, rf_type="excitatory"):
     for probe, analyses in analyses_by_probe.items():
         analysis = analyses[rf_type]
         for unit_id in analysis["summed"].unit_ids:
+            data = rf_unit_plot_data(analysis, unit_id)
             plot_rf_unit(
-                analysis, unit_id, title=f"Probe{probe} · Unit {unit_id} · {rf_type} RF",
+                data, title=f"Probe{probe} · Unit {unit_id} · {rf_type} RF",
                 output_path=Path(output_dir) / "units" / probe / str(unit_id), show=False,
             )
             count += 1

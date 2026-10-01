@@ -24,26 +24,24 @@ def test_minimum_bin_keeps_source_ties_and_missing_curves():
     )
 
 
-@pytest.mark.parametrize("plot", [comparison.plot_sort, comparison.plot_align, comparison.plot_sum])
+@pytest.mark.parametrize("mode", ["native", "aligned", "sum"])
 @pytest.mark.parametrize("rf_first", [False, True])
-def test_pairing_uses_hd_maximum_and_rf_minimum_without_changing_curves(plot, rf_first):
+def test_pairing_uses_hd_maximum_and_rf_minimum_without_changing_curves(mode, rf_first):
     hd = pd.DataFrame([[0, 9, 3, 1], [2, 3, 9, 1]], index=[7, 11], columns=[-180, -90, 0, 90])
     rf = pd.DataFrame([[9, 6, 4, 1], [3, 1, 5, 9]], index=hd.index, columns=hd.columns)
     originals = hd.copy(), rf.copy()
     if rf_first:
-        result = plot(rf, hd, reference_min=True, show=False)
+        result = comparison.prepare_comparison(rf, hd, mode=mode, reference_min=True)
         assert result["order"] == [11, 7]
         np.testing.assert_array_equal(result["reference_peak_deg"], [-90, 90])
         np.testing.assert_array_equal(result["matched_peak_deg"], [0, -90])
     else:
-        result = plot(hd, rf, matched_min=True, show=False)
+        result = comparison.prepare_comparison(hd, rf, mode=mode, matched_min=True)
         assert result["order"] == [7, 11]
         np.testing.assert_array_equal(result["reference_peak_deg"], [-90, 0])
         np.testing.assert_array_equal(result["matched_peak_deg"], [90, -90])
     pd.testing.assert_frame_equal(hd, originals[0])
     pd.testing.assert_frame_equal(rf, originals[1])
-    for figure, _ in result["figures"]:
-        plt.close(figure)
 
 
 @pytest.mark.parametrize("is_batch", [False, True])

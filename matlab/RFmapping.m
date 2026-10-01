@@ -8,7 +8,6 @@ function RFmapping
     params.rfPythonExecutable = '/home/kai/.virtualenvs/rfmapping/bin/python';
     params.rfPythonScript = '/home/kai/Developer/rfmapping/locate_rf.py';
     params.rfTimeRange = [0 0.2];
-    params.maxMissingBins = 2;
     params.maxZeroBins = 2;
     params.clusterFormingZ2d = 1.8;
     params.clusterFormingZ1d = 1;
@@ -39,7 +38,7 @@ function RFmapping
     params.date = '260630';
     params.probelist = 'AB';
 
-    params.sessionList = '3';
+    params.sessionList = 3;
 
     % VS time window in seconds, relative to stimulus onset.
     % 

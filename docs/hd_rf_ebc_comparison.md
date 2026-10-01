@@ -8,7 +8,7 @@ Run project code on `hhw9l84` with `~/.virtualenvs/rfmapping`.
 ```python
 from Utils.direction_comparison import (
     load_tc, load_rf, load_ebc, hd_pick, rf_pick, combine,
-    normalize_tc, zscore_tc, plot_sort, plot_align, plot_sum, tcRange,
+    normalize_tc, zscore_tc, prepare_comparison, plot_comparison_heatmaps, tcRange,
 )
 
 recording = dict(mouse="m19", date=260827, probe="A")
@@ -19,20 +19,23 @@ rf_all = load_rf(rf_file, **recording, rf_type="2d",
 ebc = load_ebc(ebc_file, **recording, range=tcRange(True))
 
 hd = hd_pick(hd_all, hd_class=3)
-rf = rf_pick(rf_all, max_missing_bins=2, max_zero_bins=2)
+rf = rf_pick(rf_all, max_zero_bins=2)
 units = hd.index.intersection(rf.index)
 
 hd_normalized = normalize_tc(hd.loc[units])
 rf_normalized = normalize_tc(rf.loc[units])
 plot_options = dict(vmin=0, vmax=1, colorbar_label="Normalized response")
-native = plot_sort(hd_normalized, rf_normalized, **plot_options)
-aligned = plot_align(hd_normalized, rf_normalized, **plot_options)
-summed = plot_sum(hd_normalized, rf_normalized, is_wrap=True, **plot_options)
+native = prepare_comparison(hd_normalized, rf_normalized, mode="native")
+aligned = prepare_comparison(hd_normalized, rf_normalized, mode="aligned")
+summed = prepare_comparison(hd_normalized, rf_normalized, mode="sum", is_wrap=True)
+plot_comparison_heatmaps(native, **plot_options)
+plot_comparison_heatmaps(aligned, **plot_options)
+plot_comparison_heatmaps(summed, **plot_options)
 ```
 
 Loaders retain all source units and apply no smoothing by default. Filtering is
 optional and does not modify the full tables. Loading with `hd_class=3` or
-`max_missing_bins=2, max_zero_bins=2` gives the same selection as the corresponding `hd_pick` or
+`max_zero_bins=2` gives the same selection as the corresponding `hd_pick` or
 `rf_pick` call after loading. Neither loading nor filtering writes class-list files.
 
 Paths are read literally. Build repeated layouts with ordinary `str.format` or
@@ -48,7 +51,7 @@ The three public loaders return DataFrames with:
   when the source already has that grid;
 - `attrs["label"]` and `attrs["range"]` for plotting;
 - `attrs["unit_info"]` keyed by unit identity, retaining HD classification or
-  native RF missing-bin and zero-bin counts for later filtering.
+  native RF zero-bin counts for later filtering.
 
 `range` is a list of degree boundaries or tick labels and sets the actual
 30-bin angular grid. `tcRange(True)` returns the full-circle ego labels
@@ -58,7 +61,8 @@ The m14 RF override `range=[-150, 150]` instead uses 30 bins with centers −145
 through 145 degrees, spaced by 10 degrees. Its HD retains the full-circle grid.
 Internal angular columns stay in [-180, 180), including when labels use [0, 360].
 Partial angular ranges do not connect their two endpoints by circular
-interpolation or smoothing; unmeasured angles remain NaN.
+interpolation or smoothing. RF responses missing from the source or generated
+outside its angular support are zero; generic HD/EBC gaps remain NaN.
 
 `load_tc` rebins spike counts and occupancy to angular rates without smoothing.
 Zero-response, missing-data, and unclassified rows remain available in the full
@@ -88,19 +92,15 @@ their source values and order. A requested result file must exist; an absent fil
 raises `FileNotFoundError`. `load_rf_profiles` and the collection's RF reader
 accept the same `rf_type` option. The pair notebook exposes it as one parameter.
 
-`rf_pick(table, max_missing_bins=2, max_zero_bins=2)` permits
-at most two missing angular bins in the native 1-D projection, before interpolation
-or smoothing. A bin is missing when all contributing y bins are NaN or unmeasured;
-measured zeros count separately toward `max_zero_bins`. Occupancy and presentation
-metadata identify unmeasured positions when raw files store them as zero, so these
-positions count only as missing. Both limits use saved native counts before
-interpolation or smoothing. `None` disables the corresponding limit; the default
-`max_zero_bins=None` keeps measured zeros. The pair notebook explicitly sets both
-limits to 2, excluding curves with more than two measured zero bins, including
-entirely zero curves.
+`rf_pick(table, max_zero_bins=2)` permits at most two zero angular bins in
+its native horizontal projection, before interpolation or smoothing. Missing
+responses are loaded as zero and count toward the same limit. All zero values
+participate in response comparisons and statistics. `None` disables the limit.
+The native zero count is retained in `attrs["unit_info"]`; interpolation does
+not change QC membership.
 
-`load_ebc` projects every unit in the saved angular rate map, retaining zero and
-entirely missing curves. Source angles keep their direction and wrap to [-180, 180):
+`load_ebc` projects every unit in the saved angular rate map, retaining zero
+responses and loading missing source responses as zero. Source angles keep their direction and wrap to [-180, 180):
 90 stays 90 and 270 becomes −90. Other full-circle grids, including EBC's 60 bins,
 are periodically interpolated while retaining missing intervals. To switch
 between ego and allo labels on an existing full-circle table, use
@@ -113,7 +113,7 @@ values and angular extent. Changing the extent belongs in the loader's `range`.
 metadata. Tables sharing a grid retain the first table's bin order and display
 settings. For different grids, supply an explicit common `range`: the paired
 notebooks pool m14's partial RF grid and the other sessions on
-`range=tcRange(True)`. m14 angles outside ±150° remain NaN in that pooled table.
+`range=tcRange(True)`. m14 angles outside ±150° are zero in that pooled RF table.
 The pooled curves use 12-degree bins, so peaks extracted from them can differ
 from the native 10-degree m14 peaks; single-session plots use the native m14 grid.
 Combining probes from the same m14 session instead retains `range=[-150, 150]`.
@@ -124,12 +124,15 @@ returns the same table structure for further filtering or combination.
 hd_all = combine(hd_m19, hd_m20, label="Pooled HD")
 rf_all = combine(rf_m14, rf_m19, rf_m20, range=tcRange(True), label="Pooled RF")
 hd = hd_pick(hd_all, hd_class=3)
-rf = rf_pick(rf_all, max_missing_bins=2, max_zero_bins=2)
+rf = rf_pick(rf_all, max_zero_bins=2)
 units = hd.index.intersection(rf.index)
 
 # Optional numeric-ID selection; mouse/date/probe remain part of each key.
 units = units[units.get_level_values("unit_id").isin([10, 20])]
-pooled = plot_sort(normalize_tc(hd.loc[units]), normalize_tc(rf.loc[units]), **plot_options)
+hd_normalized = normalize_tc(hd.loc[units])
+rf_normalized = normalize_tc(rf.loc[units])
+pooled = prepare_comparison(hd_normalized, rf_normalized)
+plot_comparison_heatmaps(pooled, **plot_options)
 ```
 
 Unit identity excludes session because same-day sessions share spike sorting.
@@ -169,8 +172,10 @@ values = np.concatenate([hd_z.to_numpy().ravel(), rf_z.to_numpy().ravel()])
 finite = values[np.isfinite(values)]
 limit = float(np.max(np.abs(finite))) if finite.size else 1.0
 z_options = dict(cmap="RdBu_r", vmin=-limit, vmax=limit, colorbar_label="Z-score (SD)")
-z_native = plot_sort(hd_z, rf_z, **z_options)
-z_aligned = plot_align(hd_z, rf_z, **z_options)
+z_native = prepare_comparison(hd_z, rf_z)
+z_aligned = prepare_comparison(hd_z, rf_z, mode="aligned")
+plot_comparison_heatmaps(z_native, **z_options)
+plot_comparison_heatmaps(z_aligned, **z_options)
 ```
 
 Scale the final TC before alignment and before the duplicated boundary bin used
@@ -181,45 +186,41 @@ rates, counts, or information about constant curves.
 
 ## Plotting and statistics
 
-`plot_sort(reference, matched)`, `plot_align(reference, matched)` and
-`plot_sum(reference, matched)` require the same unit-key set in both inputs.
-Input row order may differ. Each function computes peaks and sorts by the first
-argument; swapping arguments changes the reference. A supplied `order` must contain
-all current keys exactly once. Plotting never intersects, filters, adds, or smooths
-rows; unequal sets raise an error so callers can correct the selection. Response
-scaling is always explicit: these functions and `plot_profiles` render the
-supplied values without normalizing or z-scoring them.
+`prepare_comparison(reference, matched, mode="native")` computes paired
+peaks, row order, and transformed tables. Inputs must contain the same unique
+unit-key set; an explicit `order` must be a permutation of those keys. The
+caller selects the overlap before calculation.
 
-- `plot_sort` keeps source angles.
-- `plot_align` subtracts the reference peak from both curves.
-- `plot_sum` centers the reference at zero and adds its peak to the matched curve.
+- `mode="native"` retains source angles.
+- `mode="aligned"` subtracts the reference peak from both curves.
+- `mode="sum"` centers the reference and adds its peak to the matched angles.
 
-Display options include `figsize=(10, 5)`, `labels=("Before", "After")`,
-`show=False`, `cmap`, `vmin`, `vmax`, and `colorbar_label`. The default colorbar
-label is `"Response"`; raw rates can use `"Firing rate (Hz)"` with appropriate
-limits. Set common limits explicitly when colors should be comparable between
-panels. Figures and exports use opaque white backgrounds and dark text.
-All rows are retained and labeled with their full unit keys. Empty selected tables display
-“No units to plot.” Rows without measured peaks remain missing.
+For inhibitory comparisons, choose `reference_min=True` or `matched_min=True`
+for the RF table while the HD table retains its maximum. Peak ties use the
+first source bin. `is_wrap=True` wraps sums to [-180, 180); False retains direct
+sums and uses a −360 through 360 degree matched panel.
 
-Peak sums are reference + matched. `is_wrap=True` wraps to [-180, 180);
-False retains direct sums and gives the matched sum panel a −360 through 360 degree
-range. Each call returns `order`, `peaks`, offsets, and two `(figure, axes)` pairs.
-With `show=False`, the caller closes returned figures.
+The returned dictionary contains `reference`, `matched`, `order`, `peaks`, and
+the offsets. `plot_comparison_heatmaps(prepared, ...)` renders those supplied
+tables without peak calculation, selection, normalization, smoothing, or
+alignment. It returns two `(figure, axes)` pairs. With `show=False`, the caller
+closes returned figures. `compare_both_orders` only calculates the two reference
+orders; its caller plots and writes the resulting tables explicitly.
 
-Use a result's `peaks` table and retain rows with both finite peaks for direction
-statistics. `compare_direction_angles` gives circular correlation and Spearman
-Mantel rho with permutation p values; `plot_direction_comparison` shows the same-unit
-scatter and pairwise circular-distance density. The notebooks use 10,000 permutations,
-seed 1, and skip these tests with fewer than three measured pairs.
-`plot_peak_direction_sums` gives a compact histogram with n, R, and Rayleigh p for
-circular concentration. The hand-written histograms in `tc_comparison_pairs.ipynb`
-retain the user-selected modulo-360° presentation.
+Display options include `figsize`, `labels`, `show`, `cmap`, `vmin`, `vmax`,
+`colorbar_label`, and `save_dir`. Use explicit common limits when comparing
+colors. Figures and exports have opaque white backgrounds and dark text.
 
-The name-based `compare_both_orders` helper remains available for the specialized
-notebook and requires an already-selected mapping with equal unit sets. Each
-notebook comparison cell constructs that mapping with explicitly normalized
-curves. It accepts the same color-scale options.
+Use the calculated `peaks` table for direction statistics.
+`compare_direction_angles` calculates circular correlation and Spearman Mantel
+rho with permutation p values; `plot_direction_comparison` renders supplied
+statistics. The paired notebooks use 10,000 permutations and seed 1, and skip
+these tests with fewer than three finite pairs.
+
+`peak_sum_statistics(peaks)` calculates histogram counts, n, R, and Rayleigh p;
+`plot_peak_direction_sums(summary)` only renders those values. The hand-written
+polar notebook histograms likewise calculate counts and the Rayleigh test before
+plotting. Their presentation retains the chosen modulo-360° angles.
 
 ## Saved inputs for specialized analyses
 

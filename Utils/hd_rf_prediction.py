@@ -199,7 +199,7 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
         )
         hd.loc[:, :] = profiles.loc[hd.index.get_level_values("unit_id")].to_numpy()
     detected = load_rf(rf_path, **recording, rf_type="2d", window=(0., .2), smoothing_bins=0)
-    count_profiles = rf_pick(detected, max_missing_bins=2, max_zero_bins=2)
+    count_profiles = rf_pick(detected, max_zero_bins=2)
     rate_maps = load_rf_maps(rf_path, unit_firing_rate=True).sum(0., .2, show_progress=False)
     rates = profile_table(rate_maps.to_1d_array(axis="x"), rate_maps.unit_ids,
                           rate_maps[0].x_positions, probe=probe)
@@ -219,11 +219,11 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
                       hd_source=str(hd_path), rf_source=str(rf_path), selected_units=pairs.unit_id.tolist(),
                       hd_class=3, hd_bins=30, hd_smoothing_deg=0, rf_window_s=[0., .2],
                       rf_detection="excitatory 2d", rf_smoothing_bins=0,
-                      rf_max_missing_bins=2, rf_max_zero_bins=2,
+                      rf_max_zero_bins=2,
                       peak_method="argmax on the paired notebook's 30-bin profiles; first source-order maximum for ties",
-                      rf_projection="occupancy-normalized Hz, sum over elevation, then existing periodic interpolation to 30 bins",
+                      rf_projection="presentation-exposure-normalized response-window Hz, sum over elevation, then periodic interpolation to 30 bins",
                       rf_response_normalization="load_rf_maps(unit_firing_rate=True).sum(0, 0.2).to_1d_array(axis='x')",
-                      rf_peaks_changed_by_occupancy_normalization=int(np.count_nonzero(
+                      rf_peaks_changed_by_rate_normalization=int(np.count_nonzero(
                           wrap_deg(pairs.rf_ego_deg - pairs.rf_count_peak_deg))),
                       hd_class3_units=len(hd), rf_detected_units=len(detected),
                       rf_quality_units=len(rf), shared_units=len(shared), finite_nonflat_pairs=len(pairs),
@@ -299,7 +299,7 @@ def plot_fit_diagnostics(path, pairs, model, grid, predictions):
         note = (f"Kernel κ={model['kappa']:g}; nested leave-one-neuron-out MAE {kernel_mae:.1f}°.  "
                 f"Fixed-allo LOO MAE {fixed_mae:.1f}°; constant-RF LOO MAE {constant_mae:.1f}°.\n"
                 "Across-neuron association evaluated on behavioral HD; not measured within-neuron RF motion.\n"
-                "RF: occupancy-normalized 0–200 ms response summed over elevation; existing paired-analysis bin quality filters.")
+                "RF: 0–200 ms response-window Hz summed over elevation; existing paired-analysis bin quality filters.")
         fig.text(.065, .03, note, fontsize=8.5, color="#344454")
         fig.subplots_adjust(left=.065, right=.98, top=.85, bottom=.25, wspace=.24)
         fig.savefig(path, dpi=180, facecolor="white", transparent=False)

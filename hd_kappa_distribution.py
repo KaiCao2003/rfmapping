@@ -76,7 +76,7 @@ def collect_units(root):
             # This cutoff audit includes both classes that pass the significance tests.
             hd_significant = hd_pick(hd, hd_class=(2, 3))
             rf = load_rf(rf_path, **recording, rf_type="2d")
-            paired = hd_significant.index.intersection(rf_pick(rf, max_missing_bins=2, max_zero_bins=2).index)
+            paired = hd_significant.index.intersection(rf_pick(rf, max_zero_bins=2).index)
             for index, (unit_id, curve) in enumerate(zip(data["unit_id"], rates, strict=True)):
                 key = (mouse, str(date), probe, unit_id)
                 info = data["unit_data"]

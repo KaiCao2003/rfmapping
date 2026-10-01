@@ -43,6 +43,32 @@ def test_m14_loader_preserves_native_thirty_ten_degree_bins(tmp_path):
     assert comparison.peak_angles(result, result.index)[0] == 145.
 
 
+def test_rf_source_null_nan_and_zero_use_one_native_zero_limit(tmp_path):
+    counts = np.ones((3, 1, 30, 1))
+    counts[0, 0, :2, 0] = np.nan
+    counts[1, 0, :3, 0] = np.nan
+    counts[2, 0, :2, 0] = 0
+    payload = counts.tolist()
+    payload[0][0][0][0] = None
+    path = tmp_path / "rf.json"
+    path.write_text(json.dumps({
+        "unitsSpikeCounts": payload, "unitsSpikeCountsSize": list(counts.shape),
+        "unitPool": [7, 11, 13], "xPositions": np.arange(-145., 150., 10.).tolist(),
+        "yPositions": [0.], "timeBinEdges": [0., .2],
+    }))
+    profiles = comparison.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
+    assert not profiles.isna().any().any()
+    assert [info["zero_bins"] for info in profiles.attrs["unit_info"].values()] == [2, 3, 2]
+    assert comparison.rf_pick(profiles).index.get_level_values("unit_id").tolist() == [7, 13]
+    assert len(comparison.rf_pick(profiles, max_zero_bins=None)) == 3
+
+    pooled = comparison.combine(profiles, range=comparison.tcRange(True))
+    assert not pooled.isna().any().any()
+    assert pooled.iloc[:, np.abs(pooled.columns) > 150].eq(0).all().all()
+    # QC uses the native zero count rather than zeros added by angular conversion.
+    assert comparison.rf_pick(pooled).index.get_level_values("unit_id").tolist() == [7, 13]
+
+
 def test_default_hd_preserves_source_order_for_tied_peaks(monkeypatch):
     angles = np.arange(6., 360., 12.)
     values = np.ones(30)

@@ -118,32 +118,40 @@ One pooled regular RF source stores counts in this order:
 `load_rf_maps()` returns an ordered `RFMapList`. Each item is one `RFMap` with
 shape `(y, x, time)`.
 
-By default, loading divides `unitsSpikeCounts` by the spatial
-`occupancyTimeSec`, producing firing-rate values in Hz without changing any
-array shape. Pass `unit_firing_rate=False` to keep raw spike counts. Raw mode
-is required when `load_regular_rf_trials()` validates reconstructed counts.
-The returned metadata describes the loaded values: `responseUnits` is
-`spike_count` or `Hz`, and conversion to Hz sets `responseNormalization` to
-`occupancyTimeSec`. Sources already stored in Hz retain their normalization.
+By default, loading converts `unitsSpikeCounts` to Hz using
+`count / (stimulusPresentationCounts * time_bin_width_seconds)`.
+New sources save presentation counts at each position. For historical files,
+the loader reconstructs them from the matching session's MAT stimulus records
+and `data/on_list_times.npy`, checks the reconstructed display time against
+`occupancyTimeSec`, and records that provenance. A detached historical file
+without those inputs can still be loaded as raw counts with
+`unit_firing_rate=False`; Hz conversion requires the exposure information.
+Historical reconstruction supports the regular, bar, allocentric, moving,
+and rotation geometries; legacy free-moving maps require saved presentation
+counts. A reconstruction that disagrees with saved exposure is rejected.
+Raw mode is also required for `load_regular_rf_trials()` count validation.
 
-Zero-occupancy positions remain NaN in rate maps and are excluded from
-non-shuffle RF detection. One-dimensional projections sum observed values;
-a projected bin with no observed values remains NaN.
+`sum(start, stop)` adds counts in raw mode. In Hz mode it returns the
+time-weighted mean rate, equivalent to total window counts divided by
+presentation count and window duration. It handles unequal time-bin widths.
+The returned metadata uses `responseUnits="Hz"` and
+`responseNormalization="presentation_count_time"`. Precomputed rate maps
+tagged `already_normalized`, such as EBC maps, retain their Hz values. Legacy
+rates tagged `occupancyTimeSec` are converted through their original counts.
 
-`occupancyTimeSec` is the display time at each position: the sum of the
-qualifying trials' show times, or `show_time * trial_count` when show time is
-constant. This is the normalization denominator even when the selected
-response window is longer or shorter than show time. Non-shuffle detection
-uses the loaded values directly, without another division by presentation
-counts. Loading raw counts therefore also leaves those counts unnormalized
-when detecting a non-shuffle RF.
+Loading replaces null/NaN responses with zero, including unpresented
+positions. These zeros participate in projections, means, SDs, and standard
+RF detection. There is no separate missing-bin filter. `occupancyTimeSec`
+remains the sum of stimulus display durations; it is source metadata rather
+than the response-window denominator. Non-shuffle detection uses the loaded
+values directly without dividing by presentation counts again.
 
 Pass `exclude_zero_bins=True` to a non-shuffle RF method to compute each unit's
 spatial mean and population SD from its finite, nonzero response bins only.
-Missing and zero bins retain their original grid locations and cannot enter
+Zero bins retain their original grid locations and cannot enter
 the RF mask or be selected as its center. For independent 1-D detection, this
 filter applies after summing onto the requested axis. The default is `False`,
-which retains observed zero responses; trial-label shuffle tests do not support
+which retains all zero responses; trial-label shuffle tests do not support
 this filter.
 
 | Value | `RFMapList` shape | One `RFMap` shape | Meaning |
@@ -452,13 +460,11 @@ Population figures show each probe, the pooled population, and smoothed
 display maps. Unit export saves one combined response/mask/center figure per
 unit as PNG and SVG without filling the notebook with inline figures.
 
-The notebook defaults to `max_missing_bins=2` and `max_zero_bins=2`. A unit
-continues only when both counts are at or below their respective limits and
-at least one finite, nonzero response bin remains. Missing bins have nonfinite
-responses or no stimulus exposure; zero bins have an observed response of zero
-in the selected time window. The counts do not overlap. Both RF detections use
-`exclude_zero_bins=True`, so a 7-by-30 map with two zero bins and no missing
-bins uses the remaining 208 responses for its spatial mean and population SD.
+The notebook defaults to `max_zero_bins=2`. A unit continues when its total
+zero-bin count is at most two and at least one nonzero response bin remains.
+This count includes positions loaded from null/NaN. Both RF detections use
+`exclude_zero_bins=False`, so a retained 7-by-30 map uses all 210 responses,
+including zeros, for its spatial mean and population SD.
 `rf_bin_qc_by_probe` records the unit IDs, bin counts, and selection masks.
 
 ## MATLAB and notebook shared analysis
@@ -483,7 +489,6 @@ params.runRfDetection = true;
 params.rfPythonExecutable = '/home/kai/.virtualenvs/rfmapping/bin/python';
 params.rfPythonScript = '/home/kai/Developer/rfmapping/locate_rf.py';
 params.rfTimeRange = [0 0.2];
-params.maxMissingBins = 2;
 params.maxZeroBins = 2;
 params.clusterFormingZ2d = 1.8;
 params.clusterFormingZ1d = 1;
@@ -693,7 +698,7 @@ writable = np.array(mask_2d, copy=True)
 
 | API | Returns | Purpose |
 | --- | --- | --- |
-| `load_rf_maps(path, unit_firing_rate=True)` | `RFMapList` | Load firing rates (`count / occupancyTimeSec`) by default; pass `False` for raw counts |
+| `load_rf_maps(path, unit_firing_rate=True)` | `RFMapList` | Load Hz (`count / (presentation_count * bin_width_seconds)`) by default; pass `False` for raw counts |
 | `asrfmap(array, ...)` | `RFMap` | Validate one standalone array |
 | `rf_map.sum(start, end)` | `RFMap` | Sum a half-open response window |
 | `rf_map(earlier_s=None, later_s=None)` | `RFMap` | Callable shorthand for `sum()`, with omitted bounds resolved to the available edges |
