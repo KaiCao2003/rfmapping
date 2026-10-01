@@ -797,6 +797,17 @@ params.probelist = getenv('RF_PROBES');
 
 % Good units and regular square-stimulus geometry.
 params.onlyReadGoodUnits = true;
+params.runRfDetection = true;
+params.rfPythonExecutable = '/home/kai/.virtualenvs/rfmapping/bin/python';
+params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
+params.rfTimeRange = [0 0.2];
+params.maxMissingBins = 2;
+params.maxZeroBins = 2;
+params.clusterFormingZ2d = 1.8;
+params.clusterFormingZ1d = 1;
+params.dropBins = 2;
+params.rfWrapX = true;
+params.rfCollapseFrom2d = false;
 params.isBackgroundMoving = false;
 params.isAllocentricPixelBins = false;
 params.isRotation = false;

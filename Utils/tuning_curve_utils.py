@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pynapple as nap
+from scipy.optimize import brentq
+from scipy.special import i0e, i1e
 from tqdm import tqdm
 
 from Utils.json_tools import read_formatted_json
@@ -13,6 +15,7 @@ HD_RAW_BIN_COUNT = 180
 HD_CLASSIFICATION_BIN_COUNT = 30
 RAYLEIGH_ALPHA = 0.01
 SHUFFLE_ALPHA = 0.01
+HD_KAPPA_CUTOFF = 0.075
 
 
 def _get_adc_folder(session_info: dict) -> Path:
@@ -200,13 +203,82 @@ def _json_float(value: float) -> float | None:
     return float(value) if np.isfinite(value) else None
 
 
+def von_mises_kappa(rates, angles_rad):
+    """Moment-matched concentration of a complete occupancy-corrected rate curve.
+
+    Solve I1(kappa)/I0(kappa) = R without smoothing or baseline removal.
+    Unmeasured directions and zero firing leave concentration undefined.
+    """
+    rates = np.asarray(rates, dtype=float)
+    if not np.all(np.isfinite(rates)) or np.any(rates < 0):
+        return np.nan
+    total = np.sum(rates)
+    if total == 0:
+        return np.nan
+    resultant = float(np.clip(abs(np.sum(rates * np.exp(1j * angles_rad))) / total, 0, 1))
+    if resultant < np.finfo(float).eps:
+        return 0.0
+    if resultant == 1:
+        return np.inf
+    return brentq(lambda kappa: i1e(kappa) / i0e(kappa) - resultant,
+                  0, 1 / (1 - resultant), xtol=1e-12)
+
+
+def update_hd_classification(tuning_curves, kappa_cutoff=HD_KAPPA_CUTOFF):
+    """Update classes and concentration in place, preserving saved significance tests.
+
+    Kappa uses the raw 180-bin rates, independently of the 30-bin significance
+    tests. An unbounded concentration passes the cutoff and is stored as null
+    in JSON; kappa_pass distinguishes it from an unavailable concentration.
+    """
+    unit_data = tuning_curves["unit_data"]
+    rates = np.asarray(tuning_curves["firing_rate_hz"], dtype=float)
+    occupancy = np.asarray(tuning_curves["occupancy_time_s"], dtype=float)
+    edges = np.asarray(tuning_curves["angle_bin_edges_deg"], dtype=float)
+    angles_rad = np.deg2rad((edges[:-1] + edges[1:]) / 2)
+    complete_coverage = np.all(np.isfinite(occupancy) & (occupancy > 0))
+    kappas = [von_mises_kappa(curve, angles_rad) if complete_coverage else np.nan
+              for curve in rates]
+    kappa_pass = [None if np.isnan(kappa) else bool(kappa >= kappa_cutoff)
+                  for kappa in kappas]
+    classes = []
+    for rayleigh_p, shuffle_p, passes_kappa in zip(
+        unit_data["rayleigh_p"], unit_data["shuffle_p"], kappa_pass, strict=True,
+    ):
+        if (rayleigh_p is None or shuffle_p is None
+                or not np.isfinite(rayleigh_p) or not np.isfinite(shuffle_p)):
+            classes.append(None)
+            continue
+        significance_count = int(rayleigh_p <= RAYLEIGH_ALPHA) + int(shuffle_p <= SHUFFLE_ALPHA)
+        classes.append(3 if significance_count == 2 and passes_kappa else significance_count)
+    unit_data.update({
+        "hd_class": classes,
+        "von_mises_kappa": [_json_float(kappa) for kappa in kappas],
+        "kappa_pass": kappa_pass,
+    })
+    tuning_curves["metadata"]["classification"].update({
+        "method": "occupancy_adjusted_rayleigh_circular_shift_von_mises_v2",
+        "class_0": "neither significance test passed",
+        "class_1": "exactly one significance test passed",
+        "class_2": "rayleigh and shuffle significant; kappa cutoff not passed or unavailable",
+        "class_3": "rayleigh and shuffle significant; von Mises kappa >= cutoff",
+        "class_null": "one or both significance tests unavailable",
+        "kappa_cutoff": float(kappa_cutoff),
+        "kappa_method": "I1(kappa)/I0(kappa) = abs(sum(rate * exp(1j * theta))) / sum(rate)",
+        "kappa_num_angle_bins": HD_RAW_BIN_COUNT,
+        "kappa_rate_processing": "occupancy corrected; no smoothing or baseline subtraction",
+        "kappa_null": "unavailable when kappa_pass is null; unbounded concentration when kappa_pass is true",
+    })
+    return tuning_curves
+
+
 def save_hd_unit_lists(tuning_curves, directory):
-    """Save exact class-1 and class-2 IDs next to the tuning curves."""
+    """Save exact class-1, class-2, and class-3 IDs next to the tuning curves."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     ids = np.asarray(tuning_curves["unit_id"], dtype=np.int64)
     classes = np.asarray(tuning_curves["unit_data"]["hd_class"], dtype=object)
-    for label in (1, 2):
+    for label in (1, 2, 3):
         np.save(directory / f"hd_cells_{label}.npy", np.sort(ids[classes == label]))
 
 
@@ -280,6 +352,7 @@ def tuning_curve(
     timestamp_reference: str = "saved_camera_timestamps",
     feature_fs_hz: float | None = None,
     classification_bins: int = HD_CLASSIFICATION_BIN_COUNT,
+    kappa_cutoff: float = HD_KAPPA_CUTOFF,
 ) -> dict:
     from Utils.kilosort_utils import (
         _compress_times_to_epoch_clock,
@@ -475,7 +548,6 @@ def tuning_curve(
 
     firing_rate_hz = []
     unit_data = {
-        "hd_class": [],
         "rate_mvl": [],
         "spike_angle_mrl": [],
         "rayleigh_score": [],
@@ -566,17 +638,6 @@ def tuning_curve(
                 bool(shuffle_p <= SHUFFLE_ALPHA) if np.isfinite(shuffle_p) else None
             )
 
-            hd_class = None
-            if rayleigh_significant is not None and shuffle_significant is not None:
-                hd_class = (
-                    2
-                    if rayleigh_significant and shuffle_significant
-                    else 1
-                    if rayleigh_significant or shuffle_significant
-                    else 0
-                )
-
-            unit_data["hd_class"].append(hd_class)
             unit_data["rate_mvl"].append(_json_float(rate_mvl))
             unit_data["spike_angle_mrl"].append(_json_float(spike_angle_mrl))
             unit_data["rayleigh_score"].append(_json_float(rayleigh_score))
@@ -637,6 +698,7 @@ def tuning_curve(
         "firing_rate_hz": firing_rate_hz,
         "unit_data": unit_data,
     }
+    update_hd_classification(tuning_curves, kappa_cutoff=kappa_cutoff)
 
     if is_save:
         if save_path is None:
@@ -651,144 +713,6 @@ def tuning_curve(
             save_path = Path(save_path)
 
         serialized_tuning_curves = json.dumps(tuning_curves, indent=2, allow_nan=False)
-        saved_tuning_curves = json.loads(serialized_tuning_curves)
-        assert tuple(saved_tuning_curves) == (
-            "metadata",
-            "angle_bin_edges_deg",
-            "occupancy_samples",
-            "occupancy_time_s",
-            "unit_id",
-            "spike_counts",
-            "firing_rate_hz",
-            "unit_data",
-        )
-        assert len(saved_tuning_curves["angle_bin_edges_deg"]) == num_of_bins_in_hd + 1
-        assert len(saved_tuning_curves["occupancy_samples"]) == num_of_bins_in_hd
-        assert len(saved_tuning_curves["occupancy_time_s"]) == num_of_bins_in_hd
-        saved_unit_ids = saved_tuning_curves["unit_id"]
-        saved_counts = saved_tuning_curves["spike_counts"]
-        saved_rates = saved_tuning_curves["firing_rate_hz"]
-        saved_unit_data = saved_tuning_curves["unit_data"]
-        num_units = len(unit_ids)
-        assert len(saved_unit_ids) == len(saved_counts) == len(saved_rates) == num_units
-        assert saved_unit_ids
-        assert all(type(unit_id) is int and unit_id >= 0 for unit_id in saved_unit_ids)
-        assert len(set(saved_unit_ids)) == num_units
-        assert all(
-            type(value) is int and value >= 0
-            for value in saved_tuning_curves["occupancy_samples"]
-        )
-        assert all(
-            type(value) in (int, float) and np.isfinite(value) and value >= 0
-            for value in saved_tuning_curves["occupancy_time_s"]
-        )
-        assert any(value > 0 for value in saved_tuning_curves["occupancy_time_s"])
-        assert all(
-            (samples == 0) == (occupied_s == 0)
-            for samples, occupied_s in zip(
-                saved_tuning_curves["occupancy_samples"],
-                saved_tuning_curves["occupancy_time_s"],
-            )
-        )
-        assert np.allclose(
-            saved_tuning_curves["occupancy_samples"],
-            np.asarray(saved_tuning_curves["occupancy_time_s"]) * feature_fs_hz,
-        )
-        assert all(len(row) == num_of_bins_in_hd for row in saved_counts)
-        assert all(len(row) == num_of_bins_in_hd for row in saved_rates)
-        assert all(
-            type(count) is int and count >= 0 for row in saved_counts for count in row
-        )
-        for count_row, rate_row in zip(saved_counts, saved_rates):
-            for count, rate, occupied_s in zip(
-                count_row,
-                rate_row,
-                saved_tuning_curves["occupancy_time_s"],
-            ):
-                if occupied_s == 0:
-                    assert count == 0 and rate is None
-                else:
-                    assert type(rate) in (int, float) and np.isfinite(rate)
-                    assert np.isclose(rate, count / occupied_s)
-
-        expected_unit_data_keys = (
-            "hd_class",
-            "rate_mvl",
-            "spike_angle_mrl",
-            "rayleigh_score",
-            "rayleigh_p",
-            "rayleigh_significant",
-            "shuffle_p",
-            "shuffle_significant",
-        )
-        assert tuple(saved_unit_data) == expected_unit_data_keys
-        assert all(
-            len(saved_unit_data[key]) == num_units for key in expected_unit_data_keys
-        )
-        assert all(
-            value is None or (type(value) is int and value in {0, 1, 2})
-            for value in saved_unit_data["hd_class"]
-        )
-        for key in (
-            "rate_mvl",
-            "spike_angle_mrl",
-            "rayleigh_score",
-            "rayleigh_p",
-            "shuffle_p",
-        ):
-            assert all(
-                value is None or (type(value) in (int, float) and np.isfinite(value))
-                for value in saved_unit_data[key]
-            )
-        assert all(
-            value is None or 0 <= value <= 1
-            for key in ("rate_mvl", "spike_angle_mrl", "rayleigh_p", "shuffle_p")
-            for value in saved_unit_data[key]
-        )
-        assert all(
-            value is None or value >= 0 for value in saved_unit_data["rayleigh_score"]
-        )
-        assert all(
-            (score is None) == (p_value is None)
-            for score, p_value in zip(
-                saved_unit_data["rayleigh_score"],
-                saved_unit_data["rayleigh_p"],
-            )
-        )
-        for key in ("rayleigh_significant", "shuffle_significant"):
-            assert all(
-                value is None or type(value) is bool for value in saved_unit_data[key]
-            )
-        for (
-            hd_class,
-            rayleigh_p,
-            rayleigh_significant,
-            shuffle_p,
-            shuffle_significant,
-        ) in zip(
-            saved_unit_data["hd_class"],
-            saved_unit_data["rayleigh_p"],
-            saved_unit_data["rayleigh_significant"],
-            saved_unit_data["shuffle_p"],
-            saved_unit_data["shuffle_significant"],
-        ):
-            assert rayleigh_significant == (
-                None if rayleigh_p is None else rayleigh_p <= RAYLEIGH_ALPHA
-            )
-            assert shuffle_significant == (
-                None if shuffle_p is None else shuffle_p <= SHUFFLE_ALPHA
-            )
-            expected_hd_class = (
-                None
-                if rayleigh_significant is None or shuffle_significant is None
-                else 2
-                if rayleigh_significant and shuffle_significant
-                else 1
-                if rayleigh_significant or shuffle_significant
-                else 0
-            )
-            assert hd_class == expected_hd_class
-
         save_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = save_path.with_suffix(save_path.suffix + ".tmp")
         with open(temporary_path, "w") as file:

@@ -71,33 +71,6 @@ def d(theta_deg, center_x, center_y, head_direction_deg, *, bounds=None):
     return np.minimum(distance_x, distance_y)
 
 
-def compute_2d_map(
-        coordinate_1,
-        coordinate_2,
-        coordinate_1_edges,
-        coordinate_2_edges,
-        frame_weights,
-):
-    coordinate_1, coordinate_2 = np.broadcast_arrays(
-        coordinate_1,
-        coordinate_2,
-    )
-    weight_shape = (len(frame_weights),) + (1,) * (
-            coordinate_1.ndim - 1
-    )
-    weights = np.broadcast_to(
-        np.asarray(frame_weights).reshape(weight_shape),
-        coordinate_1.shape,
-    )
-
-    return np.histogram2d(
-        coordinate_1.ravel(),
-        coordinate_2.ravel(),
-        bins=[coordinate_1_edges, coordinate_2_edges],
-        weights=weights.ravel(),
-    )[0]
-
-
 def compute_rate_map(
         spike_map,
         smoothed_occupancy,
@@ -312,8 +285,6 @@ def prepare_session_maps(pose, pose_times):
     )
     return {
         "frame_times": pose_times,
-        "theta_grid": theta_grid,
-        "theta_d_cm": theta_d_cm,
         "theta_edges": theta_edges,
         "distance_edges": distance_edges,
         "spike_projection": projection,

@@ -47,12 +47,14 @@ def plot_keyed_heatmap(
     row_by_key, unit_key_sequence, *, column_order, xticks, xticklabels,
     xlabel="Direction (°)", title=None,
     show=True, empty_message="No units to plot.", angle_centers=None, figsize=(10, 6),
+    cmap="viridis", vmin=None, vmax=None, colorbar_label="Response",
 ):
     """Plot keyed angular profiles in the supplied row and column order.
 
-    Keys may be unit IDs or tuples identifying the recording, probe, and unit. Each row is normalized by
-    its maximum, with missing bins kept blank. Filtering and peak sorting
-    belong to the caller. Tick endpoints define the displayed angular extent;
+    Keys may be unit IDs or tuples identifying the recording, probe, and unit.
+    Values are displayed as supplied, with missing bins kept blank. Normalization,
+    filtering, and peak sorting belong to the caller.
+    Tick endpoints define the displayed angular extent;
     labels may show a different angular convention at those same positions.
     Every row is labeled with its unit key; figsize controls the figure size.
     """
@@ -62,13 +64,6 @@ def plot_keyed_heatmap(
         if n_units:
             data = np.stack([row_by_key[key] for key in unit_key_sequence])
             data = data[:, column_order].astype(float)
-            finite = np.isfinite(data)
-            row_max = np.max(np.where(finite, data, -np.inf), axis=1, keepdims=True)
-            data = np.divide(
-                data, row_max, out=np.zeros_like(data),
-                where=np.isfinite(row_max) & (row_max != 0),
-            )
-            data[~finite] = np.nan
             extent = [xticks[0], xticks[-1], n_units - 0.5, -0.5]
             if angle_centers is not None:
                 step = angle_centers[1] - angle_centers[0]
@@ -76,11 +71,11 @@ def plot_keyed_heatmap(
             image = ax.imshow(
                 data,
                 aspect="auto",
-                cmap="viridis",
+                cmap=cmap,
                 interpolation="nearest",
                 origin="upper",
                 extent=extent,
-                vmin=0, vmax=1,
+                vmin=vmin, vmax=vmax,
             )
             ax.set_yticks(range(n_units))
             ax.set_yticklabels([
@@ -91,7 +86,7 @@ def plot_keyed_heatmap(
             ax.set_xlim(xticks[0], xticks[-1])
             ax.set_xlabel(xlabel)
             ax.set_ylabel("Unit ID")
-            fig.colorbar(image, ax=ax, label="Normalized response")
+            fig.colorbar(image, ax=ax, label=colorbar_label)
         else:
             ax.text(0.5, 0.5, empty_message, ha="center", va="center")
             ax.set_axis_off()

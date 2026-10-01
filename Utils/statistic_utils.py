@@ -56,19 +56,27 @@ def compare_direction_angles(
     if not np.all(np.isfinite(reference_deg)) or not np.all(np.isfinite(matched_deg)):
         raise ValueError("direction comparisons require finite peak angles")
 
-    def permutation_p(values, statistic):
+    def permutation_p(values, statistic, *, batch):
         result = permutation_test(
-            (values,), statistic, permutation_type="pairings", vectorized=False,
+            (values,), statistic, permutation_type="pairings", vectorized=True,
             n_resamples=n_permutations, alternative="greater",
-            rng=np.random.default_rng(random_seed),
+            rng=np.random.default_rng(random_seed), batch=batch,
         )
         return float(result.pvalue)
 
     reference_rad = np.deg2rad(reference_deg)
     matched_rad = np.deg2rad(matched_deg)
     rho_circ = circular_correlation(reference_rad, matched_rad)
+    reference_centered = np.sin(reference_rad - circmean(reference_rad))
+
+    def circular_statistic(shuffled, axis=-1):
+        # Recompute the mean per shuffle: nearly balanced angles are sensitive
+        # to floating-point summation order when their resultant is near zero.
+        centered = np.sin(shuffled - circmean(shuffled, axis=axis, keepdims=True))
+        return np.abs(pearsonr(reference_centered, centered, axis=axis).statistic)
+
     p_circ = permutation_p(
-        matched_rad, lambda shuffled: abs(circular_correlation(reference_rad, shuffled)),
+        matched_rad, circular_statistic, batch=256,
     )
     residual_vector = np.mean(np.exp(1j * (matched_rad - reference_rad)))
 
@@ -76,25 +84,36 @@ def compare_direction_angles(
     reference_distances = circular_distance_matrix_deg(reference_deg)[upper_triangle]
     reference_ranks = rankdata(reference_distances)
     matched_distances = circular_distance_matrix_deg(matched_deg)
+    observed_ranks = rankdata(matched_distances[upper_triangle])
+    mantel_rho = float(np.corrcoef(reference_ranks, observed_ranks)[1, 0])
+    reference_centered_ranks = reference_ranks - reference_ranks.mean()
+    reference_norm = np.linalg.norm(reference_centered_ranks)
     matched_ranks = None
     if np.array_equal(matched_distances, matched_distances.T):
         matched_ranks = np.zeros_like(matched_distances)
-        matched_ranks[upper_triangle] = rankdata(matched_distances[upper_triangle])
+        centered_ranks = observed_ranks - observed_ranks.mean()
+        matched_ranks[upper_triangle] = centered_ranks
         matched_ranks[upper_triangle[::-1]] = matched_ranks[upper_triangle]
+        matched_norm = np.linalg.norm(centered_ranks)
 
-    def mantel_statistic(order):
-        pairs = order[upper_triangle[0]], order[upper_triangle[1]]
+    def mantel_statistic(order, axis=-1):
+        pairs = order[..., upper_triangle[0]], order[..., upper_triangle[1]]
         if matched_ranks is None:
             # Floating modulo can make reverse distances differ at near ties.
             # Preserve those directed values and re-rank each permuted sample.
-            ranks = rankdata(matched_distances[pairs])
+            ranks = rankdata(matched_distances[pairs], axis=axis)
+            ranks -= ranks.mean(axis=axis, keepdims=True)
+            norm = np.linalg.norm(ranks, axis=axis)
         else:
             ranks = matched_ranks[pairs]
-        return float(np.corrcoef(reference_ranks, ranks)[1, 0])
+            norm = matched_norm
+        rho = np.sum(reference_centered_ranks * ranks, axis=axis) / (reference_norm * norm)
+        return np.abs(np.clip(rho, -1, 1))
 
     unit_order = np.arange(reference_deg.size)
-    mantel_rho = mantel_statistic(unit_order)
-    mantel_p = permutation_p(unit_order, lambda order: abs(mantel_statistic(order)))
+    # Bound the temporary permutation-by-pair arrays as the unit count grows.
+    batch = max(1, min(256, 1_000_000 // reference_ranks.size))
+    mantel_p = permutation_p(unit_order, mantel_statistic, batch=batch)
     unit_count = int(reference_deg.size)
     return {
         "same_unit": {

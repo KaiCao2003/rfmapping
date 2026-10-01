@@ -832,18 +832,17 @@ def gen_adc_spike_time(session_info: dict, probe: str, base_dir: str, num_of_rec
     probe_name: str = session_info[f'continuous_probe_{probe}_folder']
     probe_continuous_timestamp_file = f'{continuous_folder}/{probe_name}/timestamps.npy'
     probe_continuous_timestamp_data_raw = np.load(probe_continuous_timestamp_file, mmap_mode='r')
+    probe_duration = probe_continuous_timestamp_data_raw[-1]
     if is_convert_to_zero:
-        probe_continuous_timestamp_data = probe_continuous_timestamp_data_raw - probe_continuous_timestamp_data_raw[0]
-    else:
-        probe_continuous_timestamp_data = probe_continuous_timestamp_data_raw
-        print(11111111)
+        probe_duration = probe_duration - probe_continuous_timestamp_data_raw[0]
 
-    print(f"Probe{probe} continuous shape: {probe_continuous_timestamp_data.shape}")
-    probe_duration = probe_continuous_timestamp_data[-1]
+    print(f"Probe{probe} continuous shape: {probe_continuous_timestamp_data_raw.shape}")
     print(f"Probe{probe} duration: {probe_duration} ")
 
     spike_times = np.load(f"{kilosort_dir}/spike_times.npy")
-    spike_time_adc = probe_continuous_timestamp_data[spike_times]
+    spike_time_adc = probe_continuous_timestamp_data_raw[spike_times]
+    if is_convert_to_zero:
+        spike_time_adc = spike_time_adc - probe_continuous_timestamp_data_raw[0]
     print(spike_time_adc[:10])
     save_file_name = "adc_spike_time" if save_file_name is None else save_file_name
 

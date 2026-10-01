@@ -195,15 +195,12 @@ def random_split_interval_set(
     return train_ep, test_ep, split_df
 
 
-def interval_table_to_seconds(
+def prepare_interval_dataframe(
     interval_table: pd.DataFrame,
     *,
-    frame_rate: float,
-    recording_start_time: float = 0.0,
-    start_frame_col: str = "start_frame",
-    end_frame_col: str = "end_frame",
     label_col: str = "phase_key",
 ) -> pd.DataFrame:
+    """Prepare labels and durations from existing adjusted timestamps in seconds."""
     if not {"start", "end"}.issubset(interval_table.columns):
         raise KeyError('interval_table must contain adjusted timestamp columns "start" and "end".')
 

@@ -1,6 +1,5 @@
 """Render EBC overlays and export synchronized electrode-audio videos for good units."""
 
-import argparse
 import json
 import subprocess
 import tempfile
@@ -25,23 +24,6 @@ from Utils.json_tools import read_formatted_json
 from Utils.tuning_curve_utils import get_exposure_timestamps
 
 
-# Edit these settings, then run this file in the IDE. No notebook state is used.
-session = Path("/mnt/senzailab/Kai/#Recording/m20/260921/260921_11")
-probe = "A"
-phase = "baseline"
-video_path = session / f"{session.name.split('_')[0]}.avi"
-save_path = session / "data/spatial_cells/videos"
-video_start_s = 0.
-video_duration_s = None  # Full Basler AVI.
-audio_gain = .35  # Fixed OE volume fraction (35%); no per-channel peak normalization.
-audio_source = "continuous"  # Real OE voltage; "clicks" plays only sorted spike times.
-audio_band_hz = (300., 6000.)  # Spike band; OE Audio Monitor itself uses 100–7000 Hz.
-audio_gate_sigma = 3.  # Expand below this multiple of background noise; 0 disables it.
-audio_expander_ratio = 4.  # Stronger suppression than OE's 1.2; 1 disables expansion.
-video_workers = 8
-audio_workers = 4
-video_encoder = "auto"  # Prefer NVENC; use 8 CPU encoding threads if unavailable.
-
 BASLER_BOUNDS_PX = (370., 920., 210., 760.)  # left, right, top, bottom
 BASLER_SIZE_CM = 41.
 RAY_DEG = np.arange(0., 360., 45.)
@@ -51,9 +33,11 @@ HD_COLOR = "#f83ef1"
 BOUNDARY_COLOR = "#41e5e5"
 
 
-def load_video_data(session, *, probe="A", phase="baseline"):
+def load_video_data(session, *, probe="A", phase="baseline", bounds_px=None, arena_size_cm=None):
     """Load pose and exposure timing without computing statistical controls."""
     session = Path(session)
+    bounds_px = BASLER_BOUNDS_PX if bounds_px is None else tuple(bounds_px)
+    arena_size_cm = BASLER_SIZE_CM if arena_size_cm is None else arena_size_cm
     directory = session / "data"
     info = read_formatted_json(directory / "session_info.json")["session_info"]
     exposures, origin, timing = get_exposure_timestamps(
@@ -69,26 +53,29 @@ def load_video_data(session, *, probe="A", phase="baseline"):
     interval = intervals.loc[intervals.interval_type == phase, ["start", "end"]].iloc[0].to_numpy(float)
     selected = (times >= interval[0]) & (times <= interval[1])
     pose = pose.loc[selected]
-    left, right, top, bottom = BASLER_BOUNDS_PX
-    xy = np.c_[(pose.center_x - left) * BASLER_SIZE_CM / (right - left),
-               (bottom - pose.center_y) * BASLER_SIZE_CM / (bottom - top)]
+    left, right, top, bottom = bounds_px
+    xy = np.c_[(pose.center_x - left) * arena_size_cm / (right - left),
+               (bottom - pose.center_y) * arena_size_cm / (bottom - top)]
     kilosort = next((session / "kilosort" / f"Probe{probe}").glob("kilosort_*"))
     return dict(session=session, probe=probe, phase=phase, arena_type="rectangle", xy=xy,
+                bounds_px=bounds_px, arena_size_cm=arena_size_cm,
                 hd=pose.hd_deg.to_numpy() % 360, frame_ids=frames[selected], times=times[selected],
                 exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
                 source=dict(kilosort_dir=str(kilosort), selected_interval_s=interval,
                             spike_times_path=str(directory / f"probe{probe}/adc_spike_time.npy")))
 
 
-def overlay_geometry(data):
+def overlay_geometry(data, *, bearings_deg=RAY_DEG, hd_is_clockwise=False):
     """Invert the analysis calibration; distances are untruncated cm, not bins."""
     xy, hd = np.asarray(data["xy"]), np.asarray(data["hd"])
-    left, right, top, bottom = BASLER_BOUNDS_PX
-    pixels_per_cm = np.array([right - left, bottom - top]) / BASLER_SIZE_CM
+    left, right, top, bottom = data.get("bounds_px", BASLER_BOUNDS_PX)
+    arena_size_cm = data.get("arena_size_cm", BASLER_SIZE_CM)
+    pixels_per_cm = np.array([right - left, bottom - top]) / arena_size_cm
     positions = xy * pixels_per_cm * [1, -1] + [left, bottom]
     valid = (np.isfinite(hd) & np.isfinite(xy).all(axis=1)
-             & ((xy >= 0) & (xy <= BASLER_SIZE_CM)).all(axis=1))
-    angles = np.deg2rad(hd[:, None] + RAY_DEG)
+             & ((xy >= 0) & (xy <= arena_size_cm)).all(axis=1))
+    heading = -hd if hd_is_clockwise else hd
+    angles = np.deg2rad(heading[:, None] + np.asarray(bearings_deg))
     directions = np.stack((-np.sin(angles), -np.cos(angles)), axis=-1)
     # Pixel displacement per cm along each ray; the nearest positive wall
     # intersection is its untruncated boundary distance in cm.
@@ -151,10 +138,11 @@ class _Overlay:
             tile, offset = self._label(text)
             canvas.paste(tile, (round(point[0] + offset[0]), round(point[1] + offset[1])))
 
-        left, right, top, bottom = BASLER_BOUNDS_PX
+        left, right, top, bottom = self.data.get("bounds_px", BASLER_BOUNDS_PX)
+        arena_size_cm = self.data.get("arena_size_cm", BASLER_SIZE_CM)
         draw.rectangle((left, top, right, bottom), outline="#111111", width=6)
         draw.rectangle((left, top, right, bottom), outline=BOUNDARY_COLOR, width=3)
-        label(((left + right) / 2, top - 55), f"Arena boundary: {BASLER_SIZE_CM:g} × {BASLER_SIZE_CM:g} cm")
+        label(((left + right) / 2, top - 55), f"Arena boundary: {arena_size_cm:g} × {arena_size_cm:g} cm")
         distances = np.full(len(RAY_DEG), np.nan)
         if row >= 0:
             position = self.positions[row]
@@ -211,10 +199,10 @@ class _Overlay:
 _render_state = None
 
 
-def _initialize_renderer(data, width, height, fps, memory_name):
+def _initialize_renderer(data, width, height, fps, memory_name, overlay_type=_Overlay):
     global _render_state
     memory = shared_memory.SharedMemory(name=memory_name)
-    overlay = _Overlay(data, width, height, fps)
+    overlay = overlay_type(data, width, height, fps)
     input_bytes = width * height * 3
     _render_state = memory, overlay, input_bytes, overlay.size[0] * height * 3
 
@@ -233,7 +221,7 @@ def _render_shared_frame(slot, frame_id, row):
 class _SharedRenderer:
     """Bounded frame slots: decoded once, drawn in parallel, encoded in order."""
 
-    def __init__(self, data, width, height, fps, workers):
+    def __init__(self, data, width, height, fps, workers, overlay_type=_Overlay):
         self.slots = workers * 2
         self.input_bytes = width * height * 3
         self.size = (width + 370, height)
@@ -242,11 +230,14 @@ class _SharedRenderer:
         self.memory = shared_memory.SharedMemory(create=True, size=self.slots * self.stride)
         # No spike-count matrices are copied to drawing workers.
         pose = {key: data[key] for key in ("session", "phase", "times", "xy", "hd")}
+        for key in ("bounds_px", "arena_size_cm", "unit_id", "tuning_angles_deg", "tuning_rate"):
+            if key in data:
+                pose[key] = data[key]
         try:
             self.pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=get_context("spawn"),
                 initializer=_initialize_renderer,
-                initargs=(pose, width, height, fps, self.memory.name),
+                initargs=(pose, width, height, fps, self.memory.name, overlay_type),
             )
         except BaseException:
             self.memory.close()
@@ -321,7 +312,7 @@ def _ffmpeg_error(process, log, operation):
 
 
 def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=None,
-                       workers=1, video_encoder="libx264"):
+                       workers=1, video_encoder="libx264", overlay_type=_Overlay):
     """Export a rectangular-arena overlay on the recorded Basler AVI.
 
     Clip times start at AVI time zero.
@@ -360,7 +351,7 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
     workers = min(workers, stop - first)
     rows = np.full(total, -1, dtype=int)
     rows[frame_ids] = np.arange(len(frame_ids))
-    overlay = _Overlay(data, width, height, fps)
+    overlay = overlay_type(data, width, height, fps)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     partial = output_path.with_name(f"{output_path.stem}.partial.mp4")
     preview = output_path.with_suffix(".png")
@@ -394,7 +385,7 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
         decoder_log = tempfile.TemporaryFile()
         decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decoder_log)
         if workers > 1:
-            renderer = _SharedRenderer(data, width, height, fps, workers)
+            renderer = _SharedRenderer(data, width, height, fps, workers, overlay_type)
         print(f"Overlay: {workers} drawing workers, encoder={video_encoder}", flush=True)
         encoder = subprocess.Popen(
             ["ffmpeg", "-nostdin", "-v", "error", "-y", "-filter_threads", "2", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -463,7 +454,8 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
             partial.unlink(missing_ok=True)
     selected = rows[first:stop]
     available = selected >= 0
-    geometry_info = dict(bounds_px=BASLER_BOUNDS_PX, arena_size_cm=BASLER_SIZE_CM,
+    geometry_info = dict(bounds_px=data.get("bounds_px", BASLER_BOUNDS_PX),
+                         arena_size_cm=data.get("arena_size_cm", BASLER_SIZE_CM),
                          angle_convention="HD: north-zero CCW; ray bearing: CCW relative to HD")
     summary = dict(video=str(output_path), source_video=str(video_path),
                    preview=str(preview), arena_type="rectangle",
@@ -935,37 +927,3 @@ def _mux_pcm(video_path, output_path, title, duration, blocks, sample_rate):
                 except BrokenPipeError:
                     pass
             partial.unlink(missing_ok=True)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("session", type=Path, nargs="?")
-    parser.add_argument("--probe", default=probe)
-    parser.add_argument("--phase", default=phase)
-    args = parser.parse_args(argv)
-
-    selected_session = session if args.session is None else args.session
-    selected_video = video_path if args.session is None else selected_session / f"{selected_session.name.split('_')[0]}.avi"
-    selected_save_path = (
-        save_path
-        if args.session is None
-        else selected_session / "data/spatial_cells/videos"
-    )
-    video_data = load_video_data(
-        selected_session,
-        probe=args.probe,
-        phase=args.phase,
-    )
-    unit_videos = export_good_unit_videos(
-        video_data, selected_video, selected_save_path,
-        start_s=video_start_s, duration_s=video_duration_s, gain=audio_gain,
-        workers=video_workers, audio_workers=audio_workers, video_encoder=video_encoder,
-        audio_source=audio_source, audio_band_hz=audio_band_hz,
-        audio_gate_sigma=audio_gate_sigma, audio_expander_ratio=audio_expander_ratio,
-    )
-    return unit_videos
-
-
-if __name__ == "__main__":
-    # The guard prevents spawned workers from starting the batch again.
-    main()
