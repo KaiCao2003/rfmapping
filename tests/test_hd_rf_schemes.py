@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from Utils import hd_rf_schemes
 
@@ -57,6 +58,39 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     schemes, _ = hd_rf_schemes.select_schemes(pairs)
     assert schemes["scheme1"].unit_id.tolist() == [7, 8, 10]
     assert schemes["scheme2"].unit_id.tolist() == [7]
+
+
+def test_explicit_detection_path_overrides_adjacent_file(tmp_path, monkeypatch):
+    index = pd.MultiIndex.from_tuples([("m20", "260922", "A", 7)],
+                                      names=["mouse", "date", "probe", "unit_id"])
+    hd = pd.DataFrame([[0., 3.]], index=index, columns=[6., 18.])
+    hd.attrs["unit_info"] = {index[0]: {"hd_class": 3}}
+    monkeypatch.setattr(hd_rf_schemes, "load_tc", lambda *a, **k: hd)
+    tc = tmp_path / "tuning_curves.json"
+    tc.write_text(json.dumps({"metadata": {}}))
+    rf = tmp_path / "rf.json"
+    counts = np.array([[[[20], [6]], [[0], [6]]]])
+    rf.write_text(json.dumps(dict(
+        unitsSpikeCounts=counts.tolist(), unitsSpikeCountsSize=list(counts.shape),
+        unitPool=[7], xPositions=[-10, 10], yPositions=[-20, 20],
+        timeBinEdges=[0., .2], occupancyTimeSec=[[1, 1], [1, 1]],
+        stimulusPresentationCounts=[[5, 5], [5, 5]],
+    )))
+    np.savez(rf.with_suffix(".npz"), unit_ids=[7], mask_2d=np.zeros((1, 2, 2)))
+    detection_path = tmp_path / "relation" / "rf_detection.npz"
+    detection_path.parent.mkdir()
+    np.savez(detection_path, unit_ids=[7], mask_2d=[[[0, 1], [0, 0]]])
+
+    pairs, provenance = hd_rf_schemes.load_peak_pairs(
+        tc, rf, mouse="m20", date=260922, probe="A", rf_detection_path=detection_path,
+    )
+
+    assert pairs.loc[0, "rf_saved_2d"]
+    assert not pairs.loc[0, "rf_peak_in_saved_2d_mask"]
+    assert provenance["rf_detection_source"] == str(detection_path)
+    assert str(detection_path) in provenance["sources_sha256"]
+    with pytest.raises(FileNotFoundError):
+        hd_rf_schemes.load_peak_pairs(tc, rf, rf_detection_path=tmp_path / "missing.npz")
 
 
 def test_top_three_bins_are_independent_and_ties_choose_lower_bin():

@@ -312,10 +312,13 @@ def _ffmpeg_error(process, log, operation):
 
 
 def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=None,
-                       workers=1, video_encoder="libx264", overlay_type=_Overlay):
+                       workers=1, video_encoder="libx264", overlay_type=_Overlay,
+                       frame_rate=None, first_frame=None, stop_frame=None):
     """Export a rectangular-arena overlay on the recorded Basler AVI.
 
     Clip times start at AVI time zero.
+    Explicit frame bounds and frame rate support an independently measured
+    camera clock when the AVI header does not describe the recording clock.
     Missing tracking stays in the movie as a labeled gap. Multiple workers
     share bounded frame buffers; the common picture is encoded only once.
     """
@@ -334,7 +337,7 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
         check=True, capture_output=True, text=True,
     )
     stream = json.loads(probe.stdout)["streams"][0]
-    fps_text = stream["avg_frame_rate"]
+    fps_text = stream["avg_frame_rate"] if frame_rate is None else str(frame_rate)
     fps = float(Fraction(fps_text))
     width, height, total = int(stream["width"]), int(stream["height"]), int(stream["nb_frames"])
     if (width, height) != (1280, 1024):
@@ -342,9 +345,11 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
     frame_ids = np.asarray(data["frame_ids"], dtype=int)
     if len(frame_ids) != len(data["times"]) or np.any(np.diff(frame_ids) <= 0) or np.any((frame_ids < 0) | (frame_ids >= total)):
         raise ValueError("Pose frame IDs must be increasing zero-based indices into the video timeline.")
-    first = int(round(start_s * fps))
+    first = int(round(start_s * fps)) if first_frame is None else int(first_frame)
     stop = total if duration_s is None else min(total, first + int(round(duration_s * fps)))
-    if not 0 <= first < stop:
+    if stop_frame is not None:
+        stop = int(stop_frame)
+    if not 0 <= first < stop <= total:
         raise ValueError("The requested clip contains no video frames.")
     video_encoder = _select_encoder(video_encoder, width + 370, height, fps_text)
     codec_args = _encoder_arguments(video_encoder)

@@ -15,12 +15,13 @@ from Utils.rfmap import load_rf_maps
 
 
 def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
-                    mouse="m19", date=260827, probe="A"):
+                    mouse="m19", date=260827, probe="A", rf_detection_path=None):
     """Keep every existing Class 3 unit and audit undefined HD/RF peaks.
 
     RF peak is the native full-map maximum of the presentation-exposure rate
     averaged over 0–200 ms. Saved detection masks affect membership only.
-    Ties use the first native (y, x) position in row-major source order. For
+    The detection file is explicit or adjacent to the RF source. Ties use
+    the first native (y, x) position in row-major source order. For
     documented legacy counter-clockwise HD, negate only the extracted peak.
     """
     hd_path, rf_path = Path(hd_path), Path(rf_path)
@@ -35,7 +36,8 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
     )
     maps = load_rf_maps(rf_path, unit_firing_rate=True).sum(0., .2, show_progress=False)
     maps_by_id = {int(item.unit_id): item for item in maps}
-    detection_path = rf_path.with_suffix(".npz")
+    detection_path = (rf_path.with_suffix(".npz") if rf_detection_path is None
+                      else Path(rf_detection_path))
     with np.load(detection_path, allow_pickle=False) as saved:
         masks = {int(unit): mask.astype(bool) for unit, mask in
                  zip(saved["unit_ids"], saved["mask_2d"], strict=True)}
