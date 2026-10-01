@@ -22,24 +22,17 @@ Set `collapse_from_2d=True` to retain the original projection of a 2-D RF.
 
 ## Quick start
 
-Use the recording settings from the [main guide](../README.md).
-
 ```python
-import os
 from pathlib import Path
 
 from Utils.rfmap import load_rf_maps
 from Utils.rf_trials import load_regular_rf_trials
 
-session = Path(os.environ["RF_SESSION_DIR"])
-date = os.environ["RF_DATE"]
-session_id = os.environ["RF_SESSION"]
-probe = os.environ["RF_PROBES"][0]
+session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
 rf_source = (
     session
-    / "data/rfmapping/good/-100_400_1ms"
-    / f"Probe{probe}"
-    / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
+    / "data/rfmapping/good/-100_400_1ms/ProbeA"
+    / "regular_unitsSpikeCounts_260630_3.json"
 )
 
 raw = load_rf_maps(rf_source, unit_firing_rate=False)
@@ -294,14 +287,15 @@ also takes `axis="x"` or `axis="y"` and `collapse_from_2d=False`.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
+| `rf_type` | `"excitatory"` | Detect increased responses; `"inhibitory"` detects decreased responses |
 | `is_center` | `False` | Return the complete mask; `True` returns its discrete center |
 | `is_shuffle` | `False` | Run cluster-permutation significance testing when explicitly enabled |
 | `drop_bins` | `2` | No-shuffle only: remove components of this size or smaller |
 | `exclude_zero_bins` | `False` | No-shuffle only: exclude missing and zero responses from each unit's mean, SD, and candidate mask |
-| `cluster_forming_z` | `1.0` for direct 1-D detection; otherwise `1.5` | Select bins allowed to form candidate clusters |
+| `cluster_forming_z` | Direct 1-D: `1.0` excitatory, `0.75` inhibitory; otherwise `1.5` | Select bins allowed to form candidate clusters |
 | `alpha` | `0.05` | Cluster-level significance cutoff |
 | `n_permutations` | `10_000` | Number of shuffled null maps |
-| `alternative` | `"greater"` | Test increased response; `"less"` tests decreased response |
+| `alternative` | From `rf_type` | Legacy override: `"greater"` tests increased response; `"less"` tests decreased response |
 | `wrap_x` | `True` | Treat the first and last x columns as adjacent |
 | `fill_single_holes` | `False` | Fill eligible one-bin holes inside significant clusters |
 | `min_hole_neighbors` | `3` | Required 4-connected significant neighbors for hole filling |
@@ -310,6 +304,35 @@ also takes `axis="x"` or `axis="y"` and `collapse_from_2d=False`.
 | `n_jobs` | `None` | Worker limit; does not change result identity |
 | `result_path` | `None` | Optional validated `.npz` result |
 | `show_progress` | `True` | Show applicable progress; use `False` for silent execution |
+
+```python
+mask_exc = summed.rf_2d()  # rf_type="excitatory" by default
+mask_inh = summed.rf_2d(rf_type="inhibitory")
+center_inh = summed.rf_2d(rf_type="inhibitory", is_center=True)
+```
+
+Without shuffling, inhibitory candidates satisfy
+`response <= spatial_mean - cluster_forming_z * spatial_sd`. With shuffling,
+the same lower-tail direction applies to observed and permuted responses.
+This identifies spatially decreased responses relative to the detector's null,
+not a comparison against a prestimulus baseline. The center weights the size
+of that decrease, and the cache distinguishes excitatory and inhibitory results.
+Explicit `alternative=` continues to override `rf_type` for existing callers.
+`exclude_zero_bins=True` still excludes zero responses in either direction.
+
+`locate_rf.ipynb` detects both excitatory and inhibitory RFs on each run and,
+when `is_save=True`, saves both sets of 2-D/1-D masks, centers, unit lists, and
+analysis summaries. Its `rf_type` setting selects which results to plot.
+`analyze_rf_file(rf_type="both")` loads, sums, and applies QC once, returning
+analyses keyed by `"excitatory"` and `"inhibitory"`. Single-type calls keep
+their existing return format. `locate_rf.py --rf-type both` saves both sets;
+its default remains excitatory, and `--rf-type inhibitory` selects only
+inhibitory RFs. Explicit threshold overrides apply to each requested type.
+Saved inhibitory analysis files use an `_inhibitory` suffix on the source stem.
+The notebook saves inhibitory figures in `rfmapping/inhibitory` when selected
+and adds `_inhibitory` to its inhibitory combined unit-list filenames.
+The inhibitory defaults are mean - 1.5 SD in 2-D and mean - 0.75 SD in 1-D.
+`analyze_rf_file` keeps excitatory defaults at mean + 1.8 SD and mean + 1 SD.
 
 Use `wrap_x=True` only when the x grid is genuinely periodic, such as a
 360-degree display. It changes both candidate connectivity and center distance
@@ -419,23 +442,30 @@ With `collapse_from_2d=True`, the 1-D methods logically project the selected
 for `axis="x"`, a 7-by-30 map becomes one row of 30 values. The default
 threshold is that row's mean + 1 population SD; `drop_bins` still applies.
 The result and center are saved with a singleton collapsed spatial axis.
-The shared file analysis saves both 2-D results (`*.npz`) and independent
-1-D results (`*_1d.npz`), with separate source-specific unit lists.
+`locate_rf.ipynb` saves both 2-D results (`*.npz`, `units_with_rf.npy`) and
+1-D results (`*_1d.npz`, `units_with_rf_1d.npy`). Configure `probes` once;
+the first configured probe is used for the single-unit preview, while
+population plots and unit exports include every configured probe.
+The notebook keeps one analysis dictionary and displays 2-D and 1-D results
+together. Repeated plotting and figure export live in `Utils.rf_plotting`.
+Population figures show each probe, the pooled population, and smoothed
+display maps. Unit export saves one combined response/mask/center figure per
+unit as PNG and SVG without filling the notebook with inline figures.
 
-The file analyzer defaults to `max_missing_bins=2` and `max_zero_bins=2`. A unit
+The notebook defaults to `max_missing_bins=2` and `max_zero_bins=2`. A unit
 continues only when both counts are at or below their respective limits and
 at least one finite, nonzero response bin remains. Missing bins have nonfinite
 responses or no stimulus exposure; zero bins have an observed response of zero
 in the selected time window. The counts do not overlap. Both RF detections use
 `exclude_zero_bins=True`, so a 7-by-30 map with two zero bins and no missing
 bins uses the remaining 208 responses for its spatial mean and population SD.
-`rf_bin_qc()` returns the unit IDs, bin counts, and selection mask.
+`rf_bin_qc_by_probe` records the unit IDs, bin counts, and selection masks.
 
-## MATLAB and Python shared analysis
+## MATLAB and notebook shared analysis
 
-`Utils.rf_analysis.analyze_rf_file()` loads a source, sums its response window,
-applies bin QC, detects 2-D and 1-D RFs, and saves results. Python callers can
-use it directly. MATLAB uses the same function through this sequence:
+`Utils.rf_analysis.analyze_rf_file()` performs the notebook's bin QC, window
+sum, 2-D and 1-D detection, and result saving. `locate_rf.ipynb` calls it
+directly. MATLAB uses the same function through this sequence:
 
 ```text
 RFmapping_core.m writes .rfmap
@@ -444,8 +474,8 @@ RFmapping_core.m writes .rfmap
   -> Utils.rf_analysis.analyze_rf_file()
 ```
 
-The MATLAB helper is bundled in `matlab/Utils/`. Supply the executable, script
-path, and detection settings explicitly, using the configured terminal paths:
+The MATLAB helper is bundled in `matlab/Utils/`. Supply the executable,
+script path, and detection settings using the configured terminal paths:
 
 ```matlab
 params.runRfDetection = true;
@@ -483,8 +513,13 @@ For a source `regular_unitsSpikeCounts_260630_3.rfmap`, shared analysis saves:
 Unit lists are pickle-free Unicode arrays with shape `(N, 2)`, including
 `(0, 2)` when no retained units have RFs. If every unit fails bin QC, analysis
 raises an error.
-Set `save_results=False` when calling the shared function to inspect results
-without writing these source-specific files.
+The notebook additionally saves combined `units_with_rf.npy` and
+`units_with_rf_1d.npy` outputs, plus `units_with_rf_inhibitory.npy` and
+`units_with_rf_1d_inhibitory.npy`, regardless of the selected plot type.
+For one probe these remain in its RF source directory. For multiple probes,
+combined lists are saved in the shared RF directory above the probe folders.
+Set `save_results=False` when calling the
+shared function to inspect results without writing these source-specific files.
 
 ## Batch workflow
 

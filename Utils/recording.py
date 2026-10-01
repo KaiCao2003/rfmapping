@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import pandas as pd
 from tqdm import tqdm
@@ -13,10 +13,8 @@ from Utils.Sessions import Session
 from Utils.json_tools import read_formatted_json, write_formatted_json
 from Utils.load_files import load_binary
 
-try:
+if TYPE_CHECKING:
     import torch
-except ModuleNotFoundError:
-    torch = None
 
 
 # Note: The original file had a type hint for Literal, but it was not used.
@@ -183,8 +181,7 @@ def detect_exposure_time_torch(
                       [start_time, end_time] pairs. Otherwise, it returns INDEX , and it contains
                       [start_idx, end_idx) pairs. The tensor is returned on the CPU.
     """
-    if torch is None:
-        raise ModuleNotFoundError("torch is required to use detect_exposure_time_torch.")
+    import torch
 
     # Ensure inputs are PyTorch tensors on the specified device
 

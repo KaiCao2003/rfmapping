@@ -466,6 +466,7 @@ def _rf_output_arrays(
         is_batch: bool,
         trials: Mapping[str, Any] | None,
         detect: Any,
+        rf_type: str,
         is_shuffle: bool,
         drop_bins: int,
         result_path: str | Path | None,
@@ -479,6 +480,11 @@ def _rf_output_arrays(
     run_shuffle = _bool_value(is_shuffle, "is_shuffle")
     parsed_drop_bins = _nonnegative_integer(drop_bins, "drop_bins")
     options = dict(options)
+    if rf_type not in ("excitatory", "inhibitory"):
+        raise ValueError("rf_type must be 'excitatory' or 'inhibitory'")
+    # Preserve explicit alternative= calls from the original public API.
+    if rf_type == "inhibitory":
+        options.setdefault("alternative", "less")
     exclude_zero_bins = _bool_value(
         options.pop("exclude_zero_bins", False), "exclude_zero_bins",
     )
@@ -1091,6 +1097,7 @@ class RFMap:
             self,
             trials: Mapping[str, Any] | None = None,
             *,
+            rf_type: str = "excitatory",
             is_shuffle: bool = False,
             drop_bins: int = 2,
             is_center: bool = False,
@@ -1100,6 +1107,9 @@ class RFMap:
     ) -> NDArray[np.uint8]:
         """Return the final 2-D RF mask or its discrete weighted center.
 
+        ``rf_type="inhibitory"`` selects spatially decreased responses instead
+        of the default increased responses. An explicit ``alternative``
+        overrides ``rf_type`` for compatibility with existing calls.
         ``is_center=False`` returns the complete mask; ``True`` returns one
         response-weighted bin for each non-empty RF.  A ``.npz``
         ``result_path`` persists both views, so switching ``is_center`` later
@@ -1118,6 +1128,7 @@ class RFMap:
             is_batch=False,
             trials=trials,
             detect=self._detect_rf,
+            rf_type=rf_type,
             is_shuffle=is_shuffle,
             drop_bins=drop_bins,
             result_path=result_path,
@@ -1133,6 +1144,7 @@ class RFMap:
             axis: str = "x",
             *,
             collapse_from_2d: bool = False,
+            rf_type: str = "excitatory",
             is_shuffle: bool = False,
             drop_bins: int = 2,
             is_center: bool = False,
@@ -1143,6 +1155,8 @@ class RFMap:
         """Detect RF after summing responses onto x or y (default: mean + 1 SD).
 
         ``collapse_from_2d=True`` instead projects the existing 2-D detection.
+        ``rf_type="inhibitory"`` selects decreased responses (mean - 0.75 SD).
+        An explicit ``alternative`` overrides ``rf_type``.
         ``exclude_zero_bins=True`` filters missing and zero responses after
         summing onto the requested axis.
         """
@@ -1151,6 +1165,7 @@ class RFMap:
         if _bool_value(collapse_from_2d, "collapse_from_2d"):
             matrix = self.rf_2d(
                 trials,
+                rf_type=rf_type,
                 is_shuffle=is_shuffle,
                 drop_bins=drop_bins,
                 is_center=is_center,
@@ -1161,13 +1176,14 @@ class RFMap:
         else:
             center_only = _bool_value(is_center, "is_center")
             progress = _bool_value(show_progress, "show_progress")
-            options.setdefault("cluster_forming_z", 1.0)
+            options.setdefault("cluster_forming_z", 0.75 if rf_type == "inhibitory" else 1.0)
             mask, center = _rf_output_arrays(
                 cache=self._rf_result_cache,
                 maps=(self,),
                 is_batch=False,
                 trials=trials,
                 detect=self._detect_rf,
+                rf_type=rf_type,
                 is_shuffle=is_shuffle,
                 drop_bins=drop_bins,
                 result_path=result_path,
@@ -1386,6 +1402,7 @@ class RFMapList(Sequence[RFMap]):
             self,
             trials: Mapping[str, Any] | None = None,
             *,
+            rf_type: str = "excitatory",
             is_shuffle: bool = False,
             drop_bins: int = 2,
             is_center: bool = False,
@@ -1395,6 +1412,9 @@ class RFMapList(Sequence[RFMap]):
     ) -> NDArray[np.uint8]:
         """Stack final 2-D RF masks or discrete centers by unit.
 
+        ``rf_type="inhibitory"`` selects spatially decreased responses instead
+        of the default increased responses. An explicit ``alternative``
+        overrides ``rf_type`` for compatibility with existing calls.
         ``is_center=False`` returns complete masks; ``True`` returns one
         response-weighted bin for each non-empty RF.  A ``.npz``
         ``result_path`` persists both views, so switching ``is_center`` later
@@ -1413,6 +1433,7 @@ class RFMapList(Sequence[RFMap]):
             is_batch=True,
             trials=trials,
             detect=self._detect_rf,
+            rf_type=rf_type,
             is_shuffle=is_shuffle,
             drop_bins=drop_bins,
             result_path=result_path,
@@ -1428,6 +1449,7 @@ class RFMapList(Sequence[RFMap]):
             axis: str = "x",
             *,
             collapse_from_2d: bool = False,
+            rf_type: str = "excitatory",
             is_shuffle: bool = False,
             drop_bins: int = 2,
             is_center: bool = False,
@@ -1438,6 +1460,8 @@ class RFMapList(Sequence[RFMap]):
         """Stack 1-D RF detections (default: sum responses, then mean + 1 SD).
 
         ``collapse_from_2d=True`` instead projects the existing 2-D detections.
+        ``rf_type="inhibitory"`` selects decreased responses (mean - 0.75 SD).
+        An explicit ``alternative`` overrides ``rf_type``.
         ``exclude_zero_bins=True`` filters missing and zero responses after
         summing onto the requested axis.
         """
@@ -1447,6 +1471,7 @@ class RFMapList(Sequence[RFMap]):
             matrix = self.rf_2d(
                 trials,
                 is_shuffle=is_shuffle,
+                rf_type=rf_type,
                 drop_bins=drop_bins,
                 is_center=is_center,
                 result_path=result_path,
@@ -1456,13 +1481,14 @@ class RFMapList(Sequence[RFMap]):
         else:
             center_only = _bool_value(is_center, "is_center")
             progress = _bool_value(show_progress, "show_progress")
-            options.setdefault("cluster_forming_z", 1.0)
+            options.setdefault("cluster_forming_z", 0.75 if rf_type == "inhibitory" else 1.0)
             mask, center = _rf_output_arrays(
                 cache=self._rf_result_cache,
                 maps=self._maps,
                 is_batch=True,
                 trials=trials,
                 detect=self._detect_rf,
+                rf_type=rf_type,
                 is_shuffle=is_shuffle,
                 drop_bins=drop_bins,
                 result_path=result_path,
