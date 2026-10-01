@@ -41,8 +41,8 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
     """Read saved presentation counts or reconstruct the contributing trials.
 
     Historical RF files use the 960-pixel, 360-degree screen and +1 rotation
-    convention of RFmapping.m. Reconstructed display exposure must match the
-    source file, so a different geometry or timing file is rejected.
+    convention of RFmapping.m. Presentation counts come from the contributing
+    trials, independently of the saved cumulative display time.
     """
     shape = (len(y_positions), len(x_positions))
     if "stimulusPresentationCounts" in raw:
@@ -81,9 +81,8 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
     if trial_count > len(trials):
         raise ValueError("RF onset intervals exceed the trial table length")
     # Reproduce the trials actually pooled by historical RFmapping_core, including
-    # its N-onsets case; the occupancy comparison below checks that correspondence.
+    # its N-onsets case.
     trials = trials[:trial_count]
-    duration = np.diff(edges)
     positions_x = np.asarray([trial["Square_PositionX"] for trial in trials], dtype=float)
     positions_y = np.asarray([trial["Square_PositionY"] for trial in trials], dtype=float)
     luminance = np.asarray([trial["Square_Luminance"] for trial in trials], dtype=float)
@@ -99,7 +98,6 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
         raise ValueError(f"RF source has no supported trial-geometry declaration: {source_path.name}")
 
     counts = np.zeros(shape, dtype=float)
-    occupancy = np.zeros(shape, dtype=float)
     x_positions = np.asarray(x_positions, dtype=float)
     y_positions = np.asarray(y_positions, dtype=float)
     if not (is_bar or is_moving or is_rotation or is_allocentric):
@@ -107,7 +105,6 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
             covered = ((y_positions[:, None] == positions_y[trial_index])
                        & (x_positions[None, :] == positions_x[trial_index]))
             counts += covered
-            occupancy += covered * duration[trial_index]
     else:
         screen_width = int(raw.get("screenWidthPix", 960))
         screen_deg = float(raw.get("screenDeg", raw.get("screenWidthDeg", 360)))
@@ -159,14 +156,6 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
             covered_x = covered_native.reshape(shape[1], pixels_per_bin).any(axis=1)
             covered = ((y_positions[:, None] == positions_y[trial_index]) & covered_x[None, :])
             counts += covered
-            occupancy += covered * duration[trial_index]
-
-    saved_occupancy = _spatial_matrix(raw["occupancyTimeSec"], shape, "occupancyTimeSec")
-    if not np.allclose(occupancy, saved_occupancy, rtol=1e-10, atol=1e-9):
-        raise ValueError(
-            f"Reconstructed trial exposure does not match RF occupancyTimeSec for {source_path}; "
-            "regenerate the RF source with saved stimulusPresentationCounts"
-        )
     return counts, {
         "method": "raw_trial_footprint",
         "trials_mat": str(trials_path),

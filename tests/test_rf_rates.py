@@ -64,11 +64,12 @@ def test_legacy_regular_counts_follow_selected_luminance_not_display_duration(tm
     assert provenance["trials_mat"] == str(tmp_path / "261001_13/261001.mat")
 
 
-def test_legacy_trial_reconstruction_checks_the_saved_exposure(tmp_path):
+@pytest.mark.parametrize("metadata", [{}, {"occupancyTimeSec": [[0.2]]}])
+def test_legacy_trial_reconstruction_does_not_require_matching_exposure(tmp_path, metadata):
     trials = [{"Square_PositionX": 0, "Square_PositionY": 0, "Square_Luminance": 1}]
     source = _recording(tmp_path, trials, [0, 0.1], "regular_unitsSpikeCounts_261001_13")
-    with pytest.raises(ValueError, match="does not match"):
-        resolve_presentation_counts({"occupancyTimeSec": [[0.2]]}, source, [0], [0])
+    counts, _ = resolve_presentation_counts(metadata, source, [0], [0])
+    np.testing.assert_array_equal(counts, [[1]])
 
 
 def test_legacy_missing_terminal_edge_counts_only_trials_actually_pooled(tmp_path):

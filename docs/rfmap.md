@@ -122,13 +122,13 @@ By default, loading converts `unitsSpikeCounts` to Hz using
 `count / (stimulusPresentationCounts * time_bin_width_seconds)`.
 New sources save presentation counts at each position. For historical files,
 the loader reconstructs them from the matching session's MAT stimulus records
-and `data/on_list_times.npy`, checks the reconstructed display time against
-`occupancyTimeSec`, and records that provenance. A detached historical file
+and `data/on_list_times.npy`, and records that provenance. Presentation counts
+are independent of the saved cumulative `occupancyTimeSec`. A detached historical file
 without those inputs can still be loaded as raw counts with
 `unit_firing_rate=False`; Hz conversion requires the exposure information.
 Historical reconstruction supports the regular, bar, allocentric, moving,
 and rotation geometries; legacy free-moving maps require saved presentation
-counts. A reconstruction that disagrees with saved exposure is rejected.
+counts.
 Raw mode is also required for `load_regular_rf_trials()` count validation.
 
 `sum(start, stop)` adds counts in raw mode. In Hz mode it returns the
