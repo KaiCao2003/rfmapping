@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from Utils.hd_rf_circular_regression import (
+from Utils.hd_rf_prediction import (
     fisher_lee_correlation, fit_circular_conversion, predict_circular_conversion,
 )
 

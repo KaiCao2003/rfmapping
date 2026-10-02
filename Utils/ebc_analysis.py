@@ -39,15 +39,16 @@ def frame_counts(spike_times, spike_clusters, good_ids, times):
     return units, counts
 
 
-def load_basler_session(session, *, probe="A", phase="baseline"):
+def load_basler_session(session, *, bounds_px, size_cm, probe="A", phase="baseline"):
+    """Load Basler position in cm using explicit left/right/top/bottom pixel bounds."""
     pose, times, spikes, clusters, good, source = spatial.load_data(
         session_dir=session, probe=probe, phase=phase, basler_output=True, optihub2_output=False,
     )
     units, counts = frame_counts(spikes, clusters, good, times)
     # Basler image Y points down; use Cartesian cm and north-zero CCW HD.
-    left, right, top, bottom = BASLER_BOUNDS_PX
-    xy = np.c_[(pose.center_x - left) * BASLER_SIZE_CM / (right - left),
-               (bottom - pose.center_y) * BASLER_SIZE_CM / (bottom - top)]
+    left, right, top, bottom = bounds_px
+    xy = np.c_[(pose.center_x - left) * size_cm / (right - left),
+               (bottom - pose.center_y) * size_cm / (bottom - top)]
     return dict(session=Path(session), probe=probe, times=times, xy=xy,
                 frame_ids=pose.frame.to_numpy(dtype=int),
                 hd=pose.hd_deg.to_numpy() % 360, unit_ids=units, counts=counts, source=source,

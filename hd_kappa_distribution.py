@@ -16,11 +16,10 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
-from scipy.optimize import brentq
-from scipy.special import i0e, i1e
 
 from Utils.direction_comparison import hd_pick, load_rf, load_tc, rf_pick
 from Utils.plotting import LIGHT_PLOT_STYLE
+from Utils.tuning_curve_utils import von_mises_kappa
 
 
 RECORDINGS = (
@@ -29,24 +28,6 @@ RECORDINGS = (
     ("m19", 260827, 9, 2, "A"),
     ("m20", 260921, 9, 2, "A"),
 )
-
-
-def von_mises_kappa(rates, angles_rad):
-    """Moment-matched von Mises concentration of a complete rate curve.
-
-    Rates supply occupancy-corrected angular weights, not independent samples.
-    Solve I1(kappa)/I0(kappa) = R without baseline removal or smoothing.
-    """
-    total = np.sum(rates)
-    if total == 0:
-        return np.nan
-    resultant = float(np.clip(abs(np.sum(rates * np.exp(1j * angles_rad))) / total, 0, 1))
-    if resultant < np.finfo(float).eps:
-        return 0.0
-    if resultant == 1:
-        return np.inf
-    return brentq(lambda kappa: i1e(kappa) / i0e(kappa) - resultant,
-                  0, 1 / (1 - resultant), xtol=1e-12)
 
 
 def collect_units(root):

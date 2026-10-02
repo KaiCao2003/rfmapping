@@ -125,3 +125,56 @@ def test_direction_comparison_seed_is_reproducible():
     )
 
     assert first == second
+
+
+def test_fisher_lee_permutation_matches_independent_pairwise_definition():
+    alpha = np.array([2., 23., 67., 102., 148., 213., 255., 307., 346.])
+    beta = np.array([17., 309., 281., 212., 91., 72., 167., 48., 338.])
+
+    def pairwise_rho(first, second):
+        first = np.deg2rad(first)
+        second = np.deg2rad(second)
+        first_diff, second_diff = [], []
+        for i in range(len(first) - 1):
+            for j in range(i + 1, len(first)):
+                first_diff.append(np.sin(first[i] - first[j]))
+                second_diff.append(np.sin(second[i] - second[j]))
+        numerator = sum(a * b for a, b in zip(first_diff, second_diff))
+        denominator = np.sqrt(sum(a * a for a in first_diff) * sum(b * b for b in second_diff))
+        return numerator / denominator
+
+    observed = pairwise_rho(alpha, beta)
+    rng = np.random.default_rng(17)
+    shuffled = [pairwise_rho(alpha, rng.permutation(beta)) for _ in range(257)]
+    expected_p = (np.sum(np.abs(shuffled) >= abs(observed) - 1e-14) + 1) / 258
+    actual = statistic_utils.fisher_lee_statistics(
+        alpha, beta, n_permutations=257, random_seed=17,
+    )
+    assert actual["rho"] == pytest.approx(observed, abs=1e-15)
+    assert actual["permutation_p"] == expected_p
+    assert actual["n_permutations"] == 257
+
+
+@pytest.mark.parametrize("angles", [np.zeros(8), np.tile([0., 180.], 4)])
+def test_fisher_lee_undefined_angles_have_no_inference(angles):
+    actual = statistic_utils.fisher_lee_statistics(angles, np.arange(8) * 20.)
+    assert actual == {"rho": None, "permutation_p": None, "n_permutations": 0}
+
+
+def test_fisher_lee_descriptive_mode_never_draws_permutations(monkeypatch):
+    def unexpected_rng(*args, **kwargs):
+        raise AssertionError("Descriptive statistics must not draw permutations")
+
+    monkeypatch.setattr(np.random, "default_rng", unexpected_rng)
+    angles = np.arange(8) * 45.
+    actual = statistic_utils.fisher_lee_statistics(angles, 30. - angles, test=False)
+    assert actual == {"rho": -1., "permutation_p": None, "n_permutations": 0}
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        statistic_utils.fisher_lee_statistics(angles, angles, n_permutations=-1, test=False)
+
+
+def test_fisher_lee_preserves_small_but_defined_variation():
+    angles = np.rad2deg(np.arange(8) * 1e-6)
+    assert statistic_utils.fisher_lee_correlation(
+        hd_deg=angles, rf_ego_deg=2. * angles,
+    ) == pytest.approx(1.)

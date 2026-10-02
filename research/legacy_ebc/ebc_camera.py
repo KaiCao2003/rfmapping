@@ -49,10 +49,10 @@ def motive_vs_geometry(head_xyz, heading_deg, center_xy, radius, screen_deg, vs_
     return target, beta
 
 
-def load_motive_head(path, *, headplate="hp4"):
+def load_motive_head(path):
     """Read preserved Motive position and intrinsic XYZ Euler angles (degrees)."""
     pose = pd.read_csv(path, header=[0, 1, 2, 3])
-    head = pose[headplate].droplevel(0, axis=1)  # Drop rigid-body ID, retaining type/axis.
+    head = pose["hp4"].droplevel(0, axis=1)  # Drop rigid-body ID, retaining type/axis.
     result = head["Position"][["X", "Y", "Z"]].copy()
     for axis in "XYZ":
         result[f"rotation_{axis.lower()}_deg"] = head["Rotation"][axis]
@@ -300,3 +300,4 @@ def render(session, replay_path, registration_path, video_times_path, output_dir
     (output_dir / "render_manifest.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2), flush=True)
     return report
+

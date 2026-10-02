@@ -9,6 +9,25 @@ The examples use `mouse_01`, date `260918`, session `2`, and Probe `A`.
 Replace these identifiers with your recording. The main route produces a
 regular square-stimulus ON map; OFF and vertical-bar variants follow.
 
+The two EBC video entries, `ebc_video_rectangle.py` and `ebc_video_circle.py`,
+use explicit recording configs and the same position/boundary interfaces,
+eight-ray calculation and prepared overlay. See [EBC videos](docs/ebc_videos.md).
+Their optional dependencies are available through the `video` extra; FFmpeg
+and ffprobe are required for video export. Previous sep/tuning sources remain
+under `research/legacy_ebc/`. The HD–RF population video is a separate workflow.
+
+Waveform input uses SpikeInterface's Open Ephys and Kilosort readers, while
+ProbeInterface carries the Kilosort channel order, contact positions and shanks.
+`generate_unit_artifacts` takes acquisition dimensions, sampling rate and gains
+from the recording metadata. Its explicit defaults are
+`load_sync_timestamps=True`, `only_good_units=True`, and
+`remove_empty_units=True`. Synchronized times remain absolute Open Ephys seconds;
+the project's session organization, ADC alignment and output schemas remain
+separate. Old analyzer caches with different clock or gain metadata require an
+explicit rebuild using `overwrite_waveform_analyzer=True`; loading never
+silently rebuilds them. See the [SpikeInterface extractor API](https://spikeinterface.readthedocs.io/en/stable/api.html)
+and [ProbeInterface channel mapping](https://probeinterface.readthedocs.io/en/latest/examples/ex_05_device_channel_indices.html).
+
 ## 1. Understand the data structure
 
 | Stage | Contents | Purpose |

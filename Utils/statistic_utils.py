@@ -32,10 +32,81 @@ def circular_distance_matrix_deg(angles_deg):
 
 
 def circular_correlation(alpha, beta):
-    """Correlate sine-centered angles supplied in radians."""
+    """Correlate sine-centered angles supplied in radians (JS coefficient).
+
+    Preserve SciPy's circular-mean convention for balanced samples. A zero
+    resultant has no unique mean direction, so this coefficient is unstable
+    there; Fisher–Lee correlation does not require a mean direction.
+    """
     alpha_centered = np.sin(alpha - circmean(alpha))
     beta_centered = np.sin(beta - circmean(beta))
     return float(pearsonr(alpha_centered, beta_centered).statistic)
+
+
+def _paired_radians(alpha_deg, beta_deg):
+    alpha = np.asarray(alpha_deg, dtype=float)
+    beta = np.asarray(beta_deg, dtype=float)
+    if alpha.ndim != 1 or beta.shape != alpha.shape or alpha.size < 3:
+        raise ValueError("At least three aligned one-dimensional angle pairs are required")
+    if not np.isfinite(alpha).all() or not np.isfinite(beta).all():
+        raise ValueError("Paired angles must be finite")
+    return np.deg2rad(alpha % 360.), np.deg2rad(beta % 360.)
+
+
+def _fisher_lee_components(alpha, beta):
+    pairs = np.triu_indices(alpha.size, k=1)
+    alpha_sine = np.sin(alpha[pairs[0]] - alpha[pairs[1]])
+    beta_sine_matrix = np.sin(beta[:, None] - beta[None, :])
+    beta_sine = beta_sine_matrix[pairs]
+    alpha_norm, beta_norm = np.linalg.norm(alpha_sine), np.linalg.norm(beta_sine)
+    # Identical or exactly antipodal angles have no defined T-linear correlation.
+    tolerance = 8 * np.finfo(float).eps * np.sqrt(alpha_sine.size)
+    if min(alpha_norm, beta_norm) <= tolerance:
+        return None, pairs, alpha_sine, beta_sine_matrix, None
+    denominator = alpha_norm * beta_norm
+    rho = float(np.clip(np.dot(alpha_sine, beta_sine) / denominator, -1., 1.))
+    return rho, pairs, alpha_sine, beta_sine_matrix, denominator
+
+
+def fisher_lee_correlation(hd_deg, rf_ego_deg):
+    """Return signed Fisher–Lee circular correlation, or None if undefined.
+
+    Inputs are paired angles in degrees. Pairwise sine differences avoid an
+    estimated mean direction; a rotated reflection has rho=-1 even for uniform
+    angle samples. See https://doi.org/10.1093/biomet/70.2.327.
+    """
+    alpha, beta = _paired_radians(hd_deg, rf_ego_deg)
+    return _fisher_lee_components(alpha, beta)[0]
+
+
+def fisher_lee_statistics(
+    alpha_deg, beta_deg, *, n_permutations=10_000, random_seed=1, test=True,
+):
+    """Return Fisher–Lee rho and an optional two-sided pairing-permutation p.
+
+    The caller decides whether inference is appropriate for its selected
+    cohort. ``test=False`` returns descriptive rho without drawing permutations.
+    Undefined correlations return None for both rho and p. Pairwise sine
+    differences are cached so each shuffle only reorders existing values.
+    """
+    alpha, beta = _paired_radians(alpha_deg, beta_deg)
+    if n_permutations < 0 or int(n_permutations) != n_permutations:
+        raise ValueError("n_permutations must be a nonnegative integer")
+    rho, pairs, alpha_sine, beta_sine_matrix, denominator = _fisher_lee_components(alpha, beta)
+    p_value = None
+    performed = 0
+    if test and rho is not None and n_permutations:
+        rng = np.random.default_rng(random_seed)
+        exceedances = 0
+        for start in range(0, int(n_permutations), 256):
+            count = min(256, int(n_permutations) - start)
+            order = rng.permuted(np.broadcast_to(np.arange(alpha.size), (count, alpha.size)), axis=1)
+            shuffled_sine = beta_sine_matrix[order[:, pairs[0]], order[:, pairs[1]]]
+            shuffled_rho = (shuffled_sine @ alpha_sine) / denominator
+            exceedances += int(np.sum(abs(shuffled_rho) >= abs(rho) - 1e-14))
+        performed = int(n_permutations)
+        p_value = (exceedances + 1.) / (performed + 1.)
+    return {"rho": rho, "permutation_p": p_value, "n_permutations": performed}
 
 
 def compare_direction_angles(

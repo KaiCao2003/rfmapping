@@ -1,138 +1,19 @@
-# EBC videos
+# EBC video entrances
 
-The active EBC entries are `ebc_video_rectangle.py` and `ebc_video_circle.py`
-(the latter is the cylinder entry). They share the same eight-ray calculation,
-prepared overlay structure, renderer, encoder and electrode-audio batch export.
-`hd_rf_population_video.py` is a separate workflow and was not redesigned here.
+Run these scripts on `hhw9l84` with `~/.virtualenvs/rfmapping/bin/python`.
+The video entrances in the repository root are:
 
-Run project code on `hhw9l84` in `~/Developer/rfmapping` with
-`~/.virtualenvs/rfmapping/bin/python`:
+| Entrance | Display | Scope |
+| --- | --- | --- |
+| `ebc_video_rectangle.py` | Basler recording with rectangular-arena rays and distances | All good units; full recording by default |
+| `ebc_video_circle.py` | Raw camera recording with calibrated circular-screen geometry and VS bearing | All good units; full recording |
+| `ebc_video_sep.py` | Separate world/screen and saved EBC heatmap panels | One selected unit and time range |
+| `ebc_tuning_video.py` | JSON HD, animal-centered 1D EBC curve, and preferred-bearing wall ray | Selected good units, or all units with saved EBC maps |
+| `hd_rf_population_video.py` | Saved real HD or neural decoded HD, predicted RF rays, and angle traces | Three population schemes, without audio |
 
-```sh
-cd ~/Developer/rfmapping
-~/.virtualenvs/rfmapping/bin/python ebc_video_rectangle.py /path/to/rectangle.json
-~/.virtualenvs/rfmapping/bin/python ebc_video_circle.py /path/to/cylinder.json
-# Explicit short, silent preview:
-~/.virtualenvs/rfmapping/bin/python ebc_video_circle.py /path/to/cylinder.json --start 500 --duration 2 --silent
-```
-
-`--start` and `--duration` are seconds on the output video timeline, using the
-measured frame rate; start zero selects the first video frame. Without
-`--duration`, export continues to the end of the recording. Without
-`--silent`, each good unit receives synchronized electrode audio; channels
-shared by multiple units are read and encoded once. Rendering is always an
-explicit command, never a side effect of loading pose, calculating rays, or
-preparing an overlay.
-
-## Function boundaries
-
-1. `load_basler_position` and `load_motive_position` return `PositionInfo`:
-   zero-based video frame IDs, ADC-relative seconds, world XYZ in cm, HD in
-   degrees CCW from world +X, validity and source metadata. Missing clock rows
-   remain missing; position conversion never repairs synchronization.
-2. `rectangle_boundary` and `cylinder_boundary` return `BoundaryInfo` with
-   the same intersection interface, world-cm camera projection and drawing
-   outline. Cylinder intersections are analytic; sampled outlines are only
-   for drawing. Cylinder world origin and head Z are preserved.
-3. `compute_ebc_rays(position, boundary)` returns the same `EBCInfo` for both
-   shapes: eight bearings 0,45,...,315 degrees, exact endpoints in cm, distances
-   and validity. This function has no rectangle/cylinder dispatch.
-4. `prepare_overlay_info(position, boundary, ebc)` projects calculated results.
-   `EBCOverlay.draw` draws only that prepared payload; it does not load files,
-   select units, calculate EBC, normalize tuning or fit models.
-5. `export_prepared_video` orchestrates encoding/audio and calls a separate
-   `save_geometry_audit`. Output includes a preview, source/provenance JSON and
-   `frame_geometry.csv`; synchronization gaps keep raw images and silent audio.
-
-The source-specific workflow adapters load/normalize inputs and call the shared
-calculation and preparation stages. Shared
-functions contain no session paths, pixel bounds, physical arena dimensions,
-HD registration values or camera-channel settings. Those belong in the config.
-All config paths resolve relative to the config file. Output directories must
-be supplied explicitly. The config is not written or changed by rendering.
-
-## Rectangle config
-
-This example is a schema example, not a calibration for an arbitrary recording.
-Choose the actual bounds, dimensions, source columns and heading convention.
-`heading_zero_deg` gives the source HD zero in world CCW degrees; north is 90.
-`heading_clockwise` describes the source CSV, not the desired display sign.
-
-```json
-{
-  "session": "/recordings/mouse/date/date_session",
-  "video_path": "recording.avi",
-  "pose_path": "pose.csv",
-  "kilosort_dir": "kilosort/ProbeA/kilosort_session",
-  "output_dir": "output/ebc",
-  "probe": "A",
-  "phase": "baseline",
-  "boundary": {"bounds_px": [100, 500, 100, 500], "size_cm": 40},
-  "pose": {
-    "position_columns": ["center_x", "center_y"],
-    "heading_column": "hd_deg",
-    "heading_clockwise": true,
-    "heading_zero_deg": 90,
-    "frame_offset": 0
-  },
-  "camera_timing": {
-    "camera_input_channel": 1,
-    "camera_ttl_threshold": 14000,
-    "camera_ttl_active_high": false
-  },
-  "video_workers": 2,
-  "video_encoder": "auto"
-}
-```
-
-`phase` is a label. To restrict geometry to an analysis interval, add explicit
-`"interval_s": [start, stop]` in ADC-relative seconds. Source video frames are
-retained outside that interval. Saved camera timing keeps its existing edge or
-midpoint definition; camera settings govern raw extraction only when used.
-
-## Cylinder config
-
-Supply the matching raw Motive pose, physical calibration, camera projection,
-level reference and audited clock. The clock directory contains
-`video_clock_qc.json`, `video_adc_times.npy` and `video_motive_rows.npy`.
-Its declared session, decoded frame count and unavailable ranges must agree.
-
-```json
-{
-  "session": "/recordings/mouse/date/date_session",
-  "video_path": "recording.avi",
-  "pose_path": "processed/trimmed_input.csv",
-  "kilosort_dir": "kilosort/ProbeA/kilosort_session",
-  "output_dir": "output/ebc",
-  "probe": "A",
-  "headplate": "hp4",
-  "calibration_path": "cylinder.calib",
-  "registration_path": "camera_registration.json",
-  "clock_dir": "full_video_clock",
-  "hd_reference_path": "hd_level_reference.json",
-  "hd_world_zero_deg": 0,
-  "video_workers": 2,
-  "video_encoder": "auto"
-}
-```
-
-For an optional real VS marker, also supply `stimulus_mat_path`,
-`stimulus_onsets_path`, `vs_zero_deg`, and `background_luminance`. The HD world
-zero and the stimulus world zero are separate inputs. No offset is inferred.
-
-Optional `audio` settings are `audio_source` (`continuous` or `clicks`),
-`gain`, `audio_band_hz`, `audio_gate_sigma`, and `audio_expander_ratio`.
-Continuous audio is electrode voltage, not an isolated sorted-unit waveform.
-
-## Retired entries
-
-The old `sep` and tuning entries and their historical source/tests are retained
-under `research/legacy_ebc/`. They are not active root entrypoints. The old
-cylinder renderer snapshot is also preserved there. Current population-video
-helpers in `Utils.ebc_camera` remain for that separate workflow.
-These are source snapshots for historical comparison; running them requires
-their matching imports and dependencies. The current eight-ray display does
-not reproduce the saved inner/outer heatmaps or unit tuning-curve view.
+The renderers, synchronized-data export, and electrode-audio functions live
+under `Utils`. They are libraries, without additional command-line entrances.
+The analysis notebooks and `.rfmap` generation remain independent of video export.
 
 ## Population HD–RF prediction
 
@@ -219,7 +100,8 @@ GPU encoding is explicitly `h264_nvenc`; initialization failure stops the
 script. Decoding and overlay drawing use the CPU. On hhw9l84, driver-matched
 NVENC libraries are unpacked in the user's `.local/lib/rfmapping-nvenc`
 directory, and the script sets its process library path. The system driver
-is unchanged. This separate entry continues to request one overlay worker.
+is unchanged. Each encoder uses one overlay worker because the common
+multiworker renderer assumes the original video height.
 
 Real HD comes directly from C's `data/processed/head_direction.json`, entity
 `hp4`, field `head_direction_deg`. Motive XYZ comes from C's
@@ -265,3 +147,109 @@ pairs; they do not measure prediction accuracy. Scheme 3 was selected using
 HD+RF and remains descriptive, without a permutation p-value. A zero fitted
 cosine/sine vector has no defined direction; its length is not a confidence
 interval or probability.
+
+## Rectangle
+
+Edit the recording, pixel bounds, arena size, and audio/video settings at the
+top of `ebc_video_rectangle.py`, then run the file. Bounds use
+`(left, right, top, bottom)` in original camera pixels. The selected geometry
+travels with the recording data to renderer workers.
+
+```sh
+cd ~/Developer/rfmapping
+~/.virtualenvs/rfmapping/bin/python ebc_video_rectangle.py
+```
+
+The CLI can override the session, probe, phase, and output directory:
+
+```sh
+~/.virtualenvs/rfmapping/bin/python ebc_video_rectangle.py \
+  '/mnt/senzailab/Kai/#Recording/m20/260921/260921_11' \
+  --probe A --phase baseline --output-dir /tmp/rectangle_videos
+```
+
+`video_start_s` and `video_duration_s` select an optional clip. The default
+duration is `None`, which exports the full AVI. Each good unit receives its
+own `<unit_id>.mp4`, with shared image rendering and cached electrode audio.
+
+## Circle
+
+Edit the settings at the top of `ebc_video_circle.py`. The recording, camera
+registration, complete audited frame clock, VS registration, fixed level-pose
+reference, and preserved Motive CSV must belong to the selected recording.
+These calibrations are recording-specific.
+
+```sh
+~/.virtualenvs/rfmapping/bin/python ebc_video_circle.py
+```
+
+Use `--output-dir` to override the destination. This entrance retains every
+decoded frame and exports every good unit. Explicit synchronization gaps
+remain raw frames with omitted geometry and silent audio. Geometry uses
+the original Motive XYZ/fused-yaw calculation before camera projection.
+
+Rectangle and circle videos use continuous Open Ephys voltage from each
+unit's peak electrode. Other units and background on that electrode remain
+audible. Audio is cached and encoded once per distinct electrode.
+
+## Separate panels (`sep`)
+
+Export synchronized data and render the selected unit through one entrance:
+
+```sh
+~/.virtualenvs/rfmapping/bin/python ebc_video_sep.py \
+  '/mnt/senzailab/Kai/#Recording/m20/260922/260922_3' \
+  --unit 318 --probe A --start 500 --duration 6 \
+  --output-dir /tmp/ebc_sep
+```
+
+This display requires the saved inner/outer EBC maps. It reuses their rates
+and geometry; it does not fit a model or recompute EBC analysis. The output
+includes `session_overlay.json`, snapshots, and `screen_ebc_preview.mp4`.
+The figure and exported canvas have opaque white backgrounds.
+
+## Animal-centered tuning
+
+```sh
+~/.virtualenvs/rfmapping/bin/python ebc_tuning_video.py \
+  --date 260921 --session 11 \
+  --base-dir '/mnt/senzailab/Kai/#Recording/m20' \
+  --probe A --wall-config new --unit 2 --start 10 --duration 10 \
+  --output-dir /tmp/ebc_tuning
+```
+
+`base_dir` is the mouse directory containing date folders. `probe` defaults
+to A. `wall_config` selects the existing `old` or `new` Basler rectangle;
+it must match the arena used for the saved EBC analysis. Repeat `--unit`
+to select more units, or omit it to render all good units with saved maps.
+Units without any positive finite tuning bin are listed and skipped because
+their preferred-bearing ray is undefined.
+Omit `--duration` for the full recording. The script uses the selected
+phase's saved `egocentric_rate_map.rfmap`, without recomputing EBC analysis.
+
+Head direction comes only from `data/processed/head_direction.json`;
+CSV `front_x/front_y` provide the head position. Frame IDs join the two
+sources exactly. HD is north-zero clockwise, while EBC bearing is positive
+counterclockwise from the head. The curve sums saved Hz across distance
+bins using `RFMap.to_1d_array('y')` and scales its radius independently for
+each unit. Its maximum 1D bin defines the head-to-wall ray. Unvisited bins
+remain gaps. Missing JSON HD/position or out-of-bounds positions are labeled.
+
+The real Open Ephys peak-electrode voltage uses the existing 300–6000 Hz
+band-pass, gain and noise-expansion settings. This is the existing spike-band
+electrode soundtrack, not a low-frequency-only LFP trace or synthetic clicks.
+The audio clock uses measured camera exposure timestamps; the camera ADC
+channel is read from the saved tuning-curve metadata and can be overridden
+with `--camera-input-channel`. Each output has an MP4, PNG preview, and JSON
+manifest recording data sources, geometry, timing, and audio parameters.
+
+An existing JSON export can be rendered without loading the raw recording:
+
+```sh
+~/.virtualenvs/rfmapping/bin/python ebc_video_sep.py \
+  --input /path/to/session_overlay.json --start 500 --duration 6 \
+  --output-dir /tmp/ebc_sep
+```
+
+`--fps` can override the display frame rate. With an existing JSON, omitted
+start, duration, and FPS use its saved preview settings.
