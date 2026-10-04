@@ -9,13 +9,13 @@ from matplotlib import pyplot as plt
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
-from Utils import rf_analysis
-from Utils.rf_analysis import analyze_rf_file, save_rf_unit_lists
-from Utils.rf_plotting import (
+from Utils.rflocate import workflow as rf_analysis
+from Utils.rflocate.workflow import analyze_rf_file, save_rf_unit_lists
+from Utils.rflocate import RFMapList, RFResult, load_rf, load_rfmap, load_rf_tc, save_rf_tc
+from Utils.rflocate.plotting import (
     export_rf_units, plot_rf_population, plot_rf_unit,
     rf_population_counts, rf_unit_plot_data,
 )
-from Utils.rfmap import RFMapList, load_rf_maps
 
 
 def _write_indexed_source(path, *, counts=None, occupancy=None, unit_ids=None):
@@ -80,20 +80,19 @@ def test_analysis_matches_public_rf_views_and_preserves_rate_window(tmp_path, co
     expected_rates = counts[:1, ..., 1:].sum(axis=-1) / (2 * 0.2)
     np.testing.assert_allclose(result["summed"].to_2d_array(), expected_rates)
 
-    raw = load_rf_maps(source)
-    expected = RFMapList([raw[0]], source).sum(0.0, 0.2)
+    raw = load_rfmap(source).to_firing_rate()
+    expected = RFMapList([raw[0]], source).mean_rate(0.0, 0.2)
     options = dict(exclude_zero_bins=False, show_progress=False, rf_type=rf_type)
     z_2d = 1.5 if rf_type == "inhibitory" else 1.8
     z_1d = 0.75 if rf_type == "inhibitory" else 1.0
     mask_2d = expected.rf_2d(cluster_forming_z=z_2d, **options)
     center_2d = expected.rf_2d(cluster_forming_z=z_2d, is_center=True, **options)
-    mask_1d = expected.rf_1d(
-        cluster_forming_z=z_1d, collapse_from_2d=collapse_from_2d, **options,
-    )
-    center_1d = expected.rf_1d(
-        cluster_forming_z=z_1d, collapse_from_2d=collapse_from_2d,
-        is_center=True, **options,
-    )
+    if collapse_from_2d:
+        mask_1d = mask_2d.any(axis=1)
+        center_1d = center_2d.any(axis=1)
+    else:
+        mask_1d = expected.rf_1d(cluster_forming_z=z_1d, **options)
+        center_1d = expected.rf_1d(cluster_forming_z=z_1d, is_center=True, **options)
     for key, values in (
         ("mask_2d", mask_2d), ("center_2d", center_2d),
         ("mask_1d", mask_1d), ("center_1d", center_1d),
@@ -136,6 +135,26 @@ def test_analysis_matches_public_rf_views_and_preserves_rate_window(tmp_path, co
     assert summary["parameters"]["rf_type"] == rf_type
 
 
+def test_collapsed_analysis_projects_existing_detection_without_another_detector(tmp_path, monkeypatch):
+    source = tmp_path / "projected.rfmap"
+    _write_indexed_source(source)
+
+    def unexpected_detection(*args, **kwargs):
+        raise AssertionError("projecting an existing RF must not call rf_1d detection")
+
+    monkeypatch.setattr(RFMapList, "rf_1d", unexpected_detection)
+    result = analyze_rf_file(
+        source, probe="A", collapse_from_2d=True,
+        cluster_forming_z_2d=1.8, cluster_forming_z_1d=100.0,
+    )
+    np.testing.assert_array_equal(result["mask_1d"], result["mask_2d"].any(axis=1))
+    np.testing.assert_array_equal(result["center_1d"], result["center_2d"].any(axis=1))
+    parent = load_rf(result["output_paths"]["result_2d"])
+    projected = load_rf(result["output_paths"]["result_1d"])
+    assert projected["manifest"]["collapse_axis"] == "x"
+    assert projected["manifest"]["projection_source_cache_key"] == parent["cache_key"]
+
+
 def test_inhibitory_analysis_detects_suppression_and_preserves_excitatory_outputs(tmp_path):
     source = tmp_path / "suppression.rfmap"
     counts = np.full((1, 7, 30, 3), 24, dtype=np.uint32)
@@ -172,9 +191,9 @@ def test_both_analysis_loads_once_and_matches_separate_detections(tmp_path, monk
 
     def load(path):
         loads.append(path)
-        return load_rf_maps(path)
+        return load_rfmap(path)
 
-    monkeypatch.setattr(rf_analysis, "load_rf_maps", load)
+    monkeypatch.setattr(rf_analysis, "load_rfmap", load)
     analyses = analyze_rf_file(source, probe="B", rf_type="both", save_results=save_results)
 
     assert loads == [source]
@@ -305,37 +324,71 @@ def test_cli_both_saves_both_rf_types_with_their_default_thresholds(tmp_path):
 @pytest.mark.parametrize("rf_type", ["excitatory", "inhibitory"])
 @pytest.mark.parametrize("is_save", [False, True])
 @pytest.mark.parametrize("probes", [("A",), ("A", "B")])
-def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_save, probes):
+@pytest.mark.parametrize("rf_only", [False, True])
+def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_save, probes, rf_only):
     notebook = Path(__file__).resolve().parents[1] / "locate_rf.ipynb"
     source = "".join(json.loads(notebook.read_text())["cells"][2]["source"])
-    counts = np.full((2, 7, 30, 3), 24, dtype=np.uint32)
+    counts = np.full((3, 7, 30, 3), 24, dtype=np.uint32)
     counts[0] = 4
-    counts[0, :, 5:9, 1:] = 24
+    counts[0, 2:4, 5:9, 1:] = 24
     counts[1, :, 19:23, 1:] = 4
+    counts[2].reshape(210, 3)[[1, 2, 3], 1:] = 0
     sources = {}
     rf_dir = tmp_path / "260630/260630_3/data/rfmapping/good/-100_400_1ms"
     for probe in probes:
         probe_dir = rf_dir / f"Probe{probe}"
         probe_dir.mkdir(parents=True)
         sources[probe] = probe_dir / "regular_unitsSpikeCounts_260630_3.rfmap"
-        _write_indexed_source(sources[probe], counts=counts, unit_ids=[7, 11])
+        _write_indexed_source(sources[probe], counts=counts, unit_ids=[7, 11, 23])
 
     namespace = dict(
         analyze_rf_file=analyze_rf_file, save_rf_unit_lists=save_rf_unit_lists,
+        RFMapList=RFMapList, load_rfmap=load_rfmap, load_rf_tc=load_rf_tc, save_rf_tc=save_rf_tc,
         base_dir=tmp_path, probes=probes, is_rotation=False,
         date=260630, sessionID=3, rf_time_range=(0.0, 0.2),
         max_zero_bins=2, collapse_from_2d=False,
-        is_save=is_save, rf_type=rf_type,
+        is_save=is_save, rf_type=rf_type, rf_only=rf_only,
     )
     exec(compile(source, str(notebook), "exec"), namespace)
+    data_dir = tmp_path / "260630/260630_3/data"
+    expected_tc_paths = set()
+    window_counts = counts[..., 1:].sum(axis=-1)
     for probe, rf_source in sources.items():
         analyses = namespace["rf_analyses_by_probe"][probe]
         for detection_type, unit_id in (("excitatory", 7), ("inhibitory", 11)):
             analysis = analyses[detection_type]
             paths = _output_paths(rf_source, detection_type)
+            detected = analysis["result_2d"]
+            assert isinstance(detected, RFResult)
+            np.testing.assert_array_equal(detected.unit_ids, [7, 11])
+            np.testing.assert_array_equal(detected.mask_2d, analysis["mask_2d"])
+            np.testing.assert_array_equal(detected.center_2d, analysis["center_2d"])
             assert analysis["units_with_rf"] == [(probe, unit_id)]
             assert analysis["units_with_rf_1d"] == [(probe, unit_id)]
             assert all(path.is_file() == is_save for path in paths.values())
+            suffix = "_inhibitory" if rf_only and detection_type == "inhibitory" else ""
+            filename = f"{rf_source.stem}_Probe{probe}{suffix}_1d{'_rfonly' if rf_only else ''}.csv"
+            tc_path = data_dir / filename
+            expected_tc_paths.add(tc_path)
+            assert tc_path.is_file()
+            loaded = load_rf_tc(tc_path)
+            expected_ids = [7, 11] if rf_only else [7, 11, 23]
+            assert loaded.index.tolist() == expected_ids
+            assert analysis["tc_1d"].index.tolist() == expected_ids
+            np.testing.assert_array_equal(loaded.columns, np.arange(30) * 12.0)
+            expected_tc = window_counts.sum(axis=1).astype(float)
+            if rf_only:
+                expected_tc = expected_tc[:2]
+                for row, mask in enumerate(detected.mask_2d):
+                    selected_rows = mask.any(axis=1)
+                    expected_tc[row] = (
+                        window_counts[row, selected_rows].sum(axis=0)
+                        if selected_rows.any() else np.full(30, np.nan)
+                    )
+                empty_row = 1 if detection_type == "excitatory" else 0
+                assert loaded.iloc[empty_row].isna().all()
+            np.testing.assert_allclose(loaded.to_numpy(), expected_tc, equal_nan=True)
+            np.testing.assert_allclose(analysis["tc_1d"].to_numpy(), expected_tc, equal_nan=True)
             if is_save:
                 with np.load(paths["result_2d"], allow_pickle=False) as saved:
                     np.testing.assert_array_equal(saved["mask_2d"], analysis["mask_2d"])
@@ -348,6 +401,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
                     np.testing.assert_array_equal(np.load(paths[key], allow_pickle=False), [[probe, str(unit_id)]])
             else:
                 assert set(rf_source.parent.iterdir()) == {rf_source}
+    assert set(data_dir.glob("*.csv")) == expected_tc_paths
     for detection_type, unit_id in (("excitatory", 7), ("inhibitory", 11)):
         suffix = "_inhibitory" if detection_type == "inhibitory" else ""
         for stem in ("units_with_rf", "units_with_rf_1d"):

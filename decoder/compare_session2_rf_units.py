@@ -10,7 +10,7 @@ from matplotlib.colors import Normalize
 
 repo = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo))
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf, load_rfmap
 
 
 root = Path("/mnt/senzailab/Kai/#Recording/m19/260827")
@@ -32,11 +32,11 @@ titles = {2: "S2 · square / screen", 3: "S3 · bar / screen",
     5: "S5 · square / rotation", 7: "S7 · square / rotation", 10: "S10 · bar / ego"}
 rf_dir = "data/rfmapping/good/-100_400_1ms/ProbeA"
 cache_path = root / "260827_2" / rf_dir / "regular_unitsSpikeCounts_260827_2.npz"
-with np.load(cache_path, allow_pickle=False) as cache:
-    cache_units, centers = cache["unit_ids"], cache["center_2d"]
-    assert np.array_equal(cache_units[np.any(centers, axis=(1, 2))], units)
-    center_index = {int(u): np.argwhere(c)[0] for u, c in zip(cache_units, centers) if int(u) in units}
-    selection_manifest = json.loads(str(cache["manifest_json"]))
+detected_rf = load_rf(cache_path)
+cache_units, centers = detected_rf.unit_ids, detected_rf.center_2d
+assert np.array_equal(cache_units[np.any(centers, axis=(1, 2))], units)
+center_index = {int(u): np.argwhere(c)[0] for u, c in zip(cache_units, centers) if int(u) in units}
+selection_manifest = dict(detected_rf.manifest)
 
 plt.style.use("default")
 plt.rcParams.update({
@@ -50,7 +50,7 @@ plt.rcParams.update({
 maps, provenance = {}, []
 for session in sessions:
     path = root / f"260827_{session}" / rf_dir / files[session]
-    source = load_rf_maps(path, unit_firing_rate=True)
+    source = load_rfmap(path).to_firing_rate(reconstruct_presentations=True)
     missing = sorted(set(units) - set(source.unit_ids))
     assert missing == ([436] if session == 10 else []), (session, missing)
     if session == 10:
@@ -68,8 +68,8 @@ for session in sessions:
         assert np.all(np.isfinite(rf.spike_counts))
         maps[unit, session] = {
             "x": rf.x_positions.copy(), "y": rf.y_positions.copy(),
-            "response": rf(0.0, 0.2).to_2d_array().copy(),
-            "contrast": (rf(0.08, 0.16) - rf(0.0, 0.08)).to_2d_array().copy(),
+            "response": rf.mean_rate(0.0, 0.2).to_2d_array().copy(),
+            "contrast": (rf.mean_rate(0.08, 0.16) - rf.mean_rate(0.0, 0.08)).to_2d_array().copy(),
         }
     del source
     print(f"Loaded S{session}: {len(units) - len(missing)} selected RF maps", flush=True)
@@ -120,7 +120,7 @@ for unit in units:
             axes[row, col].set_title(titles[session] + "\n" + kind_labels[kind], fontsize=9)
         colorbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm,
             cmap="RdBu_r" if kind == "contrast" else "viridis"), ax=axes[row, :], shrink=0.84)
-        colorbar.set_label("Spikes / stimulus-exposure s", fontsize=8)
+        colorbar.set_label("Mean firing rate (Hz)", fontsize=8)
     fig.suptitle(f"Probe A · unit {unit} · selected by session 2's saved RF flag\n"
         "Within each row: same amplitude scale across sessions; native spatial grids; white x = saved S2 RF center", fontsize=11)
     fig.savefig(output / f"unit_{unit}.png", dpi=140, facecolor="white", transparent=False)
@@ -140,14 +140,14 @@ for kind in ["response", "contrast"]:
                 cmap="RdBu_r" if kind == "contrast" else "viridis"), ax=axes[row, :], shrink=0.75)
             colorbar.ax.tick_params(labelsize=8)
         fig.suptitle(f"Session-2 RF units · {kind_labels[kind]} · page {page}/4\n"
-            "Each unit uses one amplitude scale across sessions · units: spikes / stimulus-exposure s", fontsize=12)
+            "Each unit uses one amplitude scale across sessions · units: Hz", fontsize=12)
         fig.savefig(output / f"{kind}_page_{page}.png", dpi=140, facecolor="white", transparent=False)
         plt.close(fig)
 
 manifest = {"selected_units": units, "selection_file": str(selection_path),
     "selection_manifest": selection_manifest, "sources": provenance,
     "response_window_s": [0, 0.2], "contrast_windows_s": [[0.08, 0.16], [0, 0.08]],
-    "normalization": "Sum raw response counts in the named window, divided by occupancyTimeSec from the same RF source; matches load_rf_maps(unit_firing_rate=True). This is per stimulus-exposure second, not per response-window second.",
+    "normalization": "Mean firing rate in each named window: raw response counts divided by stimulus presentation count times response-window duration. Legacy presentation counts are explicitly reconstructed when absent. The contrast subtracts the two window means in Hz.",
     "comparison": "ON maps only. Native spatial grids and source coordinates are preserved. S2: screen-position squares; S3: full-height bars in 3-degree coverage bins; S5/S7: rotation-adjusted squares; S10: free-moving head-relative bars. No fitted spatial alignment, interpolation, smoothing, or new RF detection.",
     "missing": "Unit 436 has zero entries in S10 spike_clusters.npy and no map in the S10 RF source; it is explicitly annotated, not replaced with another map.",
     "interpretation": "The selected RF flags came from pooled-spatial-z detection with is_shuffle=false. The late-minus-early map is a timing contrast, not a significance test. Responses after 100 ms can overlap later stimuli; negative/early responses can include earlier stimuli."}
@@ -156,7 +156,7 @@ lines = ["# Session 2 标记的 RF units：跨 session 对比", "",
     "参考 `260827_2/data/units_with_rf.npy` 中的 20 个 Probe A units；该列表与保存的 RF center cache 一致。", "",
     "主图为 0–200 ms，与保存 RF 标记的时间窗一致；另附 80–160 ms 减 0–80 ms，对应现有 notebook 的时间对比。同一个 unit、同一种图在全部 session 共用幅度范围。", "",
     "方块刺激显示二维 RF；竖条刺激显示一维水平曲线，不能判断垂直位置。S5/S7 使用 rotation 文件，S10 使用 free-moving 文件，保留各自坐标，不拟合位移。不同刺激几何和坐标处理限制直接的 RF 形状/幅度等同性判断。", "",
-    "颜色与一维曲线均为窗口内 spike counts / 原文件 occupancyTimeSec（刺激覆盖总时长），未将每张图单独归一化到峰值。白色叉号为 S2 已保存的 RF center。", "",
+    "颜色与一维曲线均为窗口平均 firing rate（Hz）：窗口内 spike counts /（stimulus presentation count × 窗口长度）。未将每张图单独归一化到峰值。白色叉号为 S2 已保存的 RF center。", "",
     "Unit 436 在 session 10 原始 spike_clusters 中没有事件，图上明确标注。现有 RF 标记使用非 shuffle 的 pooled-spatial-z 筛选；本次只比较图，不重新判定统计显著性。", "",
     "## 图上观察", "",
     "- 135、136、267：S2 的局部响应在 S5/S7 仍出现在相近的正 azimuth、低 elevation 区域；S10 的晚减早响应较弱。",

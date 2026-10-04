@@ -20,9 +20,9 @@ def test_bin_and_window_hz_use_presentation_exposure_and_actual_widths():
     presentations = np.array([[2, 0]])
     edges = np.array([0.0, 0.1, 0.15, 0.3])
     rates = counts_to_rates(counts, presentations, edges)
-    np.testing.assert_allclose(rates, [[[[10, 10, 20], [0, 0, 0]]]])
-    np.testing.assert_allclose(aggregate_rate(rates, edges, 0, 3), [[[[15], [0]]]])
-    np.testing.assert_allclose(aggregate_rate(rates, edges, 1, 3), [[[[17.5], [0]]]])
+    np.testing.assert_allclose(rates, [[[[10, 10, 20], [np.nan, np.nan, np.nan]]]])
+    np.testing.assert_allclose(aggregate_rate(rates, edges, 0, 3), [[[[15], [np.nan]]]])
+    np.testing.assert_allclose(aggregate_rate(rates, edges, 1, 3), [[[[17.5], [np.nan]]]])
     np.testing.assert_array_equal(aggregate_rate(rates, edges, 1, 1), np.zeros((1, 1, 2, 1)))
 
 

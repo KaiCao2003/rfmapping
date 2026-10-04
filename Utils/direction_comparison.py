@@ -1,6 +1,7 @@
 """Shared unit-keyed angular profiles, peak sorting, and circular alignment."""
 
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -9,7 +10,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from Utils.json_tools import read_formatted_json
 from Utils.plotting import LIGHT_PLOT_STYLE, angular_ticks, plot_keyed_heatmap
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf as load_detected_rf, load_rfmap, load_rf_tc, rf_result_path
 from Utils.statistic_utils import rayleigh_uniformity
 from Utils.tuning_curve_utils import update_hd_classification
 
@@ -73,6 +74,8 @@ def normalize_tc(tc):
     values = result.where(np.isfinite(result))
     row_max = values.max(axis=1)
     result.iloc[:, :] = values.div(row_max.mask(row_max == 0, 1.0), axis=0)
+    if "response_units" in result.attrs:
+        result.attrs["response_units"] = "normalized"
     return result
 
 
@@ -88,6 +91,8 @@ def zscore_tc(tc):
     mean = values.mean(axis=1)
     sd = values.std(axis=1, ddof=0)
     result.iloc[:, :] = values.sub(mean, axis=0).div(sd.where(sd > 0), axis=0)
+    if "response_units" in result.attrs:
+        result.attrs["response_units"] = "zscore"
     return result
 
 
@@ -254,11 +259,18 @@ def smooth_profiles(profiles, smoothing_bins=0):
     return result
 
 
-def plot_profiles(profiles, order, name, *, axis=None, sort_name=None,
+def plot_profiles(profiles, order=None, name=None, *, axis=None, sort_name=None,
                   aligned=False, show=True, figsize=(10, 6), is_wrap=True,
                   reference_min=False, cmap="viridis", vmin=None, vmax=None,
-                  colorbar_label="Response"):
+                  colorbar_label=None):
     """Render supplied curve values without normalizing or standardizing them."""
+    order = profiles.index.tolist() if order is None else order
+    name = profiles.attrs.get("label", "TC") if name is None else name
+    if colorbar_label is None:
+        colorbar_label = {
+            "Hz": "Firing rate (Hz)", "spike_count": "Spike count",
+            "normalized": "Normalized response", "zscore": "Z-score (SD)",
+        }.get(profiles.attrs.get("response_units"), "Response")
     if (not profiles.index.is_unique or len(order) != len(profiles)
             or set(order) != set(profiles.index)):
         raise ValueError("order must be a permutation of all input unit keys")
@@ -286,11 +298,12 @@ def plot_profiles(profiles, order, name, *, axis=None, sort_name=None,
     if aligned == "sum":
         xlabel = f"{name} angle + {sort_name} {reference_bin} (°{'; wrapped' if is_wrap else ''})"
         suffix = f" | {reference_bin} sum"
+    title = f"{name}{suffix}" if sort_name is None else f"{name} | sorted by {sort_name}{suffix}"
     return plot_keyed_heatmap(
         dict(zip(profiles.index, values)), order,
         column_order=column_order, xticks=ticks,
         xticklabels=axis["ticklabels"], angle_centers=columns[column_order],
-        xlabel=xlabel, title=f"{name} | sorted by {sort_name or name}{suffix}",
+        xlabel=xlabel, title=title,
         show=show, figsize=figsize, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar_label=colorbar_label,
     )
@@ -329,7 +342,7 @@ def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap
 def plot_comparison_heatmaps(comparison, *, sorted_by_axis=None, apply_to_axis=None,
                              save_dir=None, show=True, figsize=(10, 6), labels=None,
                              names=(0, 1), cmap="viridis", vmin=None, vmax=None,
-                             colorbar_label="Response"):
+                             colorbar_label=None):
     """Render the ordered and transformed tables from prepare_comparison."""
     reference, matched = comparison["reference"], comparison["matched"]
     labels = ((reference.attrs.get("label", "Reference"), matched.attrs.get("label", "Matched"))
@@ -410,6 +423,7 @@ def load_hd_profiles(path, *, probe="A", bins=30, smoothing_deg=0, hd_class=None
     edges = edges[::n_native // bins]
     angles = (edges[:-1] + edges[1:]) / 2
     profiles = profile_table(rates, ids, angles, probe=probe)
+    profiles.attrs["response_units"] = "Hz"
     profiles.attrs["unit_info"] = {
         key: {"hd_class": value} for key, value in zip(profiles.index, classes, strict=True)
     }
@@ -417,126 +431,194 @@ def load_hd_profiles(path, *, probe="A", bins=30, smoothing_deg=0, hd_class=None
 
 
 def load_ebc_profiles(path, *, probe="A"):
-    """Read every EBC unit with missing source responses represented by zero."""
-    maps = load_rf_maps(path)
+    """Read every EBC unit, retaining missing source responses as NaN."""
+    maps = load_rfmap(path)
     angles = maps[0].y_positions
-    profiles = profile_table(maps.to_1d_array(axis="y"), maps.unit_ids, angles, probe=probe)
+    projected = maps.sum_to_1d(axis="y")
+    profiles = profile_table(projected.to_1d_array(axis="y"), maps.unit_ids, angles, probe=probe)
+    profiles.attrs["response_units"] = maps[0].metadata.get("responseUnits", "spike_count")
     profiles.attrs["unit_info"] = {key: {} for key in profiles.index}
     return profiles
 
 
-def load_rf_profiles(source, *, probe="A", window=(0.0, .2), smoothing_bins=0,
-                     max_zero_bins=None, rf_type=None,
-                     rf_detection="excitatory", range: list[int] | None = None):
-    """Project RF units, optionally selecting saved localization and native x bins.
+def rf_profiles(maps, *, axis="x", probe="A", range: list[int] | None = None):
+    """Wrap prepared 1-D RF maps or a loaded TC CSV in a probe-keyed table.
 
-    Missing responses are zero. Count native zero bins before smoothing or
-    resampling; None disables the zero-bin limit. rf_type selects saved '2d', '1d', or
-    'either' detections; None retains all source units without reading localization.
-    rf_detection selects excitatory/inhibitory files without changing responses.
+    Select the time window and call ``sum_to_1d`` before this conversion when
+    either axis still needs aggregation. Native angles, missing values, and
+    unit order are retained; selection and smoothing are separate operations.
     """
-    if rf_type not in (None, "2d", "1d", "either"):
-        raise ValueError("rf_type must be None, '2d', '1d', or 'either'")
-    if rf_detection not in ("excitatory", "inhibitory"):
-        raise ValueError("rf_detection must be 'excitatory' or 'inhibitory'")
-    source = Path(source)
-    maps = load_rf_maps(source, unit_firing_rate=False).sum(*window, show_progress=False)
-    responses = maps.to_1d_array(axis="x").astype(float)
-    responses = np.where(np.isnan(responses), 0., responses)
-    angles = maps[0].x_positions
-    profiles = profile_table(responses, maps.unit_ids, angles, probe=probe)
+    if isinstance(maps, pd.DataFrame):
+        responses = maps.to_numpy()
+        angles = maps.columns.to_numpy(dtype=float)
+        unit_ids = maps.index
+        response_units = maps.attrs.get("response_units", "spike_count")
+    else:
+        responses = maps.to_1d_array(axis=axis)
+        angles = maps[0].x_positions if axis.strip().lower() == "x" else maps[0].y_positions
+        unit_ids = maps.unit_ids
+        response_units = maps[0].metadata.get("responseUnits", "spike_count")
+    index = pd.MultiIndex.from_product([[probe], unit_ids], names=["probe", "unit_id"])
+    profiles = pd.DataFrame(responses, index=index, columns=angles, copy=True)
     if range is not None:
         profiles.attrs["range"] = list(range)
     profiles.attrs["response_kind"] = "RF"
+    profiles.attrs["response_units"] = response_units
     profiles.attrs["unit_info"] = {
         key: {"zero_bins": int(zero)}
         for key, zero in zip(profiles.index, profiles.eq(0).sum(axis=1), strict=True)
     }
-    if rf_type is not None:
-        detection_source = (source.with_name(f"{source.stem}_inhibitory{source.suffix}")
-                            if rf_detection == "inhibitory" else source)
-        dimensions = ("2d", "1d") if rf_type == "either" else (rf_type,)
-        detected_ids = set()
-        for dimension in dimensions:
-            result_path = (detection_source.with_suffix(".npz") if dimension == "2d" else
-                           detection_source.with_name(f"{detection_source.stem}_1d.npz"))
-            with np.load(result_path, allow_pickle=False) as result:
-                detected = np.any(result["mask_2d"], axis=(1, 2))
-                detected_ids.update(result["unit_ids"][detected].tolist())
-        # Localization may contain a QC subset in a different unit order.
-        profiles = profiles.loc[profiles.index.get_level_values("unit_id").isin(detected_ids)].copy()
-        profiles.attrs["unit_info"] = {
-            key: profiles.attrs["unit_info"][key].copy() for key in profiles.index
-        }
-    if max_zero_bins is not None:
-        profiles = rf_pick(profiles, max_zero_bins)
-    return smooth_profiles(profiles, smoothing_bins)
+    return profiles
+
+
+def load_rf_profiles(source, *, axis="x", probe="A", range: list[int] | None = None):
+    """Read a TC CSV or prepared 1-D RF map, preserving native values and angles.
+
+    Raw multi-bin or two-dimensional sources require explicit time aggregation
+    and ``sum_to_1d`` followed by ``rf_profiles``. This loader does no detection,
+    selection, smoothing, rate conversion, or angular resampling.
+    """
+    source = Path(source)
+    profiles = load_rf_tc(source) if source.suffix.lower() == ".csv" else load_rfmap(source)
+    return rf_profiles(profiles, axis=axis, probe=probe, range=range)
+
+
+def select_rf_profiles(profiles, *detected_results):
+    """Select one probe's native profiles by explicitly supplied saved results."""
+    if (profiles.index.names not in (["probe", "unit_id"], ["source", "probe", "unit_id"],
+                                    ["mouse", "date", "probe", "unit_id"])
+            or len(profiles.index.droplevel("unit_id").unique()) > 1):
+        raise ValueError("select RF units for one probe and recording before pooling")
+    detected_ids = set()
+    for result in detected_results:
+        detected = np.any(result["mask_2d"], axis=(1, 2))
+        detected_ids.update(result["unit_ids"][detected].tolist())
+    # Localization may contain a QC subset in a different unit order.
+    table = profiles.loc[profiles.index.get_level_values("unit_id").isin(detected_ids)].copy()
+    table.attrs["unit_info"] = {
+        key: profiles.attrs["unit_info"][key].copy() for key in table.index
+    }
+    return table
 
 
 def load_rf_centers(source, *, probe="A"):
     """Read localized RF centers for distance analyses, independently of curve loading."""
     source = Path(source)
-    with np.load(source.with_suffix(".npz"), allow_pickle=False) as result:
-        masks = result["mask_2d"]
-        centers = result["center_2d"]
-        unit_ids = result["unit_ids"]
-    maps = load_rf_maps(source, unit_firing_rate=False)
+    result = load_detected_rf(rf_result_path(source))
+    masks = result.mask_2d
+    centers = result.center_2d
+    unit_ids = result.unit_ids
+    maps = load_rfmap(source)
     selected = np.any(masks, axis=(1, 2))
     _, y, x = np.nonzero(centers[selected])
     index = pd.MultiIndex.from_product([[probe], unit_ids[selected]], names=["probe", "unit_id"])
     return pd.DataFrame({"rf_x_deg": maps[0].x_positions[x], "rf_y_deg": maps[0].y_positions[y]}, index=index)
 
 
-def _prepare_profiles(profiles, *, mouse, date, range: list[int]):
-    """Put every reader on one unit index and 30-bin grid, retaining source order."""
-    if profiles.index.names != ["probe", "unit_id"]:
-        raise ValueError("profiles must be indexed by (probe, unit_id)")
+def resample_profiles(profiles, *, range: list[int], bins=30):
+    """Explicitly wrap angles and interpolate curves to the requested bin grid."""
+    if isinstance(bins, (bool, np.bool_)) or not isinstance(bins, (int, np.integer)) or bins < 1:
+        raise ValueError("bins must be a positive integer")
     angles = np.asarray(profiles.columns, dtype=float)
     ticks = _range_ticks(range)
-    edges = np.linspace(ticks[0], ticks[-1], 31)
+    edges = np.linspace(ticks[0], ticks[-1], bins + 1)
     centers = ((edges[:-1] + edges[1:]) / 2 + 180) % 360 - 180
     angles = (angles + 180) % 360 - 180
     profiles = profiles.copy()
-    profiles.attrs["range"] = list(range)
+    profiles.attrs.setdefault("range", list(range))
     if len(angles) == len(centers) and np.array_equal(np.sort(angles), np.sort(centers)):
         table = profiles.copy()
         table.columns = angles
     else:
         table = _resample_profiles(profiles, centers)
+    table.attrs["range"] = list(range)
+    return table
+
+
+def recording_profiles(profiles, *, mouse, date, label=None):
+    """Add recording keys and an optional label without changing curve values."""
+    if profiles.index.names != ["probe", "unit_id"]:
+        raise ValueError("profiles must be indexed by (probe, unit_id)")
+    table = profiles.copy()
     table = pd.concat({(str(mouse), str(date)): table}, names=["mouse", "date"])
+    table.attrs = profiles.attrs.copy()
     unit_info = profiles.attrs.get("unit_info", {})
     table.attrs["unit_info"] = {
         (str(mouse), str(date), *key): unit_info[key].copy()
         for key in profiles.index if key in unit_info
     }
-    table.attrs["range"] = list(range)
+    if label is not None:
+        table.attrs["label"] = label
     return table
 
 
-def load_tc(path, *, mouse, date, probe="A", label="HD", range: list[int] | None = None,
-            bins=30, smoothing_deg=0, hd_class=None):
-    """Read all HD units, optionally selecting classes, with full recording keys."""
-    profiles = load_hd_profiles(
-        Path(path), probe=probe, bins=bins, smoothing_deg=smoothing_deg, hd_class=hd_class,
-    )
-    table = _prepare_profiles(profiles, mouse=mouse, date=date,
-                              range=tcRange(False) if range is None else range)
-    table.attrs["label"] = label
+def _prepare_profiles(profiles, *, mouse, date, range: list[int]):
+    """Prepare the existing HD/EBC comparison grid and recording keys."""
+    return recording_profiles(resample_profiles(profiles, range=range), mouse=mouse, date=date)
+
+
+def _tc_path_identity(path):
+    """Read identity from the session data layout and Probe directory/CSV name."""
+    probe = None
+    for parent in path.parents:
+        match = re.fullmatch(r"Probe([A-Za-z0-9]+)(?:_.*)?", parent.name)
+        if match:
+            probe = match[1]
+            break
+    if probe is None:
+        match = re.search(r"(?:^|_)Probe([A-Za-z0-9]+)(?:_|$)", path.stem)
+        probe = match[1] if match else "A"
+    for parent in path.parents:
+        if parent.name == "data":
+            session = parent.parent
+            day = session.parent
+            if day.name.isdigit() and session.name.startswith(f"{day.name}_"):
+                return day.parent.name, day.name, probe
+    return None, None, probe
+
+
+def load_tc(path, *, mouse=None, date=None, probe=None, label=None, kind="HD",
+            range: list[int] | None = None, response_units=None, **options):
+    """Read a file into the shared TC table, deriving identity from its path.
+
+    ``kind="RF"`` reads a saved TC CSV or prepared RF map without generating,
+    detecting, selecting, or resampling curves. ``range`` only sets its display
+    labels. HD and EBC retain their existing readers and comparison grids;
+    reader-specific options, such as HD ``bins``, are passed through.
+    ``response_units`` supplies a units label for stored values, not a conversion.
+    Explicit recording keys override the session layout for existing callers.
+    Other layouts keep the source path so concat can distinguish same-ID units.
+    """
+    if (mouse is None) != (date is None):
+        raise ValueError("mouse and date must be supplied together")
+    source = Path(path).resolve()
+    source_mouse, source_date, source_probe = _tc_path_identity(Path(path).absolute())
+    if mouse is None:
+        mouse, date = source_mouse, source_date
+    if probe is None:
+        probe = source_probe
+    readers = {"HD": load_hd_profiles, "RF": load_rf_profiles, "EBC": load_ebc_profiles}
+    kind = kind.upper()
+    if kind not in readers:
+        raise ValueError("kind must be HD, RF, or EBC")
+    if kind == "RF":
+        options["range"] = range
+    table = readers[kind](Path(path), probe=probe, **options)
+    if kind != "RF":
+        table = resample_profiles(table, range=tcRange(kind != "HD") if range is None else range)
+    if mouse is not None:
+        table = recording_profiles(table, mouse=mouse, date=date)
+    table.attrs["source"] = str(source)
+    table.attrs["label"] = kind if label is None else label
+    if response_units is not None:
+        table.attrs["response_units"] = response_units
     return table
 
 
-def load_rf(path, *, mouse, date, probe="A", label="RF", range: list[int] | None = None,
-            window=(0.0, .2), smoothing_bins=0, max_zero_bins=None,
-            rf_type=None, rf_detection="excitatory"):
-    """Read RF curves; rf_type selects saved detections, bin limits remain optional."""
-    angle_range = tcRange(True) if range is None else range
-    profiles = load_rf_profiles(
-        Path(path), probe=probe, window=window, smoothing_bins=smoothing_bins,
-        max_zero_bins=max_zero_bins, rf_type=rf_type, rf_detection=rf_detection, range=angle_range,
-    )
-    table = _prepare_profiles(profiles, mouse=mouse, date=date, range=angle_range)
-    table.attrs["label"] = label
-    return table
+def load_rf(path, *, mouse, date, probe="A", label="RF", axis="x", range: list[int] | None = None):
+    """Read prepared RF curves with recording keys, preserving the native grid."""
+    return load_tc(path, kind="RF", mouse=mouse, date=date, probe=probe,
+                   label=label, axis=axis, range=range)
 
 
 def load_ebc(path, *, mouse, date, probe="A", label="EBC", range: list[int] | None = None):
@@ -548,25 +630,43 @@ def load_ebc(path, *, mouse, date, probe="A", label="EBC", range: list[int] | No
     return table
 
 
-def combine(*curves, label=None, range: list[int] | None = None):
+def concat(*curves, label=None, range: list[int] | None = None):
     """Stack curve tables without averaging; reject duplicate unit keys.
 
     Matching grids retain the first input's bin order and display labels.
     Different grids require an explicit common range and are interpolated in
     physical degrees onto 30 bins, with partial fields left blank outside coverage.
     """
+    inputs = []
+    for curve in curves:
+        if curve.index.names == ["probe", "unit_id"] and "source" in curve.attrs:
+            source = curve.attrs["source"]
+            keyed = pd.concat({source: curve}, names=["source"])
+            keyed.attrs = curve.attrs.copy()
+            keyed.attrs["unit_info"] = {
+                (source, *key): info.copy()
+                for key, info in curve.attrs.get("unit_info", {}).items()
+                if key in curve.index
+            }
+            curve = keyed
+        inputs.append(curve)
+    curves = inputs
     if range is None:
         centers = curves[0].columns
         if any(set(curve.columns) != set(centers) for curve in curves[1:]):
-            raise ValueError("different angular grids require an explicit common range in combine")
+            raise ValueError("different angular grids require an explicit common range in concat")
         aligned = [curve.reindex(columns=centers) for curve in curves]
     else:
         ticks = _range_ticks(range)
         edges = np.linspace(ticks[0], ticks[-1], 31)
         centers = ((edges[:-1] + edges[1:]) / 2 + 180) % 360 - 180
-        aligned = [_resample_profiles(curve, centers) for curve in curves]
+        aligned = [resample_profiles(curve, range=range).reindex(columns=centers) for curve in curves]
     table = pd.concat(aligned, verify_integrity=True)
     table.attrs = curves[0].attrs.copy()
+    table.attrs.pop("source", None)
+    for attribute in ("response_units", "response_kind"):
+        if any(curve.attrs.get(attribute) != curves[0].attrs.get(attribute) for curve in curves[1:]):
+            table.attrs.pop(attribute, None)
     if range is not None:
         table.attrs["range"] = list(range)
     table.attrs["unit_info"] = {
@@ -575,7 +675,14 @@ def combine(*curves, label=None, range: list[int] | None = None):
     }
     if label is not None:
         table.attrs["label"] = label
+    else:
+        labels = dict.fromkeys(curve.attrs["label"] for curve in curves if "label" in curve.attrs)
+        if labels:
+            table.attrs["label"] = " + ".join(labels)
     return table
+
+
+combine = concat
 
 
 class TuningCurveCollection:
@@ -613,8 +720,9 @@ class TuningCurveCollection:
         if kind == "RF":
             options["range"] = range
         profiles = readers[kind](Path(path), probe=probe, **options)
-        table = _prepare_profiles(profiles, mouse=mouse, date=date,
-                                  range=tcRange(False) if range is None else range)
+        table = (recording_profiles(profiles, mouse=mouse, date=date) if kind == "RF" else
+                 _prepare_profiles(profiles, mouse=mouse, date=date,
+                                   range=tcRange(False) if range is None else range))
         self.profiles[prefix] = table
         return table
 

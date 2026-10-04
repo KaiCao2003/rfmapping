@@ -1,17 +1,16 @@
 """Print HD with 1D RF, 2D RF, or both / all HD, and plot a pie chart.
 
-HD means class 3. Read saved RF detections; missing 1D results are calculated
-in memory on the saved 2D QC unit pool. Run on hhw9l84 with the rfmapping venv.
+HD means class 3. Both 1D and 2D detections must already be saved; use
+locate_rf.py to generate them. Run on hhw9l84 with the rfmapping venv.
 """
 
 from pathlib import Path
 
-import numpy as np
 from matplotlib import pyplot as plt
 
 from Utils.direction_comparison import load_tc
 from Utils.plotting import LIGHT_PLOT_STYLE
-from Utils.rfmap import RFMapList, load_rf_maps
+from Utils.rflocate import load_rf, rf_result_path
 
 
 ROOT = Path("/mnt/senzailab/Kai/#Recording")
@@ -23,29 +22,14 @@ RECORDINGS = [
     ("m20", 260921, 9, 2, ("A",)),
 ]
 HD_CLASS = 3
-RF_WINDOW_S = (0.0, 0.2)
 OUTPUT_FILE = Path("output/hd_rf_fraction.png")
 
 
 def rf_unit_ids(rf_file):
-    with np.load(rf_file.with_suffix(".npz"), allow_pickle=False) as result:
-        qc_ids = result["unit_ids"]
-        ids_2d = set(qc_ids[result["mask_2d"].any(axis=(1, 2))].tolist())
-
-    rf_1d_file = rf_file.with_name(f"{rf_file.stem}_1d.npz")
-    if rf_1d_file.exists():
-        with np.load(rf_1d_file, allow_pickle=False) as result:
-            ids_1d = set(result["unit_ids"][result["mask_2d"].any(axis=(1, 2))].tolist())
-    else:
-        summed = load_rf_maps(rf_file).sum(*RF_WINDOW_S, show_progress=False)
-        qc_ids = set(qc_ids.tolist())
-        summed = RFMapList([rf_map for rf_map in summed if rf_map.unit_id in qc_ids], rf_file)
-        # Match the saved 1D detections: collapse x, mean + 1 SD, components >2 bins.
-        mask = summed.rf_1d(
-            is_shuffle=False, cluster_forming_z=1.0, drop_bins=2,
-            wrap_x=True, show_progress=False,
-        )
-        ids_1d = set(np.asarray(summed.unit_ids)[mask.any(axis=1)].tolist())
+    result_2d = load_rf(rf_result_path(rf_file))
+    result_1d = load_rf(rf_result_path(rf_file, dimension="1d"))
+    ids_2d = set(result_2d.unit_ids[result_2d.mask_2d.any(axis=(1, 2))].tolist())
+    ids_1d = set(result_1d.unit_ids[result_1d.mask_2d.any(axis=(1, 2))].tolist())
     return ids_1d, ids_2d
 
 

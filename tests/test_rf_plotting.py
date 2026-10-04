@@ -9,6 +9,7 @@ from Utils import direction_comparison as comparison
 from Utils import rf_plotting
 from Utils.plotting import plot_tuning_curves_for_cluster
 from Utils.rfmap import plot_1d_rfmap
+from Utils.rflocate import RFMapList, RFResult, asrfmap
 
 
 def test_rf_unit_plot_uses_supplied_horizontal_response(tmp_path):
@@ -27,6 +28,32 @@ def test_rf_unit_plot_uses_supplied_horizontal_response(tmp_path):
     assert figure.get_facecolor() == (1, 1, 1, 1)
     assert all(axis.get_facecolor() == (1, 1, 1, 1) for axis in figure.axes)
     assert (tmp_path / "unit.svg").is_file()
+
+
+def test_unit_plot_data_sums_whole_rf_rows_without_detection(monkeypatch):
+    response = np.array([[1., 2.], [10., 20.], [3., 4.]])
+    rf_map = asrfmap(response)
+    mask = np.array([[[0, 0], [1, 0], [0, 0]]], dtype=np.uint8)
+    detected = RFResult(
+        mask_2d=mask, center_2d=mask, unit_ids=[0], manifest={}, cache_key="saved-2d",
+    )
+    analysis = {
+        "summed": RFMapList([rf_map], rf_map.source_path), "result_2d": detected,
+        "mask_2d": detected.mask_2d, "center_2d": detected.center_2d,
+        "mask_1d": detected.project("x")[:, 0],
+        "center_1d": detected.project("x", center_only=True)[:, 0],
+    }
+
+    def unexpected_detection(*args, **kwargs):
+        raise AssertionError("plot preparation must use the supplied 2-D RF")
+
+    monkeypatch.setattr("Utils.rflocate._detector.detect_rf", unexpected_detection)
+    all_rows = rf_plotting.rf_unit_plot_data(analysis, 0, rf_only=False)
+    rf_rows = rf_plotting.rf_unit_plot_data(analysis, 0, rf_only=True)
+    np.testing.assert_array_equal(all_rows["response_1d"], [14., 26.])
+    np.testing.assert_array_equal(rf_rows["response_1d"], [10., 20.])
+    np.testing.assert_array_equal(rf_rows["response"], response)
+    np.testing.assert_array_equal(rf_rows["mask_1d"], [1, 0])
 
 
 def test_population_plot_does_not_count_or_smooth(monkeypatch):

@@ -13,7 +13,7 @@ from scipy.stats import false_discovery_control, rankdata
 
 import spatial_cell_analysis as spatial
 from Utils.json_tools import read_formatted_json
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rfmap
 from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, tuning_curve
 
 
@@ -197,7 +197,7 @@ def band_mask(centers, lower, upper):
 
 
 def ebc_distance_peaks(path, *, probe="A", bands=BANDS12):
-    maps = load_rf_maps(path)
+    maps = load_rfmap(path).to_firing_rate()
     values_by_unit = maps.to_2d_array()
     rows = []
     for name, lower, upper in (*bands, ("all", None, None)):

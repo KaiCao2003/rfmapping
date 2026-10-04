@@ -17,8 +17,12 @@ from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import hd_pick, load_rf, load_tc, rf_pick
+from Utils.direction_comparison import (
+    hd_pick, load_tc, recording_profiles, resample_profiles, rf_pick, rf_profiles,
+    select_rf_profiles, tcRange,
+)
 from Utils.plotting import LIGHT_PLOT_STYLE
+from Utils.rflocate import load_rf, load_rfmap, rf_result_path
 from Utils.tuning_curve_utils import von_mises_kappa
 
 
@@ -56,7 +60,12 @@ def collect_units(root):
             hd = load_tc(tc_path, **recording)
             # This cutoff audit includes both classes that pass the significance tests.
             hd_significant = hd_pick(hd, hd_class=(2, 3))
-            rf = load_rf(rf_path, **recording, rf_type="2d")
+            maps = load_rfmap(rf_path).sum(0., .2, show_progress=False).sum_to_1d(axis="x")
+            profiles = rf_profiles(maps, probe=probe)
+            profiles = select_rf_profiles(profiles, load_rf(rf_result_path(rf_path)))
+            rf = recording_profiles(
+                resample_profiles(profiles, range=tcRange(True)), mouse=mouse, date=date,
+            )
             paired = hd_significant.index.intersection(rf_pick(rf, max_zero_bins=2).index)
             for index, (unit_id, curve) in enumerate(zip(data["unit_id"], rates, strict=True)):
                 key = (mouse, str(date), probe, unit_id)

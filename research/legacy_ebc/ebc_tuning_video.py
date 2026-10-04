@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 from Utils import ebc_video as video
 from Utils.ebc_analysis import BASLER_SIZE_CM, boundary_new, boundary_old
 from Utils.json_tools import read_formatted_json
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rfmap
 from Utils.tuning_curve_utils import get_exposure_timestamps
 
 
@@ -184,9 +184,9 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     data = load_json_pose(session, args.probe, args.phase, args.wall_config, args.camera_input_channel)
     map_path = session / "data/spatial_cells" / f"Probe{args.probe}" / args.phase / "egocentric_rate_map.rfmap"
-    maps = load_rf_maps(map_path)
+    maps = load_rfmap(map_path).to_firing_rate(reconstruct_presentations=True)
     channels = video._good_unit_channels(Path(data["kilosort_dir"]))
-    curves = {item.unit_id: item.to_1d_array(axis="y") for item in maps}
+    curves = {item.unit_id: item.to_1d_array(axis="y") for item in maps.sum_to_1d(axis="y")}
     eligible = sorted(unit for unit in set(channels) & set(curves)
                       if np.any(np.isfinite(curves[unit]) & (curves[unit] > 0)))
     units = eligible if args.unit is None else args.unit

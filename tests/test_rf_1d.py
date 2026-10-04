@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from Utils.rfmap import RFMap, RFMapList, asrfmap
+from Utils.rf_cache import read_rf_result
 
 
 @pytest.mark.parametrize("axis", ["x", "y"])
@@ -30,19 +31,28 @@ def test_rf_1d_thresholds_collapsed_responses(axis):
     )
 
 
-def test_rf_1d_can_preserve_the_original_2d_projection():
+def test_rf_1d_can_preserve_the_original_2d_projection(tmp_path, monkeypatch):
     rf_map = asrfmap([[10, 10, 0, 0, 0, 0], [0, 0, 10, 10, 0, 0]])
     options = dict(drop_bins=0, wrap_x=False, show_progress=False)
     assert not rf_map.rf_1d(**options).any()
+    result_path = tmp_path / "result_2d.npz"
+    mask = rf_map.rf_2d(result_path=result_path, **options)
+    detected_rf = read_rf_result(result_path)
+    rf_map.rf_2d(result_path=result_path, cluster_forming_z=1.0, **options)
+    lower_threshold_rf = read_rf_result(result_path)
+
+    def unexpected_detection(*args, **kwargs):
+        raise AssertionError("projection must use the supplied detection")
+
+    monkeypatch.setattr(RFMap, "_detect_rf", unexpected_detection)
     np.testing.assert_array_equal(
-        rf_map.rf_1d(collapse_from_2d=True, **options),
-        rf_map.rf_2d(**options).any(axis=0),
+        rf_map.rf_1d(collapse_from_2d=True, detected_rf=detected_rf),
+        mask.any(axis=0),
     )
     np.testing.assert_array_equal(
-        rf_map.rf_1d(collapse_from_2d=True, cluster_forming_z=1.0, **options),
+        rf_map.rf_1d(collapse_from_2d=True, detected_rf=lower_threshold_rf),
         [1, 1, 1, 1, 0, 0],
     )
-    assert not rf_map.rf_1d(**options).any()
 
 
 def test_rf_1d_saved_center_reuses_collapsed_result(tmp_path, monkeypatch):
@@ -66,6 +76,37 @@ def test_rf_1d_saved_center_reuses_collapsed_result(tmp_path, monkeypatch):
         assert saved["center_2d"].shape == (1, 1, 30)
 
 
+@pytest.mark.parametrize("axis", ["x", "y"])
+@pytest.mark.parametrize("rf_type", ["excitatory", "inhibitory"])
+@pytest.mark.parametrize("exclude_zero_bins", [False, True])
+def test_batch_saved_views_match_single_unit_views(
+        tmp_path, monkeypatch, axis, rf_type, exclude_zero_bins):
+    values = np.full((7, 30), 4.0)
+    values[:, 5:8] = 12
+    values[:, 17:20] = 0.5
+    values[0, 0] = 0
+    if axis == "y":
+        values = values.T
+    maps = [asrfmap(values), replace(asrfmap(values * 2), unit_id=7, unit_index=1)]
+    options = dict(axis=axis, rf_type=rf_type, exclude_zero_bins=exclude_zero_bins,
+                   show_progress=False)
+    expected_mask = np.stack([rf_map.rf_1d(**options) for rf_map in maps])
+    expected_center = np.stack([rf_map.rf_1d(is_center=True, **options) for rf_map in maps])
+    result_path = tmp_path / "batch_1d.npz"
+    batch = RFMapList(maps, "<array>")
+    np.testing.assert_array_equal(batch.rf_1d(result_path=result_path, **options), expected_mask)
+
+    def unexpected_detection(*args, **kwargs):
+        raise AssertionError("the saved batch result should be reused")
+
+    monkeypatch.setattr(RFMapList, "_detect_rf", unexpected_detection)
+    fresh = RFMapList(maps, "<array>")
+    for source in (batch, fresh):
+        actual = source.rf_1d(is_center=True, result_path=result_path, **options)
+        np.testing.assert_array_equal(actual, expected_center)
+        assert not actual.flags.writeable
+
+
 def test_rf_1d_treats_unpresented_and_nan_columns_as_zero():
     values = np.zeros((2, 30))
     values[:, 5:8] = 10
@@ -77,7 +118,7 @@ def test_rf_1d_treats_unpresented_and_nan_columns_as_zero():
     expected = np.zeros(30, dtype=np.uint8)
     expected[5:8] = 1
     np.testing.assert_array_equal(rf_map.rf_1d(show_progress=False), expected)
-    np.testing.assert_array_equal(rf_map.to_1d_array(), np.nansum(values, axis=0))
+    np.testing.assert_array_equal(rf_map.sum_to_1d().to_1d_array(), values.sum(axis=0))
 
 
 def test_rf_1d_batch_requires_matching_response_windows():

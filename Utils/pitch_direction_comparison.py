@@ -12,7 +12,7 @@ from scipy.stats import linregress
 from Utils.json_tools import read_formatted_json
 from Utils.kilosort_utils import _locate_spike_arrays
 from Utils.plotting import LIGHT_PLOT_STYLE, plot_keyed_heatmap
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf, load_rfmap, rf_result_path
 from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, update_hd_classification
 
 
@@ -190,12 +190,12 @@ def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
     is -yPositions. No circular transform, smoothing, or baseline subtraction.
     """
     source = Path(source)
-    maps = load_rf_maps(source, unit_firing_rate=True).sum(*window, show_progress=False)
+    maps = load_rfmap(source).to_firing_rate(reconstruct_presentations=True).mean_rate(*window, show_progress=False)
     elevation = y_to_elevation_sign * maps[0].y_positions
     order = np.argsort(elevation)
     index = pd.MultiIndex.from_tuples([(mouse, str(date), probe, int(uid)) for uid in maps.unit_ids],
                                      names=["mouse", "date", "probe", "unit_id"])
-    profiles = pd.DataFrame(maps.to_1d_array(axis="y")[:, order], index=index, columns=elevation[order])
+    profiles = pd.DataFrame(maps.sum_to_1d(axis="y").to_1d_array(axis="y")[:, order], index=index, columns=elevation[order])
     max_2d = []
     for rf_map in maps:
         matrix = rf_map.to_2d_array()[order]
@@ -207,8 +207,8 @@ def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
     peaks = pd.DataFrame({"rf_vertical_profile_peak_deg": _linear_profile_peaks(profiles),
                           "rf_2d_max_elevation_deg": max_2d}, index=index)
     if rf_type == "2d":
-        with np.load(source.with_suffix(".npz"), allow_pickle=False) as result:
-            detected = result["unit_ids"][np.any(result["mask_2d"], axis=(1, 2))]
+        result = load_rf(rf_result_path(source))
+        detected = result.unit_ids[np.any(result.mask_2d, axis=(1, 2))]
         keep = index.get_level_values("unit_id").isin(detected)
         profiles, peaks = profiles.loc[keep], peaks.loc[keep]
     elif rf_type is not None:
