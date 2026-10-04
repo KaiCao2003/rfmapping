@@ -9,6 +9,25 @@ The examples use `mouse_01`, date `260918`, session `2`, and Probe `A`.
 Replace these identifiers with your recording. The main route produces a
 regular square-stimulus ON map; OFF and vertical-bar variants follow.
 
+### RF package and tuning curves
+
+`Utils/rflocate/` contains the RF API: response objects in `models.py`, detected
+results in `results.py`, file loading in `io.py`, and explicit detection in
+`detection.py`. Plotting and complete analyses live in `plotting.py` and
+`workflow.py`. Start with `from Utils.rflocate import load_rfmap, load_rf,
+detect_rf`; see the [RF API guide](docs/rfmap.md). The old `Utils.rfmap` and
+`Utils.rf_*` modules remain compatibility imports. Root notebooks and the
+MATLAB bridge `locate_rf.py` retain their locations.
+
+TCs share one DataFrame structure: degree columns and one response row per
+unit. `load_tc(path)` reads HD curves; `load_tc(path, kind="RF")` reads a saved
+RF CSV. Standard recording paths supply mouse, date, and probe identity, so
+callers do not need to repeat those values. Use `concat(m14_hd, m15_hd)` to stack
+curves with their identities. Files outside the recording layout retain source
+identity when concatenated. `plot_profiles(tc)` reads its label, angles, and
+response units from the object. Selection, aggregation, resampling, and
+normalization remain explicit. See [TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
+
 The two EBC video entries, `ebc_video_rectangle.py` and `ebc_video_circle.py`,
 use explicit recording configs and the same position/boundary interfaces,
 eight-ray calculation and prepared overlay. See [EBC videos](docs/ebc_videos.md).
@@ -951,7 +970,7 @@ In the RF notebook, load the generated file for the first selected probe:
 import os
 from pathlib import Path
 import numpy as np
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rfmap, load_rf
 
 session_dir = Path(os.environ["RF_SESSION_DIR"])
 date = os.environ["RF_DATE"]
@@ -964,7 +983,7 @@ rf_path = (
     / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
 )
 
-maps = load_rf_maps(rf_path, unit_firing_rate=False)
+maps = load_rfmap(rf_path)
 first = maps[0]
 edges = first.time_bin_edges_s
 
@@ -985,16 +1004,26 @@ Unit count and spatial grid depend on your recording. If you changed the
 generation window or bin width, update the folder name to match. Choose a
 summation interval inside the saved window.
 
-- `unit_firing_rate=False` preserves stored spike counts.
-- Default `load_rf_maps(rf_path)` returns firing rate in Hz: each lag bin's
-  count is divided by `stimulusPresentationCounts * bin_width_seconds`.
-  Older files without presentation counts require matching trial inputs to
-  reconstruct that denominator.
+- `load_rfmap(rf_path)` preserves stored values and units. Convert
+  counts explicitly with `maps.to_firing_rate()`, which divides each lag bin
+  by `stimulusPresentationCounts * bin_width_seconds`. Older files without
+  presentation counts require an explicit `resolve_presentation_counts(...)`
+  call and `maps.to_firing_rate(presentation_counts=counts)`, or the explicit
+  `maps.to_firing_rate(reconstruct_presentations=True)` opt-in. Loading never
+  reconstructs them.
 - `sum(0.0, 0.2)` means `[0, 200 ms)`. Arguments are **seconds**, and both
-  endpoints must match stored time edges. It sums stored counts, or takes
-  the duration-weighted mean when the maps contain Hz.
-- Loading fills null/NaN bins with zero. RF detection uses one `max_zero_bins`
-  limit and includes those zeros in the spatial mean and SD.
+  endpoints must match stored time edges. It always sums values. Use
+  `maps.to_firing_rate().mean_rate(0.0, 0.2)` for duration-weighted mean Hz.
+- Loading preserves null/NaN bins as missing values. The explicit RF analyzer
+  counts both missing and zero bins toward its `max_zero_bins` QC limit;
+  its no-shuffle detector represents missing responses as zero.
+- `maps.sum_to_1d(axis="x")` sums whole rows while retaining time bins.
+  Use `rf_only=True, detected_rf=load_rf(result_path)` to include only
+  rows containing a saved 2-D RF. Retaining `axis="y"` selects columns instead.
+  If detection retained only a QC subset, explicitly select those unit IDs
+  first, as shown in the [RF API guide](docs/rfmap.md); the conversion does not
+  drop units missing from the result.
+  No detection runs in this conversion; it returns another `RFMapList`.
 - MATLAB CSV/PDF exports sum the full generated time window, so they need not
   match a 0–200 ms view.
 
@@ -1011,10 +1040,12 @@ each `.rfmap`, before its CSV/PDF exports. The caller passes the probe, response
 window, bin QC limits, cluster thresholds, and projection settings explicitly.
 A Python failure stops that MATLAB run and reports the source file and output.
 
-The default analysis uses 0–200 ms rates, excludes missing and zero-response
-bins from the spatial mean/SD, and keeps units with at most two missing and
-two zero bins. It detects 2-D RFs at mean + 1.8 SD and independent horizontal
-1-D RFs at mean + 1 SD, without shuffling. Each source gets five adjacent files:
+The default analysis uses 0–200 ms mean rates and keeps units with at most
+two zero or missing bins in total, with at least one finite nonzero response.
+Its no-shuffle detector represents missing responses as zero and includes zero
+responses in the spatial mean/SD. It detects 2-D RFs at mean + 1.8 SD and
+independent horizontal 1-D RFs at mean + 1 SD, without shuffling. Each source
+gets five adjacent files:
 
 | Suffix added to the source stem | Contents |
 | --- | --- |

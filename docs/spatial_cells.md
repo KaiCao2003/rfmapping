@@ -123,7 +123,8 @@ donut_hole_fraction = 0.45  # Hole radius / outer radius, from 0 up to (but not 
 the circle, distance runs along the radius, and color shows the saved firing
 rate. The angle convention is 0° forward (top), 90° left, 180° back, and 270° right.
 The full matrix retains every distance bin; each distance-band file forms one
-colored radial band. Bins filled during RFMap loading display as zero. `polar` uses the physical origin
+colored radial band. Missing bins remain missing; loading does not fill them
+with zeros. `polar` uses the physical origin
 at 0 cm, so bands starting above 0 cm naturally leave the center empty.
 `donut` sets the hole to `donut_hole_fraction` of the outer radius by moving the
 display origin; the saved distances and cm tick labels stay unchanged.
@@ -131,7 +132,10 @@ display origin; the saved distances and cm tick labels stay unchanged.
 `heatmap` uses the existing API directly:
 
 ```python
-rf_maps = load_rf_maps(result_path)
+from Utils.rflocate import load_rfmap
+from Utils.rflocate.plotting import plot_2d_rfmap
+
+rf_maps = load_rfmap(result_path)
 rfmap = rf_maps.by_unit_id(unit_id)
 figure, axis = plot_2d_rfmap(rfmap.to_2d_array())
 ```
@@ -166,15 +170,16 @@ and unit 112 has no spike in the retained analysis window. The heatmap displays
 the remaining 60 units. Unit 267 has 30,143 spikes in that window and is included.
 For a bearing file, the distance axis is already summed, so this uses its saved
 curve directly. These are display projections of the saved rates. The notebook
-passes profiles keyed by unit ID, the sorted unit IDs, and the angular column
-order to `plot_keyed_heatmap()`, which normalizes and renders the stacked curves.
+normalizes profiles explicitly, then passes profiles keyed by unit ID, the
+sorted unit IDs, and the angular column order to `plot_keyed_heatmap()` for rendering.
 The shared function also accepts `(probe, unit_id)` keys for HD/RF comparisons.
 Set `is_save_heatmap = True` to save the single population image to
 `all_units_angle_heatmap.png`; its default is `False`.
 
 The old batch exporter `spatial_cell_plotting.py` is removed. Plotting no longer
 loads per-unit NPZ intermediates, reconstructs trajectories, or exports all units in PNG/SVG.
-`Utils/rfmap.py` is reused without modification.
+Source loading and response objects come from `Utils.rflocate`; the RF
+heatmap renderer comes from `Utils.rflocate.plotting`.
 
 ## Verification
 

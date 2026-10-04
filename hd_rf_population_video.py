@@ -31,7 +31,7 @@ from Utils.hd_rf_circular_regression import fit_circular_conversion, predict_cir
 from Utils.hd_rf_schemes import load_peak_pairs, select_schemes
 from Utils.hd_rf_video_data import load_population_video_data
 from Utils.hd_rf_video_decode import decode_hd_frames, load_decoder_tuning_curves
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import detect_rf, load_rfmap
 
 
 # Set these three switches to choose the output videos.
@@ -315,17 +315,12 @@ class PopulationOverlay:
 
 
 def fit_models(hd_file, rf_file, names, output_dir, *, mouse, date, probe,
-               hd_is_clockwise):
-    """Fit only A/B; session C does not enter unit pairing or RF selection."""
+               hd_is_clockwise, rf_detection_path):
+    """Fit A/B using the supplied saved detection; C does not enter selection."""
     directory = Path(output_dir) / "relation"
     directory.mkdir(parents=True, exist_ok=True)
-    detection_path = directory / "rf_detection.npz"
-    load_rf_maps(rf_file).sum(0., .2, show_progress=False).rf_2d(
-        is_shuffle=False, cluster_forming_z=1.8, drop_bins=2, wrap_x=True,
-        result_path=detection_path, show_progress=False,
-    )
     pairs, provenance = load_peak_pairs(
-        hd_file, rf_file, rf_detection_path=detection_path,
+        hd_file, rf_file, rf_detection_path=rf_detection_path,
         hd_is_clockwise=hd_is_clockwise, mouse=mouse, date=date, probe=probe,
     )
     schemes, selection = select_schemes(pairs)
@@ -487,9 +482,18 @@ def main(argv=None):
     rf_file = (args.rf_session / "data/rfmapping/good/-100_400_1ms" / f"Probe{args.probe}"
                / f"regular_unitsSpikeCounts_{args.rf_session.name}.rfmap")
     print(f"1. Fit relation: HD {args.hd_session.name}; RF {args.rf_session.name}.", flush=True)
+    raw_rf = load_rfmap(rf_file)
+    rates = raw_rf.to_firing_rate(reconstruct_presentations=True)
+    response = rates.mean_rate(0., .2, show_progress=False)
+    detection_path = output_dir / "relation/rf_detection.npz"
+    detect_rf(
+        response, is_shuffle=False, cluster_forming_z=1.8, drop_bins=2,
+        wrap_x=True, result_path=detection_path, show_progress=False,
+    )
     models = fit_models(
         hd_file, rf_file, names, output_dir, mouse=args.hd_session.parents[1].name,
         date=args.hd_session.parent.name, probe=args.probe, hd_is_clockwise=tc_is_clockwise,
+        rf_detection_path=detection_path,
     )
     print(f"2. Apply to C {args.video_session.name}: {mode} HD.", flush=True)
     data = load_population_video_data(

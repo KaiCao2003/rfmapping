@@ -11,7 +11,7 @@ import pandas as pd
 from Utils.direction_comparison import hd_pick, load_tc
 from Utils.hd_rf_prediction import wrap_deg
 from Utils.json_tools import read_formatted_json
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf, load_rfmap, rf_result_path
 
 
 def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
@@ -34,13 +34,13 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
         hd_profile_method="Existing saved TC counts / occupancy; 30 bins; no smoothing",
         classification_source="Cohort selected by existing update_hd_classification on saved TC; no new classification or shuffles",
     )
-    maps = load_rf_maps(rf_path, unit_firing_rate=True).sum(0., .2, show_progress=False)
+    maps = load_rfmap(rf_path).to_firing_rate(reconstruct_presentations=True).mean_rate(0., .2, show_progress=False)
     maps_by_id = {int(item.unit_id): item for item in maps}
-    detection_path = (rf_path.with_suffix(".npz") if rf_detection_path is None
+    detection_path = (rf_result_path(rf_path) if rf_detection_path is None
                       else Path(rf_detection_path))
-    with np.load(detection_path, allow_pickle=False) as saved:
-        masks = {int(unit): mask.astype(bool) for unit, mask in
-                 zip(saved["unit_ids"], saved["mask_2d"], strict=True)}
+    saved = load_rf(detection_path)
+    masks = {int(unit): mask.astype(bool) for unit, mask in
+             zip(saved.unit_ids, saved.mask_2d, strict=True)}
     rows = []
     for unit in unit_ids:
         row = dict(mouse=mouse, date=date, probe=probe, unit_id=int(unit), hd_class=3,
@@ -93,8 +93,8 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
         rf_detection_source=str(detection_path), selected_units=unit_ids.tolist(),
         hd_class=3, hd_bins=30, hd_smoothing_deg=0, rf_window_s=[0., .2],
         rf_peak_method="global maximum of native full 2-D response-window Hz map; no spatial projection, interpolation, smoothing or localization-mask restriction",
-        rf_response_normalization="load_rf_maps(unit_firing_rate=True).sum(0, 0.2).to_2d_array() per unit",
-        rf_detection_method="read saved excitatory mask_2d; any true bin marks a detected RF; no detection recomputation",
+        rf_response_normalization="load_rfmap().to_firing_rate(reconstruct_presentations=True).mean_rate(0, 0.2).to_2d_array() per unit",
+        rf_detection_method="load_rf() reads saved excitatory mask_2d; any true bin marks a detected RF; no detection recomputation",
         peak_tie_rule="first native source-order HD bin; first row-major (y, x) RF bin; all tie counts reported",
         quality_filters="None: zero bin counts are audit columns only; exclude only missing RF maps or undefined positive finite HD/RF peaks",
         hd_is_clockwise=bool(hd_is_clockwise), hd_angle_sign=1 if hd_is_clockwise else -1,

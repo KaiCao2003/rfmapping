@@ -123,6 +123,7 @@ def test_fit_models_uses_ab_pairs_and_only_enabled_cohorts(tmp_path, monkeypatch
     hd_file = tmp_path / "session_b/data/tuning_curves/ProbeA/tuning_curves.tc"
     rf_file = tmp_path / "session_a/data/rfmapping/source.rfmap"
     output = tmp_path / "session_c/data/hd_rf/test_run"
+    detection_path = tmp_path / "prepared/detected_rf.npz"
     pairs = pd.DataFrame(dict(unit_id=[7, 11, 19, 23],
                               hd_preferred_deg=[0., 90., 180., 270.],
                               rf_ego_deg=[40., 130., -140., -50.]))
@@ -130,24 +131,12 @@ def test_fit_models_uses_ab_pairs_and_only_enabled_cohorts(tmp_path, monkeypatch
     provenance = {"hd_source": str(hd_file), "rf_source": str(rf_file)}
     calls = []
 
-    class Maps:
-        def sum(self, first, last, *, show_progress):
-            assert (first, last, show_progress) == (0., .2, False)
-            return self
-
-        def rf_2d(self, **settings):
-            assert settings == dict(is_shuffle=False, cluster_forming_z=1.8, drop_bins=2,
-                                    wrap_x=True, result_path=output / "relation/rf_detection.npz",
-                                    show_progress=False)
-            calls.append("detect")
-
-    def load_maps(source):
-        assert source == rf_file
-        return Maps()
+    def unexpected_rf_analysis(*args, **kwargs):
+        pytest.fail("Fitting must use the supplied detection, without loading or detecting RF maps")
 
     def load_pairs(hd_source, rf_source, **settings):
         assert (hd_source, rf_source) == (hd_file, rf_file)
-        assert settings == dict(rf_detection_path=output / "relation/rf_detection.npz",
+        assert settings == dict(rf_detection_path=detection_path,
                                 hd_is_clockwise=False, mouse="m20", date="260922", probe="A")
         calls.append("pairs")
         return pairs, provenance
@@ -157,18 +146,20 @@ def test_fit_models_uses_ab_pairs_and_only_enabled_cohorts(tmp_path, monkeypatch
         return dict(method="first_harmonic_circular_regression", n=len(hd), rho=.25,
                     mae_deg=12., cos_coefficients=[1., 0., 0.], sin_coefficients=[0., 1., 0.])
 
-    monkeypatch.setattr(population, "load_rf_maps", load_maps)
+    monkeypatch.setattr(population, "load_rfmap", unexpected_rf_analysis)
+    monkeypatch.setattr(population, "detect_rf", unexpected_rf_analysis)
     monkeypatch.setattr(population, "load_peak_pairs", load_pairs)
     monkeypatch.setattr(population, "select_schemes", lambda received: (schemes, {"counts": [4, 3, 3]}))
     monkeypatch.setattr(population, "fit_circular_conversion", fit)
     models = population.fit_models(hd_file, rf_file, ["scheme2", "scheme3"], output,
-                                   mouse="m20", date="260922", probe="A", hd_is_clockwise=False)
+                                   mouse="m20", date="260922", probe="A", hd_is_clockwise=False,
+                                   rf_detection_path=detection_path)
 
     assert [model["scheme"] for model in models] == ["scheme2", "scheme3"]
     assert [model["selected_units"] for model in models] == [[7, 11, 19], [11, 19, 23]]
     assert [model["provenance"] for model in models] == [provenance, provenance]
-    assert calls[:2] == ["detect", "pairs"]
-    assert [call[-1] for call in calls[2:]] == [False, True]
+    assert calls[0] == "pairs"
+    assert [call[-1] for call in calls[1:]] == [False, True]
     assert not (output / "relation/scheme1_conversion.json").exists()
     for model in models:
         saved = json.loads(Path(model["model_path"]).read_text())
@@ -347,13 +338,40 @@ def test_main_fits_ab_and_applies_to_independent_c_with_spawn(tmp_path, monkeypa
     output = session / "data/hd_rf/test_run"
     monkeypatch.setattr(population, "use_decoded_hd", False)
     monkeypatch.setattr(population, "tc_is_clockwise", False)
+    rf_path = rf_session / "data/rfmapping/good/-100_400_1ms/ProbeA/regular_unitsSpikeCounts_260922_1.rfmap"
+    detection_path = output / "relation/rf_detection.npz"
+    response = object()
+
+    class Rates:
+        def mean_rate(self, first, last, *, show_progress):
+            assert (first, last, show_progress) == (0., .2, False)
+            events.append("mean_rate")
+            return response
+
+    class RawMaps:
+        def to_firing_rate(self, *, reconstruct_presentations):
+            assert reconstruct_presentations is True
+            events.append("to_firing_rate")
+            return Rates()
+
+    def load_rfmap(source):
+        assert source == rf_path
+        events.append("load_rfmap")
+        return RawMaps()
+
+    def detect_rf(received, **settings):
+        assert received is response
+        assert settings == dict(is_shuffle=False, cluster_forming_z=1.8, drop_bins=2,
+                                wrap_x=True, result_path=detection_path, show_progress=False)
+        events.append("detect_rf")
 
     def fit_models(hd_file, rf_file, names, output_dir, **settings):
         assert names == ["scheme1", "scheme3"]
         assert hd_file == hd_session / "data/tuning_curves/ProbeA/tuning_curves.tc"
-        assert rf_file == rf_session / "data/rfmapping/good/-100_400_1ms/ProbeA/regular_unitsSpikeCounts_260922_1.rfmap"
+        assert rf_file == rf_path
         assert output_dir == output
-        assert settings == dict(mouse="m20", date="260922", probe="A", hd_is_clockwise=False)
+        assert settings == dict(mouse="m20", date="260922", probe="A", hd_is_clockwise=False,
+                                rf_detection_path=detection_path)
         events.append("models")
         return models
 
@@ -402,6 +420,8 @@ def test_main_fits_ab_and_applies_to_independent_c_with_spawn(tmp_path, monkeypa
             exited.append(True)
 
     monkeypatch.setattr(population, "fit_models", fit_models)
+    monkeypatch.setattr(population, "load_rfmap", load_rfmap)
+    monkeypatch.setattr(population, "detect_rf", detect_rf)
     monkeypatch.setattr(population, "configure_nvenc", lambda: None)
     monkeypatch.setattr(population.video, "_select_encoder", select_encoder)
     monkeypatch.setattr(population, "load_population_video_data", load_data)
@@ -422,7 +442,8 @@ def test_main_fits_ab_and_applies_to_independent_c_with_spawn(tmp_path, monkeypa
         assert population.main(arguments) == [{"scheme": "scheme1"}, {"scheme": "scheme3"}]
         assert json.loads((output / "render_manifest.json").read_text()) == [
             {"scheme": "scheme1"}, {"scheme": "scheme3"}]
-    assert events == ["encoder", "models", "data", "select", "pool"]
+    assert events == ["encoder", "load_rfmap", "to_firing_rate", "mean_rate", "detect_rf",
+                      "models", "data", "select", "pool"]
     assert [name for name, _ in submitted] == ["scheme1", "scheme3"]
     for _, settings in submitted:
         assert settings == dict(output_dir=output, start_s=2., duration_s=.12, trace_window_s=8.)

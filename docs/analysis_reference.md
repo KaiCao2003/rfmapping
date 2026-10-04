@@ -33,7 +33,7 @@ saved unit lists, statistical interpretation, and output paths.
 
 ## Python RFMap API
 
-`Utils/rfmap.py` loads one pooled RF source into an ordered `RFMapList`
+`Utils.rflocate.load_rfmap()` loads one pooled RF source into an ordered `RFMapList`
 containing one `RFMap` per recorded unit. Array-index lookup and recorded
 unit-ID lookup are deliberately separate.
 
@@ -42,8 +42,8 @@ from pathlib import Path
 
 import numpy as np
 
-from Utils.rfmap import asrfmap, load_rf_maps
-from Utils.rf_trials import load_regular_rf_trials
+from Utils.rflocate import asrfmap, load_rfmap, detect_rf
+from Utils.rflocate.trials import load_regular_rf_trials
 
 session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
 rf_source = (
@@ -52,7 +52,7 @@ rf_source = (
     / "regular_unitsSpikeCounts_260630_3.json"
 )
 
-raw = load_rf_maps(rf_source, unit_firing_rate=False)
+raw = load_rfmap(rf_source)
 summed = raw.sum(0.0, 0.2, show_progress=True)
 trials = load_regular_rf_trials(
     session,
@@ -63,8 +63,8 @@ trials = load_regular_rf_trials(
 )
 
 result_path = rf_source.with_suffix(".npz")
-rf_masks_2d = summed.rf_2d(
-    trials,
+rf = detect_rf(
+    summed, trials,
     is_shuffle=True,
     cluster_forming_z=1.5,
     alpha=0.05,
@@ -74,15 +74,9 @@ rf_masks_2d = summed.rf_2d(
     result_path=result_path,
     show_progress=True,
 )
-rf_masks_x = summed.rf_1d(
-    trials, axis="x", is_shuffle=True, result_path=result_path,
-)
-rf_centers_2d = summed.rf_2d(
-    trials,
-    is_shuffle=True,
-    is_center=True,
-    result_path=result_path,
-)
+rf_masks_2d = rf.mask_2d
+rf_masks_x = rf.project(axis="x")
+rf_centers_2d = rf.center_2d
 
 unit_by_source_index = summed.by_index(5)
 the_same_unit = summed.by_unit_id(unit_by_source_index.unit_id)
@@ -93,26 +87,28 @@ unit_ids_with_any_zero_bin = np.asarray(summed.unit_ids)[units_with_any_zero_bin
 array_map = asrfmap(np.zeros((7, 30)), start_time=0.0, end_time=0.2)
 ```
 
-`load_rf_maps()` returns Hz by dividing stored counts by each position's
-presentation count times each time bin's width in seconds. New sources save
-`stimulusPresentationCounts`; historical sources require matching session
-trials and onset boundaries to reconstruct it. `sum(start, stop)` gives the
-time-weighted mean Hz across that window. Pass `unit_firing_rate=False` for
-raw pooled counts, including before `load_regular_rf_trials()` validation;
-in that mode `sum()` adds counts. `occupancyTimeSec` remains display-time
-metadata. Loaded null/NaN values become zeros and participate in statistics.
-Non-shuffle detection uses loaded values without another normalization.
+`load_rfmap()` preserves the source values and units, including raw counts
+needed by `load_regular_rf_trials()` validation. `sum(start, stop)` always adds
+stored values. To obtain Hz, explicitly call `raw.to_firing_rate()`, which uses
+each position's presentation count and each time bin's width in seconds; then
+use `mean_rate(start, stop)` for a time-weighted mean. New sources save
+`stimulusPresentationCounts`. Historical sources can explicitly reconstruct it
+with `to_firing_rate(reconstruct_presentations=True)`; loading does not read
+session trials or onset boundaries. `occupancyTimeSec` remains display-time
+metadata. Loaded null/NaN values stay missing, and missing contributing bins
+propagate through numeric sums. No-shuffle detection applies its own missing-bin
+policy only when detection is requested.
 
-All single-unit and batch `rf_2d()`/`rf_1d()` calls default to
-`is_shuffle=False, drop_bins=2`. Pass `is_shuffle=True` explicitly for
-trial-label permutation, as in the example above.
+`detect_rf()` returns an `RFResult` and defaults to
+`dimension="2d", is_shuffle=False, drop_bins=2`. Pass `is_shuffle=True`
+explicitly for trial-label permutation, as in the example above.
 
 `sum(earlier, later)` uses seconds and the half-open interval
 `[earlier, later)`. Both values must resolve to actual `timeBinEdges` entries
 within `1e-12` seconds. Equal edges produce a valid zero-valued singleton time
 axis; reversed intervals are invalid.
 
-`rf_2d()` and `rf_1d()` operate on a single-bin summed object. Shuffle detection
+`detect_rf()` operates on a single-bin prepared object. Shuffle detection
 also requires matching trial data. A pooled source does not contain a trial
 axis and is insufficient for label permutation. The regular-data loader
 reconstructs per-trial responses from the authoritative MAT, onset, spike-time,
@@ -125,22 +121,25 @@ OFF-only sessions.
 
 Candidate pixels use the configured cluster-forming z threshold. With shuffle
 enabled, significance comes from the null distribution of the maximum
-4-connected cluster mass. The 1-D RF is a projection of the final 2-D mask, not
-a separate test. Correction is within a unit and does not correct across
+4-connected cluster mass. `rf.project(axis="x")` projects the final 2-D mask
+without another test. Independent 1-D detection is an explicit
+`detect_rf(summed, dimension="1d", axis="x", ...)` call. Correction is within a unit and does not correct across
 units, polarities, or separately run analyses.
 
 Batch work can show `Sum`, `Detecting RF`, and `Center` progress bars.
-`is_center=False` returns the complete mask; `is_center=True` returns one
-response-weighted RF bin for each non-empty mask. Pass `show_progress=False`
-for silent library use.
+The result exposes its complete mask as `mask_2d` and one response-weighted RF
+bin per nonempty mask as `center_2d`. Both have `(unit, y, x)` axes; projections
+retain the unit and collapsed spatial axes. Detection is silent unless
+`show_progress=True`.
 
 `result_path` is an optional, versioned `.npz` result sidecar. One
 successful run stores both the mask and center, together with enough input and
-parameter identity to reject a stale result. Later center or 1-D calls can
-reuse it without rerunning the permutation. Do not use `.rfmap` for this:
+parameter identity to reject a stale result. `Utils.rflocate.load_rf()` reads
+that saved result without running detection; accessing its center or projecting
+its mask does not rerun the permutation. Do not use `.rfmap` for this:
 `.rfmap` remains a raw-source extension. The current regular writer produces
 indexed NPZ, while the current `RFmapping_fm.m` workflow produces JSON text
-under the same extension. `load_rf_maps()` reads both of these storage formats.
+under the same extension. `load_rfmap()` reads both of these storage formats.
 JSON sources may end in either `.json` or `.rfmap`. A separate HDF5 workflow
 also exists; it uses a different contract and is not the output of the current
 `RFmapping_fm.m` workflow described in the main guide.

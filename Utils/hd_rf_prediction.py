@@ -13,9 +13,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import _prepare_profiles, hd_pick, load_rf, load_tc, profile_table, rf_pick, tcRange
+from Utils.direction_comparison import (
+    hd_pick, load_tc, recording_profiles, resample_profiles, rf_pick, rf_profiles,
+    select_rf_profiles, tcRange,
+)
 from Utils.json_tools import read_formatted_json
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf, load_rfmap, rf_result_path
 from Utils.statistic_utils import fisher_lee_correlation, fisher_lee_statistics
 
 
@@ -199,12 +202,19 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
             hd_path, hd_heading_source, hd.index.get_level_values("unit_id"), heading_profile_cache,
         )
         hd.loc[:, :] = profiles.loc[hd.index.get_level_values("unit_id")].to_numpy()
-    detected = load_rf(rf_path, **recording, rf_type="2d", window=(0., .2), smoothing_bins=0)
+    raw_maps = load_rfmap(rf_path)
+    count_maps = raw_maps.sum(0., .2, show_progress=False).sum_to_1d(axis="x")
+    counts = rf_profiles(count_maps, probe=probe)
+    counts = select_rf_profiles(counts, load_rf(rf_result_path(rf_path)))
+    detected = recording_profiles(
+        resample_profiles(counts, range=tcRange(True)), mouse=mouse, date=date,
+    )
     count_profiles = rf_pick(detected, max_zero_bins=2)
-    rate_maps = load_rf_maps(rf_path, unit_firing_rate=True).sum(0., .2, show_progress=False)
-    rates = profile_table(rate_maps.to_1d_array(axis="x"), rate_maps.unit_ids,
-                          rate_maps[0].x_positions, probe=probe)
-    rf = _prepare_profiles(rates, mouse=mouse, date=date, range=tcRange(True)).loc[count_profiles.index]
+    rate_maps = raw_maps.to_firing_rate(reconstruct_presentations=True).mean_rate(0., .2, show_progress=False).sum_to_1d(axis="x")
+    rates = rf_profiles(rate_maps, probe=probe)
+    rf = recording_profiles(
+        resample_profiles(rates, range=tcRange(True)), mouse=mouse, date=date,
+    ).loc[count_profiles.index]
     shared = hd.index.intersection(rf.index)
     rows = []
     for key in shared:
@@ -223,7 +233,7 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
                       rf_max_zero_bins=2,
                       peak_method="argmax on the paired notebook's 30-bin profiles; first source-order maximum for ties",
                       rf_projection="presentation-exposure-normalized response-window Hz, sum over elevation, then periodic interpolation to 30 bins",
-                      rf_response_normalization="load_rf_maps(unit_firing_rate=True).sum(0, 0.2).to_1d_array(axis='x')",
+                      rf_response_normalization="load_rfmap().to_firing_rate(reconstruct_presentations=True).mean_rate(0, 0.2).sum_to_1d(axis='x').to_1d_array(axis='x')",
                       rf_peaks_changed_by_rate_normalization=int(np.count_nonzero(
                           wrap_deg(pairs.rf_ego_deg - pairs.rf_count_peak_deg))),
                       hd_class3_units=len(hd), rf_detected_units=len(detected),
