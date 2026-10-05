@@ -1,45 +1,41 @@
 # Agent Instructions
 
-- This repository is the RF analysis/Matlab side of the project. GUI work
-  belongs in the sibling `../rfmapping_gui` repository.
-- Run project code only on the remote host reached with `ssh hhw9l84`.
-- Use the remote virtual environment at `~/.virtualenvs/rfmapping`.
-- Do not run project Python from the local checkout. For example:
+## Scope and execution
 
-  ```sh
-  ssh hhw9l84 'cd ~/Developer/rfmapping && \
-    ~/.virtualenvs/rfmapping/bin/python -m pytest -q \
-    tests/test_rfmap.py tests/test_rf_detection.py tests/test_rf_trials.py'
-  ```
+- RF acquisition, MATLAB integration, tuning, and spatial analysis live here.
+  GLMs belong in `../glm`; viewers belong in `../rfmapping_gui`.
+- Execute project code only via `ssh hhw9l84`, from `~/Developer/rfmapping`,
+  using `~/.virtualenvs/rfmapping/bin/python`. Do not execute project Python
+  locally. Compare relevant files before remote validation: checkouts can differ.
+- Remote recordings under `/mnt/senzailab/Kai/#Recording` and original MATLAB
+  sources under `/mnt/ssd4.1/Matlab` are authoritative. Exclude `.m` files from
+  Python dependency checks. Legacy `vs.py` is outside the standalone RF gate.
 
-- Ignore MATLAB `.m` files when resolving Python dependencies or validating
-  the Python runtime.
-- Original MATLAB data-generation sources live on the Linux remote host under
-  `/mnt/ssd4.1/Matlab`. When investigating JSON generation, inspect those files
-  through `ssh hhw9l84`; do not treat local legacy `.m` copies as authoritative.
-- `vs.py` is legacy translation work with remote-only helper modules and is not
-  part of the standalone RF package validation gate.
+## Entrypoints and semantics
 
-## RFmapping Pipeline Notes
+- Follow `README.md` for the current raw-to-RF workflow and code layout.
+  Root notebooks are active; keep `locate_rf.py` at its MATLAB bridge path.
+  Maintenance scripts live in `scripts/`; optional video entries remain at the
+  root. Reusable Python code lives in `Utils/`.
+- `matlab_auto.ipynb` previews periodic-stimulus timing; `matlab.ipynb` applies
+  stored timing edits. `freemoving.ipynb` prepares camera frame times. These
+  are distinct workflows, not interchangeable viewers.
+- Separate loading, selection, statistics, and plotting as described in the
+  README. GLM's copied `Utils/` can differ; reconcile semantics before sharing.
+- Preserve raw counts, occupancy, zero-versus-missing bins, and native angles.
+  A `.rfmap` filename alone does not identify its JSON/NPZ/HDF5 contract.
+- For apparent pre-stimulus responses, inspect full `timeBinEdges` and raw trial
+  timing: negative/late bins can overlap adjacent stimuli about 100 ms apart.
+  Plot range filters the 2-D map only; timelines retain their full time axis.
+- Figures, axes, and exports use opaque white backgrounds and dark labels;
+  set Matplotlib figure/axes/savefig face colors to white and transparency off.
 
-The active pipeline is:
+## Local workflows and evidence
 
-```text
-~/Developer/sync/matlab.ipynb
--> /mnt/ssd4.1/Matlab/RFmapping.m
--> generated RF JSON
--> ~/Developer/rfmapping_gui/{python,swift,web}
-```
-
-- Treat remote raw/session data as source of truth. For timing or JSON
-  generation questions, inspect `/mnt/senzailab/Kai/#Recording` and
-  `/mnt/ssd4.1/Matlab`; do not rely on stale viewer fixtures.
-- When investigating "response before VS", inspect the full `timeBinEdges`,
-  per-bin timeline, and, when needed, recompute from `on_list_times.npy`,
-  `trials.mat`, `adc_spike_time.npy`, `spike_clusters.npy`, and good-unit labels.
-- With windows such as `VSTimeWindow = [-0.1 0.2]` and stimuli spaced about
-  100 ms apart, negative bins mostly overlap the prior stimulus response and
-  late positive bins can overlap the next stimulus. `RFmapping_core.m` assigns
-  those spikes to the current trial's x/y.
-- Plot range is a 2-D display control only. Timeline views should show the full
-  time axis unless a dedicated timeline control explicitly filters it.
+- Inspect both the Git index and files on disk before cleanup. Optional video,
+  decoder, and calibration workflows may be ignored but still actively used;
+  removal from Git alone does not establish retirement.
+- Preserve `.codex_tmp/` snapshots and existing generated evidence. Keep new
+  scratch work out of active entrypoints; record durable findings once.
+- Run relevant checks remotely, distinguishing core-package tests from optional
+  local workflows and recording-dependent tests.

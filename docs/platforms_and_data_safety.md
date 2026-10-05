@@ -146,10 +146,10 @@ the containing directory; it is not stored as a column in the current table.
   it does not merge the records.
 - Do not delete or recreate a database to solve a path, permission, Windows VFS,
   or schema error.
-- When expecting saved corrections, confirm that the file exists **before**
-  calling `check_session_edits()`. That helper creates a database if
-  the selected path is missing. A typo can therefore leave you with an empty
-  database at the wrong location.
+- `check_session_edits()` requires an existing, initialized database. It never
+  creates or migrates one. For a new mouse, explicitly call
+  `SessionEditStore.create_database()`; the manual notebook exposes this as
+  `create_session_edit_database=True` and defaults it to `False`.
 
 The opener reports a legacy ordered schema instead of automatically converting
 it. Keep the original and arrange an explicit, backed-up migration that
@@ -207,7 +207,8 @@ derived corrections when a session has no saved record. It then writes
 
 | Action | Effect |
 | --- | --- |
-| `getSessionInfo()`, `getDelete()`, `getInterp()` | Read the selected session's saved correction |
+| `get_session_edit()`, `getSessionInfo()`, `getDelete()`, `getInterp()` | Read the selected session's saved correction |
+| `apply_session_edit(target, edit)` | Apply the parameters to a copy; no database writes |
 | `deleteByFrame()` / `deleteByRange()` | Append delete indices to the stored record |
 | `interp()` | Set or replace the session's one interpolation |
 | `clearInterps()` | Remove its saved interpolation |

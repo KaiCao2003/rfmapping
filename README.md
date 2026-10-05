@@ -9,15 +9,36 @@ The examples use `mouse_01`, date `260918`, session `2`, and Probe `A`.
 Replace these identifiers with your recording. The main route produces a
 regular square-stimulus ON map; OFF and vertical-bar variants follow.
 
-### RF package and tuning curves
+### Code layout and entrypoints
 
-`Utils/rflocate/` contains the RF API: response objects in `models.py`, detected
-results in `results.py`, file loading in `io.py`, and explicit detection in
-`detection.py`. Plotting and complete analyses live in `plotting.py` and
-`workflow.py`. Start with `from Utils.rflocate import load_rfmap, load_rf,
-detect_rf`; see the [RF API guide](docs/rfmap.md). The old `Utils.rfmap` and
-`Utils.rf_*` modules remain compatibility imports. Root notebooks and the
-MATLAB bridge `locate_rf.py` retain their locations.
+- `Utils/` contains reusable acquisition, RF, and tuning comparison code.
+  Circular HD/RF fits live together in `hd_rf_prediction.py`; interval summaries
+  and explicit curve smoothing live in `statistic_utils.py`.
+- `Utils/rflocate/` contains the RF API: data objects in `models.py`, detected
+  results in `results.py`, file loading in `io.py`, and explicit detection in
+  `detection.py`. Plotting and complete analyses live in `plotting.py` and
+  `workflow.py`. Start with `from Utils.rflocate import load_rfmap, load_rf,
+  detect_rf`; see the [RF API guide](docs/rfmap.md). The old `Utils.rfmap` and
+  `Utils.rf_*` modules remain compatibility imports.
+- The main notebooks remain at the repository root. `rfmap_session_comparison.ipynb`
+  preserves the separate two-session RF comparison with its explicit recording paths. `locate_rf.py` also
+  stays there because the MATLAB bridge calls its file path.
+- `scripts/` contains batch entrypoints. Run them from the repository root with
+  the remote environment, for example `python -m scripts.hd_rf_fraction` or
+  `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
+  are `hd_kappa_distribution`, `probe_position`,
+  `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
+- Git tracks the raw-to-RF workflow, RF detection, and RF/tuning comparisons.
+  Independent EBC/spatial experiments, decoder/video workflows, recording-specific
+  calibration, generated results, and their tests stay on disk under `.gitignore`.
+  They are not included in a fresh clone.
+
+Analysis follows explicit stages: load native data, select units/bins,
+transform for display, calculate statistics, then plot. Pitch/RF selection
+returns an audit table; interpolation does not replace native peak values.
+Plotting functions consume prepared data and statistics.
+
+For existing analysis code, use these explicit calls:
 
 TCs share one DataFrame structure: degree columns and one response row per
 unit. `load_tc(path)` reads HD curves; `load_tc(path, kind="RF")` reads a saved
@@ -25,15 +46,19 @@ RF CSV. Standard recording paths supply mouse, date, and probe identity, so
 callers do not need to repeat those values. Use `concat(m14_hd, m15_hd)` to stack
 curves with their identities. Files outside the recording layout retain source
 identity when concatenated. `plot_profiles(tc)` reads its label, angles, and
-response units from the object. Selection, aggregation, resampling, and
-normalization remain explicit. See [TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
+response units from the object. See [TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
 
-The two EBC video entries, `ebc_video_rectangle.py` and `ebc_video_circle.py`,
-use explicit recording configs and the same position/boundary interfaces,
-eight-ray calculation and prepared overlay. See [EBC videos](docs/ebc_videos.md).
-Their optional dependencies are available through the `video` extra; FFmpeg
-and ffprobe are required for video export. Previous sep/tuning sources remain
-under `research/legacy_ebc/`. The HD–RF population video is a separate workflow.
+| Previous combined call | Current calls |
+| --- | --- |
+| `getSessionInfo(target=...)` | `get_session_edit()`, then `apply_session_edit(target, edit)` |
+| `get_unit_info(...)` | `generate_unit_artifacts(...)`, which returns generated paths |
+| `plot_hd_tuning_curve(..., is_smooth=True)` | `smooth_tuning_curve(curve, sigma=...)`, then plot the result |
+| Interval bar plotters | `summarize_phase_intervals(...)` or `summarize_head_turns_from_intervals(...)`, then `plot_phase_bar(summary)` or `plot_head_turn_bar(summary)` |
+| Pitch/RF combined loader | `load_pitch_rf_pair(...)`, occupancy selection, `select_pitch_rf_pair(...)`, then `resample_rf_profiles(...)` for display |
+
+`plot_peak_comparison(peaks, stats)` and `plot_pitch_rf_regression(peaks, stats)`
+receive statistics calculated by their corresponding analysis functions.
+`get_unit_info` remains a compatibility alias for external generation scripts.
 
 Waveform input uses SpikeInterface's Open Ephys and Kilosort readers, while
 ProbeInterface carries the Kilosort channel order, contact positions and shanks.
@@ -736,10 +761,12 @@ Records can delete detected edges and interpolate an interval. Delete indices
 refer to the original detected sequence; interpolation indices refer to the
 sequence after deletion. Apply each record starting from raw detection.
 
-Check that this is the **existing database for the selected mouse** before
-opening it. A missing path causes `check_session_edits()` to create a new
-database. An empty database at a mistyped path does not recover earlier
-corrections. A Windows connection error or legacy-schema error is not a reason
+`check_session_edits()` opens an existing database and reports a missing path;
+it does not create or migrate the database. For a new mouse only, set
+`create_session_edit_database=True` in the notebook to call
+`SessionEditStore.create_database()` explicitly. Read the saved parameters with
+`get_session_edit()`, then apply them with `apply_session_edit()`. A Windows
+connection error or legacy-schema error is not a reason
 to delete, initialize over, or replace the original database.
 
 Look for `Stored edits applied:` and confirm the date and session. The cell

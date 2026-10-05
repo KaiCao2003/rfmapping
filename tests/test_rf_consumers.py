@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import hd_rf_fraction
+from scripts import hd_rf_fraction
 from Utils import rflocate
 from Utils.rflocate import RFResult, rf_result_path, save_rf
 

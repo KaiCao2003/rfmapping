@@ -1,11 +1,19 @@
 import ast
 import json
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from Utils.Sessions import Session
+from Utils.session_edits import (
+    SessionEditStore,
+    apply_session_edit,
+    check_session_edits,
+    open_session_edit_store,
+)
 
 
 def test_session_rejects_non_adc_last_stream(tmp_path):
@@ -26,6 +34,64 @@ def test_session_rejects_non_adc_last_stream(tmp_path):
     descriptor.write_text(json.dumps(data))
     with pytest.raises(AssertionError, match="Last continuous stream must be ADC"):
         Session(descriptor)
+
+
+def test_session_edit_open_does_not_create_or_initialize_database(tmp_path):
+    missing = tmp_path / "new-mouse" / "session_slices.sqlite3"
+    with pytest.raises(FileNotFoundError):
+        check_session_edits(missing, "260922", 3)
+    assert not missing.parent.exists()
+
+    uninitialized = tmp_path / "empty.sqlite3"
+    uninitialized.touch()
+    with pytest.raises(RuntimeError, match="not initialized"):
+        open_session_edit_store(uninitialized)
+    assert uninitialized.read_bytes() == b""
+
+
+def test_saved_session_edits_are_read_and_applied_separately(tmp_path):
+    database = tmp_path / "session_slices.sqlite3"
+    assert SessionEditStore.create_database(database)
+    session = check_session_edits(database, "260922", 3)
+    assert session.deleteByFrame([1, -1]) == (True, None)
+    assert session.interp(1, 2, 2) == (True, None)
+    stored_bytes = database.read_bytes()
+
+    edit = session.get_session_edit()
+    assert session.getSessionInfo() == (True, edit)
+    target = np.array([0., 99., 10., 40., 50., 999.])
+    edited = apply_session_edit(target, edit)
+    np.testing.assert_array_equal(edited, [0., 10., 20., 30., 40., 50.])
+    np.testing.assert_array_equal(target, [0., 99., 10., 40., 50., 999.])
+    assert database.read_bytes() == stored_bytes
+    with pytest.raises(TypeError):
+        session.getSessionInfo(target=target)
+
+    # The getter's connection cannot create or change a database, even if a
+    # future query is accidentally changed to a write.
+    with SessionEditStore._connect(database, read_only=True) as connection:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("DELETE FROM session_edits")
+
+
+@pytest.mark.parametrize("target", [[1., 2.], np.array([1., 2.])])
+def test_missing_session_edit_returns_independent_input_copy(target):
+    edited = apply_session_edit(target, None)
+    edited[0] = 99.
+    assert target[0] == 1.
+
+
+def test_interval_generation_rejects_ambiguous_session_before_writing(tmp_path):
+    from Utils.recording import gen_recording_interval_table
+
+    for name in ("recording1", "recording2"):
+        descriptor = tmp_path / name / "structure.oebin"
+        descriptor.parent.mkdir()
+        descriptor.write_text("{}")
+
+    with pytest.raises(ValueError, match="Multiple session descriptor"):
+        gen_recording_interval_table(str(tmp_path))
+    assert not (tmp_path / "data").exists()
 
 
 @pytest.mark.parametrize(

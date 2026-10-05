@@ -5,8 +5,6 @@ Fisher–Lee correlation, and pairing-permutation statistics. Model fitting call
 `fisher_lee_statistics`; it does not implement its own correlation or shuffle
 loop. `Utils.hd_rf_prediction.fisher_lee_correlation` remains an import alias for
 existing callers.
-The historical `Utils.hd_rf_circular_regression` module remains a small import
-bridge to the shared implementations, preserving existing population callers.
 
 ## Public contracts
 

@@ -89,8 +89,8 @@ def build_paired_tuning(recording_root, output_dir, mouse, date, session, probe)
     return report
 
 
-def load_pair(output_dir, mouse, date, session, probe, *, min_occupancy_s=1.0):
-    """Load equal-support curves; mask bins with inadequate sampling before peaks."""
+def load_pair(output_dir, mouse, date, session, probe):
+    """Read native equal-support rates and occupancy without selecting bins or units."""
     path = Path(output_dir) / cache_name(mouse, date, session, probe)
     with np.load(path) as data:
         index = pd.MultiIndex.from_tuples([(mouse, str(date), probe, int(uid)) for uid in data["unit_id"]],
@@ -99,10 +99,11 @@ def load_pair(output_dir, mouse, date, session, probe, *, min_occupancy_s=1.0):
         for name in ("hd", "pitch"):
             occupancy = data[f"{name}_occupancy_s"]
             counts = data[f"{name}_counts"]
-            rates = np.divide(counts, occupancy, out=np.full(counts.shape, np.nan), where=occupancy >= min_occupancy_s)
+            rates = np.divide(counts, occupancy, out=np.full(counts.shape, np.nan), where=occupancy > 0)
             edges = data[f"{name}_edges"]
             table = pd.DataFrame(rates, index=index, columns=(edges[:-1] + edges[1:]) / 2)
             table.attrs["label"] = f"{mouse} {date} Probe {probe} {name.upper()}"
+            table.attrs["occupancy_s"] = occupancy.tolist()
             curves.append(table)
     return tuple(curves)
 
@@ -116,25 +117,42 @@ def preferred_angles(hd, pitch):
     return pd.DataFrame({"hd_peak_deg": peak(hd), "pitch_peak_deg": peak(pitch)}, index=hd.index)
 
 
-def plot_pair(hd, pitch, *, sort_by="hd", label="", figsize=(9, 8),
-              cmap="viridis", vmin=None, vmax=None, colorbar_label="Response"):
-    """Plot supplied curve values without circular pitch wrapping or rescaling."""
-    peaks = preferred_angles(hd, pitch)
-    order = peaks.sort_values(f"{sort_by}_peak_deg", kind="stable").index.tolist()
+def select_min_occupancy(curves, *, min_occupancy_s=1.0):
+    """Copy native curves and mask bins below an explicit occupancy threshold."""
+    result = curves.copy()
+    occupancy = np.asarray(curves.attrs["occupancy_s"])
+    result.iloc[:, occupancy < min_occupancy_s] = np.nan
+    result.attrs["min_occupancy_s"] = min_occupancy_s
+    return result
+
+
+def _plot_profile_pair(panels, order, *, sort_label, label, figsize, cmap,
+                       vmin, vmax, colorbar_label):
     figures = []
-    for name, table, ticks in (("HD", hd, [0, 90, 180, 270, 360]), ("Pitch", pitch, [-90, -45, 0, 45, 90])):
-        fig, ax = plot_keyed_heatmap(dict(zip(table.index, table.to_numpy())), order,
-                                    column_order=np.arange(len(table.columns)), angle_centers=table.columns.to_numpy(),
-                                    xticks=ticks, xticklabels=ticks, xlabel=f"{name} (°)",
-                                    title=f"{label} | {name} | sorted by {sort_by} peak", figsize=figsize, show=False,
-                                    cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
-        # Retain full unit labels in returned peak table without overlapping 100s of ticks.
-        step = max(1, len(order) // 20)
-        ax.set_yticks(np.arange(0, len(order), step), labels=[
-            f"{order[i][0]} {order[i][2]}:{order[i][3]}" for i in range(0, len(order), step)
-        ])
+    for name, table, ticks, xlabel in panels:
+        if (not table.index.is_unique or len(order) != len(table)
+                or set(order) != set(table.index)):
+            raise ValueError("order must contain every input unit key exactly once")
+        fig, _ = plot_keyed_heatmap(
+            dict(zip(table.index, table.to_numpy())), order,
+            column_order=np.arange(len(table.columns)), angle_centers=table.columns.to_numpy(),
+            xticks=ticks, xticklabels=ticks, xlabel=xlabel,
+            title=f"{label}\n{name} | sorted by {sort_label} peak", figsize=figsize, show=False,
+            cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+        )
         figures.append(fig)
-    return peaks, figures
+    return figures
+
+
+def plot_pair(hd, pitch, *, order, sort_label="hd", label="", figsize=(9, 8),
+              cmap="viridis", vmin=None, vmax=None, colorbar_label="Response"):
+    """Render supplied values and unit order; compute peaks before plotting."""
+    return _plot_profile_pair(
+        (("HD", hd, [0, 90, 180, 270, 360], "HD (°)"),
+         ("Pitch", pitch, [-90, -45, 0, 45, 90], "Pitch (°)")), order,
+        sort_label=sort_label, label=label, figsize=figsize, cmap=cmap,
+        vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+    )
 
 
 def circular_linear_association(hd_deg, pitch_deg, *, n_permutations=10000, seed=1):
@@ -160,8 +178,8 @@ def circular_linear_association(hd_deg, pitch_deg, *, n_permutations=10000, seed
     return result
 
 
-def plot_peak_comparison(peaks, *, label=""):
-    stats = circular_linear_association(peaks.hd_peak_deg, peaks.pitch_peak_deg)
+def plot_peak_comparison(peaks, stats, *, label=""):
+    """Render paired peaks with already computed circular-linear statistics."""
     with plt.rc_context(LIGHT_PLOT_STYLE):
         fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
         ax.scatter(peaks.hd_peak_deg, peaks.pitch_peak_deg, s=26, alpha=.75)
@@ -169,7 +187,7 @@ def plot_peak_comparison(peaks, *, label=""):
                xlabel="Preferred HD (°; clockwise)", ylabel="Preferred pitch (°; up positive)",
                title=f"{label}\nCircular–linear R={stats['r']:.3f}, permutation p={stats['p']:.4g}, n={stats['n']}")
         ax.grid(alpha=.35)
-    return stats, fig
+    return fig
 
 
 def _linear_profile_peaks(table):
@@ -182,7 +200,7 @@ def _linear_profile_peaks(table):
 
 
 def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
-                         rf_type="2d", y_to_elevation_sign=-1):
+                         y_to_elevation_sign=-1):
     """Return native elevation profiles and the distinct 2-D maximum-bin elevation.
 
     Rates use presentation count and response-window duration, then sum horizontal
@@ -195,7 +213,8 @@ def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
     order = np.argsort(elevation)
     index = pd.MultiIndex.from_tuples([(mouse, str(date), probe, int(uid)) for uid in maps.unit_ids],
                                      names=["mouse", "date", "probe", "unit_id"])
-    profiles = pd.DataFrame(maps.sum_to_1d(axis="y").to_1d_array(axis="y")[:, order], index=index, columns=elevation[order])
+    profiles = pd.DataFrame(maps.sum_to_1d(axis="y").to_1d_array(axis="y")[:, order],
+                            index=index, columns=elevation[order])
     max_2d = []
     for rf_map in maps:
         matrix = rf_map.to_2d_array()[order]
@@ -206,62 +225,78 @@ def rf_vertical_profiles(source, *, mouse, date, probe, window=(0.0, 0.2),
             max_2d.append(elevation[order[row]])
     peaks = pd.DataFrame({"rf_vertical_profile_peak_deg": _linear_profile_peaks(profiles),
                           "rf_2d_max_elevation_deg": max_2d}, index=index)
-    if rf_type == "2d":
-        result = load_rf(rf_result_path(source))
-        detected = result.unit_ids[np.any(result.mask_2d, axis=(1, 2))]
-        keep = index.get_level_values("unit_id").isin(detected)
-        profiles, peaks = profiles.loc[keep], peaks.loc[keep]
-    elif rf_type is not None:
-        raise ValueError("rf_type must be '2d' or None")
     return profiles, peaks
 
 
 def load_pitch_rf_pair(cache_dir, rf_source, *, mouse, date, pitch_session, probe,
-                       min_occupancy_s=1.0, rf_type="2d", rf_peak_method="vertical_profile",
                        y_to_elevation_sign=-1, window=(0.0, 0.2)):
-    """Match cached Class 3 pitch units to RF; native bins determine both peaks."""
-    _, pitch = load_pair(cache_dir, mouse, date, pitch_session, probe, min_occupancy_s=min_occupancy_s)
+    """Read native pitch/RF tables and RF peaks, retaining every source unit.
+
+    Apply occupancy masking, select matched units, and resample for display in
+    separate steps. RF peak columns always refer to the native stimulus grid.
+    """
+    _, pitch = load_pair(cache_dir, mouse, date, pitch_session, probe)
     rf, peaks = rf_vertical_profiles(rf_source, mouse=mouse, date=date, probe=probe,
-                                     window=window, rf_type=rf_type,
-                                     y_to_elevation_sign=y_to_elevation_sign)
-    shared = pitch.index.intersection(rf.index)
-    pitch, rf, peaks = pitch.loc[shared], rf.loc[shared], peaks.loc[shared].copy()
-    peaks["pitch_peak_deg"] = _linear_profile_peaks(pitch)
+                                     window=window, y_to_elevation_sign=y_to_elevation_sign)
+    return pitch, rf, peaks
+
+
+def detected_rf_units(source):
+    """Read saved 2-D detection IDs without rerunning RF detection."""
+    result = load_rf(rf_result_path(source))
+    return result.unit_ids[np.any(result.mask_2d, axis=(1, 2))]
+
+
+def select_pitch_rf_pair(pitch, rf, rf_peaks, *, rf_unit_ids=None,
+                         rf_peak_method="vertical_profile"):
+    """Match native curves, select positive measured peaks, and audit all keys.
+
+    ``rf_unit_ids`` is an explicit saved-detection selection for this recording
+    and probe. None keeps all RF units. Multiple exclusion flags may be true.
+    """
     choices = {"vertical_profile": "rf_vertical_profile_peak_deg", "max_bin_2d": "rf_2d_max_elevation_deg"}
+    if rf_peak_method not in choices:
+        raise ValueError("rf_peak_method must be 'vertical_profile' or 'max_bin_2d'")
+    keys = pitch.index.union(rf.index, sort=False)
+    audit = pd.DataFrame(index=keys)
+    audit["missing_pitch"] = ~keys.isin(pitch.index)
+    audit["missing_rf"] = ~keys.isin(rf.index)
+    audit["outside_rf_selection"] = (False if rf_unit_ids is None else
+                                      ~keys.get_level_values("unit_id").isin(rf_unit_ids))
+    shared = pitch.index.intersection(rf.index)
+    peaks = rf_peaks.loc[shared].copy()
+    peaks["pitch_peak_deg"] = _linear_profile_peaks(pitch.loc[shared])
     peaks["rf_peak_deg"] = peaks[choices[rf_peak_method]]
-    # A maximum requires a positive measured response in both features.
-    eligible = peaks[["pitch_peak_deg", "rf_peak_deg"]].notna().all(axis=1)
-    pitch, rf, peaks = pitch.loc[eligible], rf.loc[eligible], peaks.loc[eligible]
-    # Native y grids differ across mice (9x10° vs 7x12°). Only heatmap display
-    # uses a common 1° grid; peaks and regressions above retain the native bins.
-    grid = np.arange(-45., 46.)
-    display_rf = pd.DataFrame([
-        np.interp(grid, rf.columns.to_numpy(dtype=float), row, left=np.nan, right=np.nan)
-        for row in rf.to_numpy()
-    ], index=rf.index, columns=grid)
-    return pitch, display_rf, peaks
+    audit["no_positive_pitch_peak"] = False
+    audit["no_positive_rf_peak"] = False
+    audit.loc[shared, "no_positive_pitch_peak"] = peaks.pitch_peak_deg.isna()
+    audit.loc[shared, "no_positive_rf_peak"] = peaks.rf_peak_deg.isna()
+    audit["selected"] = ~audit.any(axis=1)
+    selected = shared[audit.loc[shared, "selected"].to_numpy()]
+    return pitch.loc[selected], rf.loc[selected], peaks.loc[selected], audit
 
 
-def plot_pitch_rf_pair(pitch, rf, peaks, *, sort_by="pitch", label="", figsize=(9, 8),
+def resample_rf_profiles(rf, *, grid=None):
+    """Interpolate only display values; native peaks and regressions stay separate."""
+    grid = np.arange(-45., 46.) if grid is None else np.asarray(grid, dtype=float)
+    values = np.empty((len(rf), len(grid)), dtype=float)
+    for output, row in zip(values, rf.to_numpy()):
+        output[:] = np.interp(grid, rf.columns.to_numpy(dtype=float), row, left=np.nan, right=np.nan)
+    display = pd.DataFrame(values, index=rf.index, columns=grid)
+    display.attrs = rf.attrs.copy()
+    display.attrs["native_elevations_deg"] = rf.columns.to_list()
+    return display
+
+
+def plot_pitch_rf_pair(pitch, rf, *, order, sort_label="pitch", label="", figsize=(9, 8),
                        cmap="viridis", vmin=None, vmax=None, colorbar_label="Response"):
-    """Plot supplied values on bounded linear axes with one shared unit order."""
-    if sort_by not in ("pitch", "rf"):
-        raise ValueError("sort_by must be 'pitch' or 'rf'")
-    order = peaks.sort_values(f"{sort_by}_peak_deg", kind="stable").index.tolist()
-    figures = []
-    for name, table, ticks in (("Pitch", pitch, [-90, -45, 0, 45, 90]),
-                               ("RF elevation", rf, [-45, -30, -15, 0, 15, 30, 45])):
-        fig, ax = plot_keyed_heatmap(dict(zip(table.index, table.to_numpy())), order,
-                                    column_order=np.arange(len(table.columns)), angle_centers=table.columns.to_numpy(),
-                                    xticks=ticks, xticklabels=ticks, xlabel=f"{name} (°; up positive)",
-                                    title=f"{label}\n{name} | sorted by {sort_by} peak", figsize=figsize, show=False,
-                                    cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
-        step = max(1, len(order) // 20)
-        ax.set_yticks(np.arange(0, len(order), step), labels=[
-            f"{order[i][0]} {order[i][2]}:{order[i][3]}" for i in range(0, len(order), step)
-        ])
-        figures.append(fig)
-    return figures
+    """Render supplied values on bounded linear axes in the supplied unit order."""
+    return _plot_profile_pair(
+        (("Pitch", pitch, [-90, -45, 0, 45, 90], "Pitch (°; up positive)"),
+         ("RF elevation", rf, [-45, -30, -15, 0, 15, 30, 45], "RF elevation (°; up positive)")), order,
+        sort_label=sort_label, label=label, figsize=figsize, cmap=cmap,
+        vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+    )
 
 
 def pitch_rf_regression(peaks):
@@ -275,8 +310,8 @@ def pitch_rf_regression(peaks):
     return result
 
 
-def plot_pitch_rf_regression(peaks, *, label="", rf_peak_method="vertical_profile"):
-    stats = pitch_rf_regression(peaks)
+def plot_pitch_rf_regression(peaks, stats, *, label="", rf_peak_method="vertical_profile"):
+    """Render native-bin peaks using a regression computed by the caller."""
     with plt.rc_context(LIGHT_PLOT_STYLE):
         fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
         ax.scatter(peaks.pitch_peak_deg, peaks.rf_peak_deg, s=30, alpha=.8)
@@ -289,4 +324,4 @@ def plot_pitch_rf_regression(peaks, *, label="", rf_peak_method="vertical_profil
                xlabel="Preferred pitch (°; up positive)", ylabel=f"RF {method} (°; up positive)",
                title=f"{label}\nn={stats['n']}, slope={stats['slope']:.3f}, R²={stats['r_squared']:.3f}, p={stats['p']:.4g}")
         ax.grid(alpha=.35)
-    return stats, fig
+    return fig

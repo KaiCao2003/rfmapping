@@ -17,7 +17,7 @@ from Utils.rflocate import _detector
 
 NOTEBOOKS = (
     "tc_comparison_pairs.ipynb", "tc_comparison_pairs_inhibitory.ipynb",
-    "hd_rf_comparison.ipynb", "hd_rf_ebc_comparison.ipynb",
+    "hd_rf_comparison.ipynb",
 )
 
 
@@ -61,7 +61,7 @@ CASES = [
 
 
 def test_csv_blocks_cover_all_recordings():
-    assert [sum(case[0] == name for case in CASES) for name in NOTEBOOKS] == [5, 5, 1, 1]
+    assert [sum(case[0] == name for case in CASES) for name in NOTEBOOKS] == [5, 5, 1]
 
 
 @pytest.mark.parametrize("rf_only", [False, True])

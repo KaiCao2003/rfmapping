@@ -1,5 +1,10 @@
 import numpy as np
-from collections.abc import Mapping
+import csv
+from pathlib import Path
+from collections.abc import Mapping, Sequence
+
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
 from scipy.stats import circmean, pearsonr, permutation_test, rankdata
 
 
@@ -320,3 +325,388 @@ def collect_innermost_fields(nested_data, *, fill_value=None):
     }
 
     return aggregated_result
+
+
+def safe_std(values: np.ndarray) -> float:
+    array = np.asarray(values, dtype=float)
+    array = array[np.isfinite(array)]
+    if array.size <= 1:
+        return 0.0
+    return float(np.nanstd(array, ddof=0))
+
+
+def safe_mean(values: np.ndarray) -> float:
+    array = np.asarray(values, dtype=float)
+    array = array[np.isfinite(array)]
+    if array.size == 0:
+        return np.nan
+    return float(np.nanmean(array))
+
+
+def _validate_index_interval_groups(
+        labels: list[str],
+        data_list: list[list[tuple[int, int]]],
+) -> list[list[tuple[int, int]]]:
+    if len(labels) != len(data_list):
+        raise ValueError("labels and data_list must have the same length.")
+
+    validated_groups: list[list[tuple[int, int]]] = []
+    for phase_label, intervals in zip(labels, data_list):
+        validated_intervals: list[tuple[int, int]] = []
+        for trial_index, (start, end) in enumerate(intervals, start=1):
+            start_index = int(start)
+            end_index = int(end)
+            if start_index > end_index:
+                raise ValueError(
+                    f"Invalid interval for {phase_label} trial {trial_index}: "
+                    f"start ({start_index}) is greater than end ({end_index})."
+                )
+            validated_intervals.append((start_index, end_index))
+        validated_groups.append(validated_intervals)
+
+    return validated_groups
+
+
+def _validate_numeric_interval_groups(
+        labels: list[str],
+        data_list: list[list[tuple[int | float, int | float]]],
+) -> list[list[tuple[float, float]]]:
+    if len(labels) != len(data_list):
+        raise ValueError("labels and data_list must have the same length.")
+
+    validated_groups: list[list[tuple[float, float]]] = []
+    for phase_label, intervals in zip(labels, data_list):
+        validated_intervals: list[tuple[float, float]] = []
+        for trial_index, interval in enumerate(intervals, start=1):
+            if len(interval) != 2:
+                raise ValueError(
+                    f"Invalid interval for {phase_label} trial {trial_index}: "
+                    f"expected a pair, got {interval!r}."
+                )
+            start_value = float(interval[0])
+            end_value = float(interval[1])
+            if not (np.isfinite(start_value) and np.isfinite(end_value)):
+                raise ValueError(
+                    f"Invalid interval for {phase_label} trial {trial_index}: "
+                    f"({start_value}, {end_value}) contains a non-finite value."
+                )
+            if start_value > end_value:
+                raise ValueError(
+                    f"Invalid interval for {phase_label} trial {trial_index}: "
+                    f"start ({start_value}) is greater than end ({end_value})."
+                )
+            validated_intervals.append((start_value, end_value))
+        validated_groups.append(validated_intervals)
+
+    return validated_groups
+
+
+def _iter_event_rows(
+        event_source: str | Path | Sequence[Mapping[str, object]] | object,
+):
+    if isinstance(event_source, (str, Path)):
+        event_path = Path(event_source)
+        with event_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                raise ValueError(f"Event CSV is missing a header row: {event_path}")
+            yield from reader
+        return
+
+    if hasattr(event_source, "to_dict"):
+        try:
+            records = event_source.to_dict("records")
+        except TypeError:
+            records = event_source.to_dict(orient="records")
+        for row in records:
+            if not isinstance(row, Mapping):
+                raise TypeError("event_source.to_dict('records') must return mapping rows.")
+            yield dict(row)
+        return
+
+    if isinstance(event_source, Sequence) and not isinstance(event_source, (str, bytes, bytearray)):
+        for row in event_source:
+            if not isinstance(row, Mapping):
+                raise TypeError("event_source sequences must contain mapping rows.")
+            yield dict(row)
+        return
+
+    raise TypeError(
+        "event_source must be a CSV path, a DataFrame-like object, or a sequence of mapping rows."
+    )
+
+
+def _is_truthy(value: object) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if value is None:
+        return False
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        if isinstance(value, float) and np.isnan(value):
+            return False
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "t"}
+
+
+def summarize_head_turns_from_intervals(
+        labels: list[str],
+        data_list: list[list[tuple[int | float, int | float]]],
+        event_source: str | Path | Sequence[Mapping[str, object]] | object,
+        *,
+        target_data: list | np.ndarray | None = None,
+        event_start_column: str = "start_frame_actual",
+        event_end_column: str = "end_frame",
+        skip_column: str | None = "is_skipped",
+        count_mode: str = "start",
+        value_mode: str = "count",
+        fps: float | None = None,
+) -> dict[str, object]:
+    """
+    Count head-turn events inside phase/trial intervals and return plot-ready values.
+
+    ``labels`` and ``data_list`` follow the same grouped-by-phase layout as
+    ``summarize_phase_intervals``. Each event is taken from ``event_source``,
+    which may be a CSV path or a DataFrame-like object.
+
+    ``count_mode="start"`` counts events whose start timestamp falls inside each
+    inclusive interval. ``count_mode="overlap"`` counts events that overlap the
+    interval at all and therefore uses both ``event_start_column`` and
+    ``event_end_column``.
+
+    ``value_mode="count"`` returns raw counts per trial. ``value_mode="rate"``
+    and ``value_mode="count_per_s"`` divide those counts by the interval duration
+    in seconds and therefore require ``fps``.
+
+    When ``target_data`` is provided, the plotted/statistical trial value is the
+    mean of ``target_data`` restricted to head-turn event samples inside each
+    trial interval. Raw event counts are still returned in ``phase_trial_counts``.
+    """
+    validated_groups = _validate_numeric_interval_groups(labels, data_list)
+
+    normalized_count_mode = str(count_mode).strip().lower()
+    if normalized_count_mode not in {"start", "overlap"}:
+        raise ValueError("count_mode must be either 'start' or 'overlap'.")
+
+    normalized_value_mode = str(value_mode).strip().lower()
+    if normalized_value_mode not in {"count", "rate", "count_per_s"}:
+        raise ValueError("value_mode must be 'count', 'rate', or 'count_per_s'.")
+    if normalized_value_mode != "count":
+        if fps is None:
+            raise ValueError("fps is required when value_mode is 'rate' or 'count_per_s'.")
+        if float(fps) <= 0:
+            raise ValueError("fps must be positive when provided.")
+
+    target_array: np.ndarray | None = None
+    if target_data is not None:
+        target_array = np.asarray(target_data, dtype=float)
+        if target_array.ndim != 1:
+            raise ValueError("target_data must be a 1D list or numpy array when provided.")
+
+    event_starts: list[float] = []
+    event_ends: list[float] = []
+    event_intervals: list[tuple[float, float]] = []
+    kept_event_count = 0
+    for row in _iter_event_rows(event_source):
+        if skip_column is not None and _is_truthy(row.get(skip_column)):
+            continue
+        if event_start_column not in row:
+            raise KeyError(f"Missing event start column: {event_start_column}")
+
+        start_value = float(row[event_start_column])
+        if not np.isfinite(start_value):
+            continue
+        raw_end_value = row.get(event_end_column, start_value)
+        end_value = float(raw_end_value)
+        if not np.isfinite(end_value):
+            end_value = start_value
+        end_value = max(start_value, end_value)
+
+        event_starts.append(start_value)
+        event_ends.append(end_value)
+        event_intervals.append((start_value, end_value))
+        kept_event_count += 1
+
+    event_start_array = np.sort(np.asarray(event_starts, dtype=float))
+    event_end_array = np.sort(np.asarray(event_ends, dtype=float))
+    event_intervals.sort(key=lambda pair: pair[0])
+
+    phase_trial_counts: list[np.ndarray] = []
+    phase_trial_values: list[np.ndarray] = []
+    phase_trial_durations_s: list[np.ndarray] = []
+    phase_trial_event_sample_counts: list[np.ndarray] = []
+    phase_stats: list[dict[str, object]] = []
+
+    for phase_label, intervals in zip(labels, validated_groups):
+        count_values: list[int] = []
+        phase_values: list[float] = []
+        duration_values_s: list[float] = []
+        event_sample_counts: list[int] = []
+
+        for start_value, end_value in intervals:
+            if normalized_count_mode == "start":
+                left = np.searchsorted(event_start_array, start_value, side="left")
+                right = np.searchsorted(event_start_array, end_value, side="right")
+                event_count = int(right - left)
+            else:
+                started_by_end = np.searchsorted(event_start_array, end_value, side="right")
+                ended_before_start = np.searchsorted(event_end_array, start_value, side="left")
+                event_count = int(started_by_end - ended_before_start)
+
+            count_values.append(event_count)
+
+            if target_array is None:
+                event_sample_counts.append(0)
+                if normalized_value_mode == "count":
+                    phase_values.append(float(event_count))
+                    duration_values_s.append(np.nan)
+                    continue
+
+                duration_frames = end_value - start_value + 1.0
+                duration_s = duration_frames / float(fps)
+                duration_values_s.append(duration_s)
+                phase_values.append(float(event_count / duration_s) if duration_s > 0 else np.nan)
+                continue
+
+            trial_start_index = int(np.ceil(start_value))
+            trial_end_index = int(np.floor(end_value))
+            if trial_start_index < 0 or trial_end_index >= target_array.size:
+                raise IndexError(
+                    f"Interval for {phase_label} is out of bounds for target_data: "
+                    f"({trial_start_index}, {trial_end_index}) with target_data length {target_array.size}."
+                )
+
+            segment_bounds: list[tuple[int, int]] = []
+            for event_start_value, event_end_value in event_intervals:
+                if normalized_count_mode == "start":
+                    if not (start_value <= event_start_value <= end_value):
+                        continue
+                else:
+                    if event_end_value < start_value or event_start_value > end_value:
+                        continue
+
+                segment_start = max(trial_start_index, int(np.ceil(event_start_value)))
+                segment_end = min(trial_end_index, int(np.floor(event_end_value)))
+                if segment_start > segment_end:
+                    continue
+
+                segment_bounds.append((segment_start, segment_end))
+
+            duration_values_s.append(np.nan)
+            if not segment_bounds:
+                event_sample_counts.append(0)
+                phase_values.append(np.nan)
+                continue
+
+            merged_bounds: list[list[int]] = []
+            for segment_start, segment_end in segment_bounds:
+                if not merged_bounds or segment_start > merged_bounds[-1][1] + 1:
+                    merged_bounds.append([segment_start, segment_end])
+                else:
+                    merged_bounds[-1][1] = max(merged_bounds[-1][1], segment_end)
+
+            event_sample_counts.append(
+                int(sum(segment_end - segment_start + 1 for segment_start, segment_end in merged_bounds))
+            )
+            event_values = np.concatenate(
+                [target_array[segment_start:segment_end + 1] for segment_start, segment_end in merged_bounds]
+            )
+            finite_values = event_values[np.isfinite(event_values)]
+            phase_values.append(float(np.nanmean(finite_values)) if finite_values.size else np.nan)
+
+        count_array = np.asarray(count_values, dtype=int)
+        value_array = np.asarray(phase_values, dtype=float)
+        duration_array = np.asarray(duration_values_s, dtype=float)
+        event_sample_count_array = np.asarray(event_sample_counts, dtype=int)
+
+        phase_trial_counts.append(count_array)
+        phase_trial_values.append(value_array)
+        phase_trial_durations_s.append(duration_array)
+        phase_trial_event_sample_counts.append(event_sample_count_array)
+        phase_stats.append(
+            {
+                "label": phase_label,
+                "n_trials": int(value_array.size),
+                "mean": safe_mean(value_array),
+                "std": safe_std(value_array),
+                "total_count": int(count_array.sum()),
+                "total_event_samples": int(event_sample_count_array.sum()),
+            }
+        )
+
+    return {
+        "labels": list(labels),
+        "data_list": validated_groups,
+        "phase_trial_counts": phase_trial_counts,
+        "phase_trial_values": phase_trial_values,
+        "phase_trial_durations_s": phase_trial_durations_s,
+        "phase_trial_event_sample_counts": phase_trial_event_sample_counts,
+        "phase_means": np.asarray([row["mean"] for row in phase_stats], dtype=float),
+        "phase_stds": np.asarray([row["std"] for row in phase_stats], dtype=float),
+        "phase_stats": phase_stats,
+        "analysis_mode": "head_turn_target_mean" if target_array is not None else "head_turn_frequency",
+        "count_mode": normalized_count_mode,
+        "value_mode": normalized_value_mode,
+        "event_start_column": event_start_column,
+        "event_end_column": event_end_column,
+        "kept_event_count": kept_event_count,
+        "has_target_data": target_array is not None,
+    }
+
+
+
+def summarize_phase_intervals(labels, data_list, target_data):
+    """Compute trial means on inclusive intervals, then phase means and SDs."""
+    validated_groups = _validate_index_interval_groups(labels, data_list)
+    target_array = np.asarray(target_data, dtype=float)
+    if target_array.ndim != 1:
+        raise ValueError("target_data must be a 1D list or numpy array.")
+    phase_trial_values = []
+    for phase_label, intervals in zip(labels, validated_groups):
+        trial_values = []
+        for trial_index, (start_index, end_index) in enumerate(intervals, start=1):
+            if start_index < 0 or end_index >= target_array.size:
+                raise IndexError(
+                    f"Interval for {phase_label} trial {trial_index} is out of bounds: "
+                    f"({start_index}, {end_index}) for target_data of length {target_array.size}."
+                )
+            interval_values = target_array[start_index:end_index + 1]
+            finite_values = interval_values[np.isfinite(interval_values)]
+            if finite_values.size:
+                trial_values.append(float(np.mean(finite_values)))
+        phase_trial_values.append(np.asarray(trial_values, dtype=float))
+    return {
+        "labels": list(labels), "phase_trial_values": phase_trial_values,
+        "phase_means": np.asarray([safe_mean(values) for values in phase_trial_values]),
+        "phase_stds": np.asarray([safe_std(values) for values in phase_trial_values]),
+    }
+
+
+def smooth_tuning_curve(curve, *, sigma=1.5):
+    """Smooth a circular Series on its intact bin grid, retaining missing bins.
+
+    Finite-weight convolution prevents missing observations from becoming zeros;
+    a missing source bin stays missing in the result. Sigma is measured in bins.
+    """
+    values = curve.to_numpy(dtype=float)
+    finite = np.isfinite(values)
+    numerator = gaussian_filter1d(np.where(finite, values, 0.0), sigma=sigma, mode="wrap")
+    weights = gaussian_filter1d(finite.astype(float), sigma=sigma, mode="wrap")
+    smoothed = np.full(values.shape, np.nan)
+    np.divide(numerator, weights, out=smoothed, where=finite & (weights > 0))
+    return pd.Series(smoothed, index=curve.index, name=curve.name)
+
+
+def tuning_curve_reference_radii(curve, *, levels=(1,)):
+    """Prepare mean and mean +/- SD reference rings for a tuning-curve plot."""
+    values = np.asarray(curve, dtype=float)
+    finite = values[np.isfinite(values)]
+    if not len(finite):
+        return []
+    mean, std = float(np.mean(finite)), float(np.std(finite))
+    radii = [mean]
+    for level in levels:
+        if level > 0:
+            radii.append(mean + level * std)
+            if mean - level * std > 0:
+                radii.append(mean - level * std)
+    return radii

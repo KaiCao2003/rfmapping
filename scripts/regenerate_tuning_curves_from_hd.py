@@ -86,8 +86,7 @@ def load_session_info(session_dir: Path, data_dir: Path, file_names: dict) -> di
     path = data_dir / f"{file_names['session_info_filename']}.json"
     if path.is_file():
         return read_formatted_json(path)["session_info"]
-    structure = next(session_dir.glob("*/Record Node */experiment*/recording*/structure.oebin"))
-    return Session(structure).get_session_info()
+    return Session(session_dir).get_session_info()
 
 
 def first_baseline_interval(
@@ -186,7 +185,7 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Overwrite tuning curves and HD cell lists")
     parser.add_argument(
         "--log-file", type=Path,
-        default=Path(__file__).with_name("regenerate_tuning_curves_from_hd.log"),
+        default=Path("output/regenerate_tuning_curves_from_hd.log"),
         help="Append per-session results and tracebacks here when applying",
     )
     args = parser.parse_args()
@@ -195,6 +194,7 @@ def main() -> int:
     logger.setLevel(logging.INFO)
     logger.addHandler(logging.StreamHandler(sys.stdout))
     if args.apply:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
         logger.addHandler(logging.FileHandler(args.log_file, mode="a"))
         logger.info("=== %s ===", datetime.now().astimezone().isoformat(timespec="seconds"))
         logger.info("Log file: %s", args.log_file)
@@ -207,7 +207,7 @@ def main() -> int:
             parser.error(f"Not in the selected HD batch: {', '.join(sorted(unknown))}")
         selected = [(label, path) for label, path in selected if label in requested]
 
-    file_names = read_formatted_json(Path(__file__).with_name("file_names.json"))
+    file_names = read_formatted_json(Path(__file__).resolve().parents[1] / "file_names.json")
     saved = skipped = failed = 0
     for label, session_dir in selected:
         if label in EXCLUDED:

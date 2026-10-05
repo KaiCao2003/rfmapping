@@ -60,7 +60,9 @@ def collect_units(root):
             hd = load_tc(tc_path, **recording)
             # This cutoff audit includes both classes that pass the significance tests.
             hd_significant = hd_pick(hd, hd_class=(2, 3))
-            maps = load_rfmap(rf_path).sum(0., .2, show_progress=False).sum_to_1d(axis="x")
+            raw_rf = load_rfmap(rf_path)
+            rf_rates = raw_rf.to_firing_rate(reconstruct_presentations=True)
+            maps = rf_rates.mean_rate(0., .2, show_progress=False).sum_to_1d(axis="x")
             profiles = rf_profiles(maps, probe=probe)
             profiles = select_rf_profiles(profiles, load_rf(rf_result_path(rf_path)))
             rf = recording_profiles(
