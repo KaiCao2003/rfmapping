@@ -78,17 +78,25 @@ def test_inhibitory_1d_uses_requested_axis_and_detection_mode(
         values = values.T
     source = _source(values, is_batch)
     options = dict(rf_type="inhibitory", drop_bins=0, show_progress=False)
-    mask = source.rf_1d(axis=axis, collapse_from_2d=collapse_from_2d, **options)
     if collapse_from_2d:
         spatial_axis = (1 if axis == "x" else 2) if is_batch else (
             0 if axis == "x" else 1
         )
-        expected = source.rf_2d(**options).any(axis=spatial_axis)
+        mask_2d = source.rf_2d(**options)
+        center_2d = source.rf_2d(is_center=True, **options)
+        expected = mask_2d.any(axis=spatial_axis)
+        options = dict(detected_rf={
+            "mask_2d": mask_2d if is_batch else mask_2d[None],
+            "center_2d": center_2d if is_batch else center_2d[None],
+            "unit_ids": source.unit_ids if is_batch else [source.unit_id],
+            "manifest": {},
+        })
     else:
         collapsed = values.sum(axis=0 if axis == "x" else 1)
         expected = collapsed <= collapsed.mean() - 0.75 * collapsed.std()
         if is_batch:
             expected = np.stack([expected, expected])
+    mask = source.rf_1d(axis=axis, collapse_from_2d=collapse_from_2d, **options)
     np.testing.assert_array_equal(mask, expected)
     center = source.rf_1d(
         axis=axis, collapse_from_2d=collapse_from_2d, is_center=True, **options,

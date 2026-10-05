@@ -3,8 +3,10 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 import spikeinterface as si
 import spikeinterface.extractors as se
+from spikeinterface.extractors.extractor_classes import OpenEphysBinaryRecordingExtractor
 from probeinterface import Probe
 from spikeinterface.postprocessing.localization_tools import compute_center_of_mass
+from Utils.json_tools import read_formatted_json
 
 import numpy as np
 from numpy.typing import NDArray
@@ -49,9 +51,10 @@ def validate_data(
         *,
         kilosort_dir: str | Path,
         recording_file: str | Path,
+        recording: si.BaseRecording,
 ) -> ValidatedData:
-    raw_dtype = "int16"
-    raw_num_channels = 384
+    raw_dtype = recording.get_dtype()
+    raw_num_channels = recording.get_num_channels()
 
     kilosort_dir = Path(kilosort_dir)
     recording_file = Path(recording_file)
@@ -86,10 +89,13 @@ def validate_data(
 
     channel_map = np.load(kilosort_dir / "channel_map.npy")
     channel_positions = np.load(kilosort_dir / "channel_positions.npy")
-    if channel_map.shape != (raw_num_channels,) or channel_positions.shape != (raw_num_channels, 2):
+    if (channel_map.ndim != 1 or not np.issubdtype(channel_map.dtype, np.integer)
+            or channel_positions.shape != (channel_map.size, 2)
+            or np.unique(channel_map).size != channel_map.size
+            or np.any((channel_map < 0) | (channel_map >= raw_num_channels))):
         raise ValueError(
-            "channel_map.npy and channel_positions.npy do not match "
-            f"the expected {raw_num_channels} channels."
+            "Kilosort channel_map.npy and channel_positions.npy must describe "
+            f"unique raw channel indices within the {raw_num_channels}-channel recording."
         )
 
     probe_ops = np.load(kilosort_dir / "ops.npy", allow_pickle=True).item()["probe"]
@@ -97,7 +103,7 @@ def validate_data(
     channel_shank_ids = np.asarray(probe_ops["kcoords"]).squeeze().astype(int)
     if not np.array_equal(ops_channel_map, channel_map):
         raise ValueError("Kilosort chanMap and channel_map.npy do not agree.")
-    if channel_shank_ids.shape != (raw_num_channels,):
+    if channel_shank_ids.shape != channel_map.shape:
         raise ValueError("Kilosort kcoords do not match the channel count.")
 
     return ValidatedData(
@@ -105,6 +111,78 @@ def validate_data(
         channel_positions=channel_positions,
         channel_shank_ids=channel_shank_ids,
     )
+
+
+def read_open_ephys_probe(
+    session_info: Mapping[str, Any], probe_name: str, *, load_sync_timestamps: bool = True,
+) -> si.BaseRecording:
+    """Read one metadata-selected probe with its recorded gains and OE clock.
+
+    The session metadata selects the recording and stream. Numeric channel IDs
+    retain their historical meaning as zero-based columns of continuous.dat;
+    Kilosort's channel_map can then select and order those physical columns.
+    Synchronized times stay in absolute OE seconds, without ADC rebasing.
+    """
+    probe_name = probe_name.removeprefix('Probe')
+    folder = (Path(session_info['base_path']) / session_info['record_nodes']
+              / session_info['experiment_id'] / session_info['recording_name'])
+    stream_folder = session_info[f'continuous_probe_{probe_name}_folder']
+    stream_name = f"{session_info['record_nodes']}#{stream_folder}"
+    names, stream_ids = OpenEphysBinaryRecordingExtractor.get_streams(folder)
+    if stream_name not in names:
+        raise ValueError(f"Probe stream {stream_name!r} is not present in {folder}.")
+    stream_id = stream_ids[names.index(stream_name)]
+    recording = se.read_openephys(
+        folder, stream_id=stream_id,
+        load_sync_timestamps=load_sync_timestamps,
+    )
+    if recording.get_num_segments() != 1:
+        raise ValueError('The selected Open Ephys recording must contain one segment.')
+    if load_sync_timestamps and not recording.has_time_vector():
+        raise ValueError('The selected probe has no synchronized Open Ephys timestamps.')
+    recording = recording.rename_channels(np.arange(recording.get_num_channels()))
+    recording.annotate(
+        open_ephys_raw_file=str(folder / 'continuous' / stream_folder / 'continuous.dat'),
+        open_ephys_stream_id=stream_id, open_ephys_stream_name=stream_name,
+        load_sync_timestamps=load_sync_timestamps,
+    )
+    return recording
+
+
+def attach_kilosort_probe(
+    recording: si.BaseRecording, data: ValidatedData, *, contact_radius_um: float = 6.,
+) -> si.BaseRecording:
+    """Apply Kilosort channel order, contact positions, and physical shank IDs."""
+    recording = recording.select_channels(data.channel_map)
+    probe = Probe(ndim=2, si_units='um')
+    probe.set_contacts(
+        data.channel_positions, shapes='circle', shape_params={'radius': contact_radius_um},
+        shank_ids=data.channel_shank_ids,
+    )
+    probe.set_device_channel_indices(np.arange(data.channel_map.size))
+    return recording.set_probe(probe, in_place=True)
+
+
+def _validate_cached_recording(cached: si.BaseRecording, current: si.BaseRecording) -> None:
+    """Reject caches whose amplitude or time metadata predates this reader policy."""
+    mismatch = (
+        cached is None
+        or cached.get_sampling_frequency() != current.get_sampling_frequency()
+        or cached.get_num_frames() != current.get_num_frames()
+        or cached.has_time_vector() != current.has_time_vector()
+        or not np.array_equal(cached.get_channel_gains(), current.get_channel_gains())
+        or not np.array_equal(cached.get_channel_offsets(), current.get_channel_offsets())
+    )
+    if not mismatch:
+        endpoints = np.array([0, current.get_num_frames() - 1])
+        mismatch = not np.array_equal(
+            cached.sample_index_to_time(endpoints), current.sample_index_to_time(endpoints),
+        )
+    if mismatch:
+        raise ValueError(
+            'Cached analyzer recording metadata does not match the current Open Ephys reader. '
+            'Rebuild explicitly with overwrite_waveform_analyzer=True.'
+        )
 
 
 def _probe_directory_name(probe_name: str) -> str:
@@ -666,20 +744,85 @@ def export_spike_position_data(
     return spike_position_dir
 
 
-def get_unit_info(base_dir: str | Path,
-                  date: int | str,
-                  session_id: str,
-                  probe_name: str, *,
-                  session_dir: Path | None = None,
-                  output_dir: Path | None = None,
-                  only_good_units: bool = True,
-                  unit_waveform: bool = True,
-                  unit_position: bool = True,
-                  overwrite_waveform_analyzer: bool = False,
-                  pre_spike_ms: float = 0.5,
-                  post_spike_ms: float = 1.5,
-                  max_spikes_per_unit: int = 2_000,
-                  n_jobs: int = 32):
+def compute_template_unit_locations(
+    waveform_analyzer: si.SortingAnalyzer,
+    template_array: FloatArray,
+    template_ptp_summary: TemplatePtpSummary,
+    *,
+    nbefore: int,
+    radius_um: float = 75.0,
+    feature: str = "ptp",
+) -> FloatArray:
+    """Localize units using contacts within a radius of their strongest channel."""
+
+    unit_ids = waveform_analyzer.unit_ids
+    channel_locations = waveform_analyzer.get_channel_locations()
+    location_sparsity_mask = np.zeros(
+        (len(unit_ids), waveform_analyzer.get_num_channels()),
+        dtype=bool,
+    )
+    for unit_index in range(len(unit_ids)):
+        best_channel_index = int(template_ptp_summary.best_channel_indices[unit_index])
+        distances = np.linalg.norm(
+            channel_locations - channel_locations[best_channel_index],
+            axis=1,
+        )
+        location_sparsity_mask[unit_index] = distances <= radius_um
+
+    location_sparsity = si.ChannelSparsity(
+        mask=location_sparsity_mask,
+        unit_ids=unit_ids,
+        channel_ids=waveform_analyzer.channel_ids,
+    )
+    dense_location_templates = si.Templates(
+        templates_array=template_array,
+        sampling_frequency=waveform_analyzer.sampling_frequency,
+        nbefore=nbefore,
+        is_in_uV=True,
+        channel_ids=waveform_analyzer.channel_ids,
+        unit_ids=unit_ids,
+        probe=waveform_analyzer.get_probe(),
+    )
+    return compute_center_of_mass(
+        dense_location_templates.to_sparse(location_sparsity),
+        feature=feature,
+    )
+
+
+@dataclass(frozen=True)
+class UnitArtifactPaths:
+    waveform_dir: Path | None = None
+    spike_position_dir: Path | None = None
+    analyzer_dir: Path | None = None
+
+
+def generate_unit_artifacts(
+    base_dir: str | Path,
+    date: int | str,
+    session_id: str,
+    probe_name: str,
+    *,
+    session_dir: Path | None = None,
+    output_dir: Path | None = None,
+    only_good_units: bool = True,
+    remove_empty_units: bool = True,
+    load_sync_timestamps: bool = True,
+    unit_waveform: bool = True,
+    unit_position: bool = True,
+    overwrite_waveform_analyzer: bool = False,
+    pre_spike_ms: float = 0.5,
+    post_spike_ms: float = 1.5,
+    max_spikes_per_unit: int = 2_000,
+    waveform_seed: int = 0,
+    probe_contact_radius_um: float = 6.0,
+    unit_location_feature: Literal['ptp'] = 'ptp',
+    unit_location_radius_um: float = 75.0,
+    n_jobs: int = 32,
+) -> UnitArtifactPaths:
+    """Compute templates and export the requested waveform/position artifacts."""
+
+    if not unit_waveform and not unit_position:
+        return UnitArtifactPaths()
 
     print(f"----- Working on Probe{probe_name} -----")
     base_dir = Path(base_dir)
@@ -687,22 +830,16 @@ def get_unit_info(base_dir: str | Path,
     session_dir = Path(session_dir) if session_dir is not None else base_dir / date / f'{date}_{session_id}'
     output_dir = Path(output_dir) if output_dir is not None else session_dir / 'data'
 
-
-    waveform_seed: int = 0
-
-    raw_num_channels: int = 384
-    raw_dtype: Literal['int16'] = 'int16'
-    raw_sampling_frequency: float = 30_000.0
-    gain_to_uv: float = 0.195
-    offset_to_uv: float = 0.0
-    probe_contact_radius_um: float = 6.0
-    unit_location_feature: Literal['ptp'] = 'ptp'
-    unit_location_radius_um: float = 75.0
-
     kilosort_run: str = f'kilosort_{session_id}'
     kilosort_dir: Path = session_dir / 'kilosort' / f'Probe{probe_name}' / kilosort_run
-    raw_file = next((session_dir / session_dir.parent.name)
-                    .glob(f"*/experiment1/recording1/continuous/OneBox-*.Probe{probe_name}/continuous.dat"))
+    session_info = read_formatted_json(session_dir / 'data' / 'session_info.json')['session_info']
+    recording = read_open_ephys_probe(
+        session_info, probe_name, load_sync_timestamps=load_sync_timestamps,
+    )
+    raw_file = Path(recording.get_annotation('open_ephys_raw_file'))
+    raw_num_channels = recording.get_num_channels()
+    raw_dtype = str(recording.get_dtype())
+    raw_sampling_frequency = recording.get_sampling_frequency()
 
     waveform_analyzer_folder: Path = (
             session_dir / 'data' / 'spikeinterface_analyzer' / f'Probe{probe_name}'
@@ -711,33 +848,22 @@ def get_unit_info(base_dir: str | Path,
     validated_data = validate_data(
         recording_file=raw_file,
         kilosort_dir=kilosort_dir,
+        recording=recording,
     )
 
-    sorting: si.BaseSorting = se.read_kilosort(kilosort_dir, keep_good_only=only_good_units)
+    sorting: si.BaseSorting = se.read_kilosort(
+        kilosort_dir, keep_good_only=only_good_units, remove_empty_units=remove_empty_units,
+    )
+    if sorting.get_sampling_frequency() != raw_sampling_frequency:
+        raise ValueError('Kilosort sampling frequency does not match the Open Ephys probe stream.')
     unit_ids: IntArray = sorting.unit_ids
-    channel_map: IntArray = validated_data.channel_map
-    channel_positions: FloatArray = validated_data.channel_positions
     channel_shank_ids: IntArray = validated_data.channel_shank_ids
 
-    recording: si.BaseRecording = si.read_binary(
-        file_paths=raw_file,
-        sampling_frequency=raw_sampling_frequency,
-        dtype=raw_dtype,
-        num_channels=raw_num_channels,
-        gain_to_uV=gain_to_uv,
-        offset_to_uV=offset_to_uv,
-        is_filtered=False,
+    recording = attach_kilosort_probe(
+        recording, validated_data, contact_radius_um=probe_contact_radius_um,
     )
-    recording = recording.select_channels(channel_map)
-    probe = Probe(ndim=2, si_units='um')
-    probe.set_contacts(
-        channel_positions,
-        shapes='circle',
-        shape_params={'radius': probe_contact_radius_um},
-    )
-    probe.set_device_channel_indices(np.arange(raw_num_channels))
-    recording = recording.set_probe(probe)
-    recording_duration_minutes: float = recording.get_total_duration() / 60.0
+    # Waveform coverage is defined in sample indices, independent of clock origin.
+    recording_duration_minutes = recording.get_num_frames() / raw_sampling_frequency / 60.
 
     selection_params = {
         'method': 'uniform',
@@ -753,6 +879,7 @@ def get_unit_info(base_dir: str | Path,
             raise ValueError('Cached analyzer unit IDs do not match the current sorting.')
         if not np.array_equal(waveform_analyzer.channel_ids, recording.channel_ids):
             raise ValueError('Cached analyzer channel IDs do not match the current recording.')
+        _validate_cached_recording(waveform_analyzer.recording, recording)
         if waveform_analyzer.sparsity is not None:
             raise ValueError('Cached analyzer is sparse; rebuild it with overwrite_waveform_analyzer = True.')
         print(f'Loaded waveform analyzer: {waveform_analyzer_folder}')
@@ -805,6 +932,8 @@ def get_unit_info(base_dir: str | Path,
                           ) / waveform_analyzer.sampling_frequency * 1_000.0
     template_ptp_summary = compute_template_ptp_summary(template_array)
     channel_locations: FloatArray = waveform_analyzer.get_channel_locations()
+    gains = recording.get_channel_gains()
+    offsets = recording.get_channel_offsets()
 
     run_config = {
         'output_dir': str(output_dir),
@@ -813,11 +942,19 @@ def get_unit_info(base_dir: str | Path,
         'overwrite_waveform_analyzer': overwrite_waveform_analyzer,
         'raw_dtype': raw_dtype,
         'raw_num_channels': raw_num_channels,
-        'gain_to_uv': gain_to_uv,
-        'offset_to_uv': offset_to_uv,
+        'gain_to_uv': float(gains[0]) if np.all(gains == gains[0]) else gains.tolist(),
+        'offset_to_uv': float(offsets[0]) if np.all(offsets == offsets[0]) else offsets.tolist(),
+        'open_ephys_stream_id': recording.get_annotation('open_ephys_stream_id'),
+        'open_ephys_stream_name': recording.get_annotation('open_ephys_stream_name'),
+        'load_sync_timestamps': load_sync_timestamps,
+        'timestamp_reference': 'Open Ephys synchronized seconds' if load_sync_timestamps else 'Open Ephys start plus sample index / sampling frequency',
+        'keep_good_only': only_good_units,
+        'remove_empty_units': remove_empty_units,
         'probe_contact_radius_um': probe_contact_radius_um,
     }
 
+    exported_waveform_dir = None
+    exported_spike_position_dir = None
     if unit_waveform:
         print("Gen unit waveform")
 
@@ -853,34 +990,10 @@ def get_unit_info(base_dir: str | Path,
     if unit_position:
         print("Gen unit position")
 
-        location_sparsity_mask = np.zeros(
-            (len(unit_ids), waveform_analyzer.get_num_channels()),
-            dtype=bool,
-        )
-        for unit_index in range(len(unit_ids)):
-            best_channel_index = int(template_ptp_summary.best_channel_indices[unit_index])
-            distances = np.linalg.norm(
-                channel_locations - channel_locations[best_channel_index],
-                axis=1,
-            )
-            location_sparsity_mask[unit_index] = distances <= unit_location_radius_um
-
-        location_sparsity = si.ChannelSparsity(
-            mask=location_sparsity_mask,
-            unit_ids=unit_ids,
-            channel_ids=waveform_analyzer.channel_ids,
-        )
-        dense_location_templates = si.Templates(
-            templates_array=template_array,
-            sampling_frequency=waveform_analyzer.sampling_frequency,
+        unit_locations = compute_template_unit_locations(
+            waveform_analyzer, template_array, template_ptp_summary,
             nbefore=template_extension.nbefore,
-            is_in_uV=True,
-            channel_ids=waveform_analyzer.channel_ids,
-            unit_ids=unit_ids,
-            probe=waveform_analyzer.get_probe(),
-        )
-        unit_locations: FloatArray = compute_center_of_mass(
-            dense_location_templates.to_sparse(location_sparsity),
+            radius_um=unit_location_radius_um,
             feature=unit_location_feature,
         )
 
@@ -898,3 +1011,13 @@ def get_unit_info(base_dir: str | Path,
             run_config=run_config,
         )
         print(f'Exported unit positions: {exported_spike_position_dir}')
+
+    return UnitArtifactPaths(
+        waveform_dir=exported_waveform_dir,
+        spike_position_dir=exported_spike_position_dir,
+        analyzer_dir=waveform_analyzer_folder,
+    )
+
+
+# Historical name retained for external batch scripts. This call generates files.
+get_unit_info = generate_unit_artifacts

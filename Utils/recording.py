@@ -400,9 +400,7 @@ def gen_recording_interval_table(base_dir: str, *, multi_recording: bool = True,
 
         # ----------------------------------------------------------------------
         else:
-            oebin_file_dir = next(Path(base_dir).glob("**/structure.oebin"))
-
-            session = Session(oebin_file_dir)
+            session = Session(base_dir)
             session_info = session.get_session_info()
 
             write_formatted_json(

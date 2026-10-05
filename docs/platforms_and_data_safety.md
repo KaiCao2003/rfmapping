@@ -146,10 +146,10 @@ the containing directory; it is not stored as a column in the current table.
   it does not merge the records.
 - Do not delete or recreate a database to solve a path, permission, Windows VFS,
   or schema error.
-- When expecting saved corrections, confirm that the file exists **before**
-  calling `check_session_edits()`. That helper creates a database if
-  the selected path is missing. A typo can therefore leave you with an empty
-  database at the wrong location.
+- `check_session_edits()` requires an existing, initialized database. It never
+  creates or migrates one. For a new mouse, explicitly call
+  `SessionEditStore.create_database()`; the manual notebook exposes this as
+  `create_session_edit_database=True` and defaults it to `False`.
 
 The opener reports a legacy ordered schema instead of automatically converting
 it. Keep the original and arrange an explicit, backed-up migration that
@@ -207,7 +207,8 @@ derived corrections when a session has no saved record. It then writes
 
 | Action | Effect |
 | --- | --- |
-| `getSessionInfo()`, `getDelete()`, `getInterp()` | Read the selected session's saved correction |
+| `get_session_edit()`, `getSessionInfo()`, `getDelete()`, `getInterp()` | Read the selected session's saved correction |
+| `apply_session_edit(target, edit)` | Apply the parameters to a copy; no database writes |
 | `deleteByFrame()` / `deleteByRange()` | Append delete indices to the stored record |
 | `interp()` | Set or replace the session's one interpolation |
 | `clearInterps()` | Remove its saved interpolation |
@@ -226,8 +227,7 @@ those decisions. Do not replay historical edit cells on a different session.
 | `matlab_auto.ipynb` export | Keep `is_save_on_list_time=False` during preview. `True` replaces the same onset file as the manual notebook; the auto route does not apply the SQLite corrections. |
 | Session metadata | Cached paths can still refer to the original machine after a copy. Read the current structure.oebin when selecting a new data root; do not reset the correction database to fix a path. |
 | `load_rfmap.ipynb` | Set the intended RF source directory and filename. Loading is separate from optional RF-result persistence. |
-| `Utils.rfmap` / `Utils.rf_cache` | A matching `result_path` cache is reused. A cache-key mismatch can replace that `.npz` with a recalculated result; choose different filenames for results you want to retain. Omitting `result_path` keeps the result in memory. |
+| `Utils.rflocate.detect_rf` | Explicit detection can reuse a matching `result_path`. A cache-key mismatch can replace that `.npz` with a recalculated result; choose different filenames for results you want to retain. Omitting `result_path` returns an in-memory result without saving. `load_rf` only reads a saved result and never runs detection. |
 | RF input filenames | Preserve the capitalization of the sorting and spike-time directories exactly as shown in the main guide. Case-sensitive filesystems distinguish uppercase and lowercase names. |
 | MATLAB `FindInInterval` | A compiled MEX file is platform-specific. Run `mexext`, check `which FindInInterval -all`, and use or compile a binary for the active MATLAB platform. Moving a Linux binary to Windows/macOS does not make it compatible. |
 | Runtime directories | Recreate Python environments on the target OS. Do not treat copied `__pycache__`, Numba caches, or compiled binaries as portable analysis inputs. |
-

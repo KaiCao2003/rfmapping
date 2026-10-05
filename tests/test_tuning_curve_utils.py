@@ -44,7 +44,7 @@ def test_von_mises_kappa_is_undefined_without_complete_finite_firing(rates):
 
 def _saved_hd_curves():
     angles = np.deg2rad(np.arange(0, 360, 2))
-    rates = [np.exp(kappa * (np.cos(angles) - 1)).tolist() for kappa in (.08, .07, .08, .08, .08)]
+    rates = [np.exp(kappa * (np.cos(angles) - 1)).tolist() for kappa in (.6, .09, .6, .6, .6)]
     return {
         "metadata": {"classification": {"rayleigh_alpha": .01, "shuffle_alpha": .01}},
         "unit_id": [21, 12, 7, 3, 8],
@@ -70,13 +70,13 @@ def test_update_hd_classification_preserves_source_tests_and_rates(tmp_path):
 
     assert data["unit_data"]["hd_class"] == [3, 2, 1, 0, None]
     assert data["unit_data"]["kappa_pass"] == [True, False, True, True, True]
-    np.testing.assert_allclose(data["unit_data"]["von_mises_kappa"], [.08, .07, .08, .08, .08])
+    np.testing.assert_allclose(data["unit_data"]["von_mises_kappa"], [.6, .09, .6, .6, .6])
     for key in before["unit_data"]:
         if key != "hd_class":
             assert data["unit_data"][key] == before["unit_data"][key]
     for key in ("unit_id", "angle_bin_edges_deg", "occupancy_time_s", "firing_rate_hz", "spike_counts"):
         assert data[key] == before[key]
-    assert data["metadata"]["classification"]["kappa_cutoff"] == .075
+    assert data["metadata"]["classification"]["kappa_cutoff"] == .1
     tuning_curve_utils.save_hd_unit_lists(data, tmp_path)
     assert np.load(tmp_path / "hd_cells_1.npy").tolist() == [7]
     assert np.load(tmp_path / "hd_cells_2.npy").tolist() == [12]
@@ -87,12 +87,12 @@ def test_update_hd_classification_preserves_source_tests_and_rates(tmp_path):
     assert data == saved
 
 
-@pytest.mark.parametrize("kappa, passes", [(.075, True), (np.nextafter(.075, 0), False)])
+@pytest.mark.parametrize("kappa, passes", [(.1, True), (np.nextafter(.1, 0), False)])
 def test_update_hd_classification_uses_inclusive_kappa_cutoff(monkeypatch, kappa, passes):
     data = _saved_hd_curves()
     monkeypatch.setattr(tuning_curve_utils, "von_mises_kappa", lambda *_: kappa)
 
-    tuning_curve_utils.update_hd_classification(data, kappa_cutoff=.075)
+    tuning_curve_utils.update_hd_classification(data, kappa_cutoff=.1)
 
     assert data["unit_data"]["kappa_pass"] == [passes] * 5
     assert data["unit_data"]["hd_class"][:2] == [3 if passes else 2] * 2

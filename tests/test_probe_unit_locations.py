@@ -15,6 +15,44 @@ from matplotlib.figure import Figure
 from Utils import probe_plotting
 
 
+def test_unit_artifact_generation_with_no_outputs_does_not_open_session(tmp_path, monkeypatch):
+    from Utils import si_utils
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("No requested outputs must not read or compute recording data")
+
+    monkeypatch.setattr(si_utils, "validate_data", forbidden)
+    monkeypatch.setattr(si_utils.si, "create_sorting_analyzer", forbidden)
+    missing_session = tmp_path / "missing-session"
+    result = si_utils.generate_unit_artifacts(
+        missing_session, "260922", "3", "A", unit_waveform=False, unit_position=False,
+    )
+    assert result == si_utils.UnitArtifactPaths()
+    assert not missing_session.exists()
+
+
+def test_template_locations_use_only_contacts_near_each_peak():
+    from probeinterface import Probe
+    from Utils.si_utils import compute_template_ptp_summary, compute_template_unit_locations
+
+    channel_locations = np.array([[0., 0.], [20., 0.], [200., 0.]])
+    probe = Probe(ndim=2, si_units="um")
+    probe.set_contacts(channel_locations, shapes="circle", shape_params={"radius": 6.})
+    probe.set_device_channel_indices(np.arange(3))
+    analyzer = SimpleNamespace(
+        unit_ids=np.array([7, 31]), channel_ids=np.arange(3), sampling_frequency=30_000.,
+        get_channel_locations=lambda: channel_locations,
+        get_num_channels=lambda: 3,
+        get_probe=lambda: probe,
+    )
+    templates = np.zeros((2, 3, 3))
+    templates[:, 1] = [[-10., -5., -8.], [-1., -2., -10.]]
+    locations = compute_template_unit_locations(
+        analyzer, templates, compute_template_ptp_summary(templates), nbefore=1,
+    )
+    np.testing.assert_allclose(locations, [[20. / 3., 0.], [200., 0.]])
+
+
 @pytest.fixture
 def summary_store(monkeypatch):
     summaries = {

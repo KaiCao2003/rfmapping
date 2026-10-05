@@ -43,7 +43,7 @@ def test_m14_loader_preserves_native_thirty_ten_degree_bins(tmp_path):
     assert comparison.peak_angles(result, result.index)[0] == 145.
 
 
-def test_rf_source_null_nan_and_zero_use_one_native_zero_limit(tmp_path):
+def test_rf_loader_preserves_missing_values_and_records_only_measured_zero_bins(tmp_path):
     counts = np.ones((3, 1, 30, 1))
     counts[0, 0, :2, 0] = np.nan
     counts[1, 0, :3, 0] = np.nan
@@ -57,16 +57,71 @@ def test_rf_source_null_nan_and_zero_use_one_native_zero_limit(tmp_path):
         "yPositions": [0.], "timeBinEdges": [0., .2],
     }))
     profiles = comparison.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
-    assert not profiles.isna().any().any()
-    assert [info["zero_bins"] for info in profiles.attrs["unit_info"].values()] == [2, 3, 2]
-    assert comparison.rf_pick(profiles).index.get_level_values("unit_id").tolist() == [7, 13]
+    np.testing.assert_array_equal(profiles.isna().sum(axis=1), [2, 3, 0])
+    assert [info["zero_bins"] for info in profiles.attrs["unit_info"].values()] == [0, 0, 2]
+    assert comparison.rf_pick(profiles, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
     assert len(comparison.rf_pick(profiles, max_zero_bins=None)) == 3
 
     pooled = comparison.combine(profiles, range=comparison.tcRange(True))
-    assert not pooled.isna().any().any()
+    assert pooled.loc[profiles.index[0]].isna().any()
     assert pooled.iloc[:, np.abs(pooled.columns) > 150].eq(0).all().all()
     # QC uses the native zero count rather than zeros added by angular conversion.
-    assert comparison.rf_pick(pooled).index.get_level_values("unit_id").tolist() == [7, 13]
+    assert comparison.rf_pick(pooled, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
+
+
+def test_rf_loader_preserves_native_nonstandard_grid_and_single_time_bin(tmp_path, monkeypatch):
+    angles = [15., 105., 195., 285.]
+    values = np.array([1., 7., 3., 2.])
+    counts = values.reshape(1, 1, 4, 1)
+    path = tmp_path / "rf.json"
+    path.write_text(json.dumps({
+        "unitsSpikeCounts": counts.tolist(), "unitsSpikeCountsSize": list(counts.shape),
+        "unitPool": [7], "xPositions": angles, "yPositions": [0.],
+        "timeBinEdges": [.4, .7],
+    }))
+
+    def unexpected_transform(*args, **kwargs):
+        raise AssertionError("RF loading must not run analysis or transformations")
+
+    for name in ("smooth_profiles", "rf_pick", "load_detected_rf", "resample_profiles"):
+        monkeypatch.setattr(comparison, name, unexpected_transform)
+    result = comparison.load_rf(path, mouse="m19", date="260827", range=[0, 360])
+
+    assert result.index.tolist() == [("m19", "260827", "A", 7)]
+    np.testing.assert_array_equal(result.columns, angles)
+    np.testing.assert_array_equal(result.iloc[0], values)
+    assert result.attrs["label"] == "RF"
+
+
+@pytest.mark.parametrize("shape", [(1, 2, 4, 1), (1, 1, 4, 2)])
+def test_rf_loader_rejects_sources_requiring_spatial_or_time_aggregation(tmp_path, shape):
+    counts = np.ones(shape)
+    path = tmp_path / "rf.json"
+    path.write_text(json.dumps({
+        "unitsSpikeCounts": counts.tolist(), "unitsSpikeCountsSize": list(shape),
+        "unitPool": [7], "xPositions": [15., 105., 195., 285.],
+        "yPositions": list(np.arange(shape[1], dtype=float)),
+        "timeBinEdges": np.linspace(0., .2, shape[3] + 1).tolist(),
+    }))
+
+    with pytest.raises(ValueError, match="sum_to_1d|time bin"):
+        comparison.load_rf(path, mouse="m19", date="260827")
+
+
+def test_explicit_resampling_wraps_angles_and_preserves_partial_support():
+    index = pd.MultiIndex.from_tuples([("A", 7)], names=["probe", "unit_id"])
+    profiles = pd.DataFrame([[1., 5., 2.]], index=index, columns=[30., 90., 150.])
+    profiles.attrs = {"range": [0, 180], "unit_info": {("A", 7): {"zero_bins": 0}}}
+    original = profiles.copy(deep=True)
+
+    result = comparison.resample_profiles(profiles, range=[0, 360], bins=6)
+
+    np.testing.assert_array_equal(result.columns, [30., 90., 150., -150., -90., -30.])
+    np.testing.assert_array_equal(result.iloc[0, :3], [1., 5., 2.])
+    assert result.iloc[0, 3:].isna().all()
+    assert result.attrs["range"] == [0, 360]
+    pd.testing.assert_frame_equal(profiles, original)
+    assert profiles.attrs == original.attrs
 
 
 def test_default_hd_preserves_source_order_for_tied_peaks(monkeypatch):

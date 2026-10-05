@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from Utils.rf_analysis import analyze_rf_file
+from Utils.rflocate.workflow import analyze_rf_file
 
 
 def main() -> None:

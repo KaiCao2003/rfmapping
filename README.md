@@ -9,6 +9,76 @@ The examples use `mouse_01`, date `260918`, session `2`, and Probe `A`.
 Replace these identifiers with your recording. The main route produces a
 regular square-stimulus ON map; OFF and vertical-bar variants follow.
 
+### Code layout and entrypoints
+
+- `Utils/` contains reusable acquisition, RF, tuning, and spatial analysis code.
+  Circular HD/RF fits live together in `hd_rf_prediction.py`; interval summaries
+  and explicit curve smoothing live in `statistic_utils.py`.
+- `Utils/rflocate/` contains the RF API: data objects in `models.py`, detected
+  results in `results.py`, file loading in `io.py`, and explicit detection in
+  `detection.py`. Plotting and complete analyses live in `plotting.py` and
+  `workflow.py`. Start with `from Utils.rflocate import load_rfmap, load_rf,
+  detect_rf`; see the [RF API guide](docs/rfmap.md). The old `Utils.rfmap` and
+  `Utils.rf_*` modules remain compatibility imports.
+- The existing notebooks remain at the repository root. `locate_rf.py` also
+  stays there because the MATLAB bridge calls its file path.
+- `scripts/` contains batch entrypoints. Run them from the repository root with
+  the remote environment, for example `python -m scripts.hd_rf_fraction` or
+  `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
+  are `hd_kappa_distribution`, `probe_position`,
+  `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
+- `output/` holds generated results. Recording-specific video clocks and level
+  references live under `config/m20_260922_3/`; local presentation build work is
+  under `research/presentations/`. Historical paths link to the moved files.
+  These recording assets, `research/`, decoder/video experiments, and their
+  tests are local-only and are not part of a clean RF repository checkout.
+
+Analysis follows explicit stages: load native data, select units/bins,
+transform for display, calculate statistics, then plot. Pitch/RF selection
+returns an audit table; interpolation does not replace native peak values.
+Plotting functions consume prepared data and statistics.
+
+The two EBC video entries, `ebc_video_rectangle.py` and `ebc_video_circle.py`,
+use explicit recording configs and the same position/boundary interfaces,
+eight-ray calculation and prepared overlay. See [EBC videos](docs/ebc_videos.md).
+Their optional dependencies are available through the `video` extra; FFmpeg
+and ffprobe are required for video export. Previous sep/tuning sources remain
+under `research/legacy_ebc/`. The HD–RF population video is a separate workflow.
+
+For existing analysis code, use these explicit calls:
+
+TCs share one DataFrame structure: degree columns and one response row per
+unit. `load_tc(path)` reads HD curves; `load_tc(path, kind="RF")` reads a saved
+RF CSV. Standard recording paths supply mouse, date, and probe identity, so
+callers do not need to repeat those values. Use `concat(m14_hd, m15_hd)` to stack
+curves with their identities. Files outside the recording layout retain source
+identity when concatenated. `plot_profiles(tc)` reads its label, angles, and
+response units from the object. See [TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
+
+| Previous combined call | Current calls |
+| --- | --- |
+| `getSessionInfo(target=...)` | `get_session_edit()`, then `apply_session_edit(target, edit)` |
+| `get_unit_info(...)` | `generate_unit_artifacts(...)`, which returns generated paths |
+| `plot_hd_tuning_curve(..., is_smooth=True)` | `smooth_tuning_curve(curve, sigma=...)`, then plot the result |
+| Interval bar plotters | `summarize_phase_intervals(...)` or `summarize_head_turns_from_intervals(...)`, then `plot_phase_bar(summary)` or `plot_head_turn_bar(summary)` |
+| Pitch/RF combined loader | `load_pitch_rf_pair(...)`, occupancy selection, `select_pitch_rf_pair(...)`, then `resample_rf_profiles(...)` for display |
+
+`plot_peak_comparison(peaks, stats)` and `plot_pitch_rf_regression(peaks, stats)`
+receive statistics calculated by their corresponding analysis functions.
+`get_unit_info` remains a compatibility alias for external generation scripts.
+
+Waveform input uses SpikeInterface's Open Ephys and Kilosort readers, while
+ProbeInterface carries the Kilosort channel order, contact positions and shanks.
+`generate_unit_artifacts` takes acquisition dimensions, sampling rate and gains
+from the recording metadata. Its explicit defaults are
+`load_sync_timestamps=True`, `only_good_units=True`, and
+`remove_empty_units=True`. Synchronized times remain absolute Open Ephys seconds;
+the project's session organization, ADC alignment and output schemas remain
+separate. Old analyzer caches with different clock or gain metadata require an
+explicit rebuild using `overwrite_waveform_analyzer=True`; loading never
+silently rebuilds them. See the [SpikeInterface extractor API](https://spikeinterface.readthedocs.io/en/stable/api.html)
+and [ProbeInterface channel mapping](https://probeinterface.readthedocs.io/en/latest/examples/ex_05_device_channel_indices.html).
+
 ## 1. Understand the data structure
 
 | Stage | Contents | Purpose |
@@ -699,10 +769,12 @@ Records can delete detected edges and interpolate an interval. Delete indices
 refer to the original detected sequence; interpolation indices refer to the
 sequence after deletion. Apply each record starting from raw detection.
 
-Check that this is the **existing database for the selected mouse** before
-opening it. A missing path causes `check_session_edits()` to create a new
-database. An empty database at a mistyped path does not recover earlier
-corrections. A Windows connection error or legacy-schema error is not a reason
+`check_session_edits()` opens an existing database and reports a missing path;
+it does not create or migrate the database. For a new mouse only, set
+`create_session_edit_database=True` in the notebook to call
+`SessionEditStore.create_database()` explicitly. Read the saved parameters with
+`get_session_edit()`, then apply them with `apply_session_edit()`. A Windows
+connection error or legacy-schema error is not a reason
 to delete, initialize over, or replace the original database.
 
 Look for `Stored edits applied:` and confirm the date and session. The cell
@@ -925,7 +997,7 @@ In the RF notebook, load the generated file for the first selected probe:
 import os
 from pathlib import Path
 import numpy as np
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rfmap, load_rf
 
 session_dir = Path(os.environ["RF_SESSION_DIR"])
 date = os.environ["RF_DATE"]
@@ -938,7 +1010,7 @@ rf_path = (
     / f"regular_unitsSpikeCounts_{date}_{session_id}.rfmap"
 )
 
-maps = load_rf_maps(rf_path, unit_firing_rate=False)
+maps = load_rfmap(rf_path)
 first = maps[0]
 edges = first.time_bin_edges_s
 
@@ -959,16 +1031,26 @@ Unit count and spatial grid depend on your recording. If you changed the
 generation window or bin width, update the folder name to match. Choose a
 summation interval inside the saved window.
 
-- `unit_firing_rate=False` preserves stored spike counts.
-- Default `load_rf_maps(rf_path)` returns firing rate in Hz: each lag bin's
-  count is divided by `stimulusPresentationCounts * bin_width_seconds`.
-  Older files without presentation counts require matching trial inputs to
-  reconstruct that denominator.
+- `load_rfmap(rf_path)` preserves stored values and units. Convert
+  counts explicitly with `maps.to_firing_rate()`, which divides each lag bin
+  by `stimulusPresentationCounts * bin_width_seconds`. Older files without
+  presentation counts require an explicit `resolve_presentation_counts(...)`
+  call and `maps.to_firing_rate(presentation_counts=counts)`, or the explicit
+  `maps.to_firing_rate(reconstruct_presentations=True)` opt-in. Loading never
+  reconstructs them.
 - `sum(0.0, 0.2)` means `[0, 200 ms)`. Arguments are **seconds**, and both
-  endpoints must match stored time edges. It sums stored counts, or takes
-  the duration-weighted mean when the maps contain Hz.
-- Loading fills null/NaN bins with zero. RF detection uses one `max_zero_bins`
-  limit and includes those zeros in the spatial mean and SD.
+  endpoints must match stored time edges. It always sums values. Use
+  `maps.to_firing_rate().mean_rate(0.0, 0.2)` for duration-weighted mean Hz.
+- Loading preserves null/NaN bins as missing values. The explicit RF analyzer
+  counts both missing and zero bins toward its `max_zero_bins` QC limit;
+  its no-shuffle detector represents missing responses as zero.
+- `maps.sum_to_1d(axis="x")` sums whole rows while retaining time bins.
+  Use `rf_only=True, detected_rf=load_rf(result_path)` to include only
+  rows containing a saved 2-D RF. Retaining `axis="y"` selects columns instead.
+  If detection retained only a QC subset, explicitly select those unit IDs
+  first, as shown in the [RF API guide](docs/rfmap.md); the conversion does not
+  drop units missing from the result.
+  No detection runs in this conversion; it returns another `RFMapList`.
 - MATLAB CSV/PDF exports sum the full generated time window, so they need not
   match a 0–200 ms view.
 

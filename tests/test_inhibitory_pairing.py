@@ -6,6 +6,7 @@ import pytest
 from matplotlib import pyplot as plt
 
 from Utils import direction_comparison as comparison
+from Utils.rf_cache import read_rf_result, rf_result_path, save_rf_result
 from Utils.rfmap import RFMapList, asrfmap
 
 
@@ -59,17 +60,23 @@ def test_inhibitory_defaults_use_requested_sd_cutoff(is_batch, method, z):
 
 
 @pytest.mark.parametrize("rf_type,selected", [("2d", [11]), ("1d", [13]), ("either", [11, 13])])
-def test_loader_selects_inhibitory_files_and_preserves_raw_responses(tmp_path, monkeypatch, rf_type, selected):
+def test_explicit_selection_uses_inhibitory_files_and_preserves_raw_responses(tmp_path, rf_type, selected):
     source = tmp_path / "regular.rfmap"
     first = asrfmap(np.arange(1, 31, dtype=float)[None, :], end_time=0.2)
     maps = RFMapList([replace(first, unit_index=i, unit_id=unit_id) for i, unit_id in enumerate([7, 11, 13])], source)
-    monkeypatch.setattr(comparison, "load_rf_maps", lambda *args, **kwargs: maps)
     for suffix, row in [("", 0), ("_inhibitory", 1), ("_inhibitory_1d", 2)]:
         mask = np.zeros((3, 1, 30), dtype=np.uint8)
         mask[row, 0, :3] = 1
-        np.savez(source.with_name(f"{source.stem}{suffix}.npz"), mask_2d=mask, unit_ids=[7, 11, 13])
-    all_profiles = comparison.load_rf_profiles(source)
-    inhibitory = comparison.load_rf_profiles(source, rf_type=rf_type, rf_detection="inhibitory")
+        center = np.zeros_like(mask)
+        center[row, 0, 1] = 1
+        save_rf_result(source.with_name(f"{source.stem}{suffix}.npz"),
+                       mask_2d=mask, center_2d=center, unit_ids=[7, 11, 13],
+                       manifest={}, cache_key=f"test{suffix}")
+    all_profiles = comparison.rf_profiles(maps)
+    dimensions = ("2d", "1d") if rf_type == "either" else (rf_type,)
+    results = [read_rf_result(rf_result_path(source, dimension=dimension, rf_type="inhibitory"))
+               for dimension in dimensions]
+    inhibitory = comparison.select_rf_profiles(all_profiles, *results)
     expected_keys = [("A", unit_id) for unit_id in selected]
     pd.testing.assert_frame_equal(inhibitory, all_profiles.loc[expected_keys])
     assert set(inhibitory.attrs["unit_info"]) == set(expected_keys)

@@ -703,7 +703,7 @@ Run this in the remote RF notebook environment:
 ```python
 from pathlib import Path
 import numpy as np
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rfmap
 
 rf_path = Path(
     "/mnt/senzailab/Kai/#Recording/m20/260918/260918_2"
@@ -711,7 +711,7 @@ rf_path = Path(
     "/regular_unitsSpikeCounts_260918_2.rfmap"
 )
 
-maps = load_rf_maps(rf_path, unit_firing_rate=False)
+maps = load_rfmap(rf_path)
 first = maps[0]
 edges = first.time_bin_edges_s
 
@@ -771,15 +771,17 @@ as waveforms or HD curves require their session files as well.
 
 ### What the numbers mean
 
-- `unit_firing_rate=False` loads pooled spike counts. The source has no trial
+- `load_rfmap(rf_path)` preserves pooled spike counts. The source has no trial
   axis and has not undergone baseline subtraction.
-- Default `load_rf_maps(rf_path)` returns Hz: counts divided by presentation
+- Explicit `maps.to_firing_rate()` converts counts to Hz using presentation
   count and time-bin width. New files save `stimulusPresentationCounts`; old
-  files require their session trials and onset boundaries to recover it.
-  `sum(0.0, 0.2)` returns total counts divided by presentation count and 0.2 s
-  in Hz mode. `occupancyTimeSec` remains stimulus-display-time metadata.
-- Loaded null/NaN bins become zero and participate in RF statistics. QC uses
-  one `max_zero_bins` limit, including those filled positions.
+  files require an explicit `reconstruct_presentations=True` request to read
+  their matching session inputs. Loading never reconstructs exposure.
+  `mean_rate(0.0, 0.2)` calculates a time-weighted mean from Hz values;
+  `sum(0.0, 0.2)` always adds stored values. `occupancyTimeSec` remains
+  stimulus-display-time metadata.
+- Loaded null/NaN bins remain missing; measured zeros stay zero. The explicit
+  analysis workflow's `max_zero_bins` QC counts both missing and zero bins.
 - `sum(0.0, 0.2)` includes `[0, 200 ms)`; its arguments are **seconds**.
   Endpoints must match stored time edges.
 - MATLAB's CSV/PDF exports sum the full generation window. They need not match
@@ -930,7 +932,7 @@ expected spatial shape.
 | No good units enter the map | Check `cluster_KSLabel.tsv` and whether those IDs occur in this session's spike labels. |
 | Bar coverage assertion fails | Check the actual stimulus design, polarity, timing alignment, and horizontal coverage. |
 | File exists but MATLAB reported an error | Load the file and inspect the failed stage. The source is written before CSV/PDF exports. |
-| Viewer reports invalid JSON for a new archive | Use a viewer supporting indexed NPZ, or validate with `load_rf_maps`. Renaming does not convert the format. |
+| Viewer reports invalid JSON for a new archive | Use a viewer supporting indexed NPZ, or validate with `load_rfmap`. Renaming does not convert the format. |
 | Viewer and exported CSV/PDF differ | Match the time window and count/rate normalization; MATLAB exports sum the full generation window. |
 
 Further analysis and the existing installation/test reference are in

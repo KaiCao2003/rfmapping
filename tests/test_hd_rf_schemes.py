@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from Utils import hd_rf_schemes
+from Utils.rf_cache import save_rf_result
 
 
 def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkeypatch):
@@ -17,7 +18,7 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     tc = tmp_path / "tuning_curves.json"
     tc.write_text(json.dumps({"metadata": {"angle_convention_note": "counter-clockwise"}}))
     before = tc.read_bytes()
-    # Hz: [[10, 6, 0, 0], [0, 6, 0, 0]]. Global maximum is
+    # Hz: [[10, 6, NaN, NaN], [0, 6, NaN, NaN]]. Global maximum is
     # x=-10; both raw-count maximum and horizontal projection favor x=10.
     counts = np.array([
         [[20, 30, 0, 0], [0, 6, 0, 0]],
@@ -35,7 +36,8 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     )))
     masks = np.zeros((2, 2, 4), dtype=bool)
     masks[1, 0, 1] = True  # Unit 7 is detected; its global maximum lies outside the mask.
-    np.savez(rf.with_suffix(".npz"), unit_ids=[8, 7], mask_2d=masks)
+    save_rf_result(rf.with_suffix(".npz"), unit_ids=[8, 7], mask_2d=masks,
+                   center_2d=masks, manifest={}, cache_key="test")
 
     pairs, provenance = hd_rf_schemes.load_peak_pairs(tc, rf, hd_is_clockwise=False)
     rows = pairs.set_index("unit_id")
@@ -45,11 +47,12 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
     assert rows.loc[7, "rf_peak_y"] == -20.
     assert rows.loc[7, "rf_peak_hz"] == 10.
     assert rows.loc[7, "rf_saved_2d"] and not rows.loc[7, "rf_peak_in_saved_2d_mask"]
-    assert rows.loc[7, "rf_zero_bins"] == 5 and rows.loc[7, "peak_valid"]
+    assert rows.loc[7, "rf_zero_bins"] == 1 and rows.loc[7, "peak_valid"]
+    assert rows.loc[7, "rf_finite_bins"] == 4
     assert rows.loc[8, "rf_peak_ties"] == 4 and rows.loc[8, "peak_valid"]
     assert rows.loc[8, "rf_peak_x_index"] == 0 and rows.loc[8, "rf_peak_y_index"] == 0
     assert rows.loc[9, "exclusion_reason"] == "no_positive_finite_rf_response"
-    assert rows.loc[10, "rf_zero_bins"] == 7 and rows.loc[10, "peak_valid"]
+    assert rows.loc[10, "rf_zero_bins"] == 3 and rows.loc[10, "peak_valid"]
     assert rows.loc[11, "exclusion_reason"] == "missing_rf_map"
     assert rows.loc[7, "hd_native_preferred_deg"] == 18.
     assert rows.loc[7, "hd_preferred_deg"] == 342.
@@ -76,10 +79,14 @@ def test_explicit_detection_path_overrides_adjacent_file(tmp_path, monkeypatch):
         timeBinEdges=[0., .2], occupancyTimeSec=[[1, 1], [1, 1]],
         stimulusPresentationCounts=[[5, 5], [5, 5]],
     )))
-    np.savez(rf.with_suffix(".npz"), unit_ids=[7], mask_2d=np.zeros((1, 2, 2)))
+    empty = np.zeros((1, 2, 2), dtype=np.uint8)
+    save_rf_result(rf.with_suffix(".npz"), unit_ids=[7], mask_2d=empty,
+                   center_2d=empty, manifest={}, cache_key="test-empty")
     detection_path = tmp_path / "relation" / "rf_detection.npz"
     detection_path.parent.mkdir()
-    np.savez(detection_path, unit_ids=[7], mask_2d=[[[0, 1], [0, 0]]])
+    mask = np.array([[[0, 1], [0, 0]]], dtype=np.uint8)
+    save_rf_result(detection_path, unit_ids=[7], mask_2d=mask, center_2d=mask,
+                   manifest={}, cache_key="test-selected")
 
     pairs, provenance = hd_rf_schemes.load_peak_pairs(
         tc, rf, mouse="m20", date=260922, probe="A", rf_detection_path=detection_path,

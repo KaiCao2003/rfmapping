@@ -13,9 +13,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import _prepare_profiles, hd_pick, load_rf, load_tc, profile_table, rf_pick, tcRange
+from Utils.direction_comparison import (
+    hd_pick, load_tc, recording_profiles, resample_profiles, rf_pick, rf_profiles,
+    select_rf_profiles, tcRange,
+)
 from Utils.json_tools import read_formatted_json
-from Utils.rfmap import load_rf_maps
+from Utils.rflocate import load_rf, load_rfmap, rf_result_path
+from Utils.statistic_utils import fisher_lee_correlation, fisher_lee_statistics
 
 
 DEFAULT_KAPPAS = (0., .125, .25, .5, 1., 2., 4., 8., 16., 32., 64.)
@@ -198,12 +202,19 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
             hd_path, hd_heading_source, hd.index.get_level_values("unit_id"), heading_profile_cache,
         )
         hd.loc[:, :] = profiles.loc[hd.index.get_level_values("unit_id")].to_numpy()
-    detected = load_rf(rf_path, **recording, rf_type="2d", window=(0., .2), smoothing_bins=0)
+    raw_maps = load_rfmap(rf_path)
+    count_maps = raw_maps.sum(0., .2, show_progress=False).sum_to_1d(axis="x")
+    counts = rf_profiles(count_maps, probe=probe)
+    counts = select_rf_profiles(counts, load_rf(rf_result_path(rf_path)))
+    detected = recording_profiles(
+        resample_profiles(counts, range=tcRange(True)), mouse=mouse, date=date,
+    )
     count_profiles = rf_pick(detected, max_zero_bins=2)
-    rate_maps = load_rf_maps(rf_path, unit_firing_rate=True).sum(0., .2, show_progress=False)
-    rates = profile_table(rate_maps.to_1d_array(axis="x"), rate_maps.unit_ids,
-                          rate_maps[0].x_positions, probe=probe)
-    rf = _prepare_profiles(rates, mouse=mouse, date=date, range=tcRange(True)).loc[count_profiles.index]
+    rate_maps = raw_maps.to_firing_rate(reconstruct_presentations=True).mean_rate(0., .2, show_progress=False).sum_to_1d(axis="x")
+    rates = rf_profiles(rate_maps, probe=probe)
+    rf = recording_profiles(
+        resample_profiles(rates, range=tcRange(True)), mouse=mouse, date=date,
+    ).loc[count_profiles.index]
     shared = hd.index.intersection(rf.index)
     rows = []
     for key in shared:
@@ -222,7 +233,7 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
                       rf_max_zero_bins=2,
                       peak_method="argmax on the paired notebook's 30-bin profiles; first source-order maximum for ties",
                       rf_projection="presentation-exposure-normalized response-window Hz, sum over elevation, then periodic interpolation to 30 bins",
-                      rf_response_normalization="load_rf_maps(unit_firing_rate=True).sum(0, 0.2).to_1d_array(axis='x')",
+                      rf_response_normalization="load_rfmap().to_firing_rate(reconstruct_presentations=True).mean_rate(0, 0.2).sum_to_1d(axis='x').to_1d_array(axis='x')",
                       rf_peaks_changed_by_rate_normalization=int(np.count_nonzero(
                           wrap_deg(pairs.rf_ego_deg - pairs.rf_count_peak_deg))),
                       hd_class3_units=len(hd), rf_detected_units=len(detected),
@@ -304,6 +315,77 @@ def plot_fit_diagnostics(path, pairs, model, grid, predictions):
         fig.subplots_adjust(left=.065, right=.98, top=.85, bottom=.25, wspace=.24)
         fig.savefig(path, dpi=180, facecolor="white", transparent=False)
         plt.close(fig)
+
+
+def predict_circular_conversion(hd_deg, model):
+    """Predict RFego from HD; derive RFallo=wrap360(HD+RFego).
+
+    Coefficients predict the cosine and sine of RFego on the basis
+    [1, cos(HD), sin(HD)]. Shapes and gaps in HD are preserved. A zero
+    predicted vector has no direction and stays NaN in both outputs.
+    """
+    hd = np.asarray(hd_deg, dtype=float)
+    finite = np.isfinite(hd)
+    radians = np.deg2rad(np.where(finite, hd, np.nan) % 360.)
+    design = np.stack((np.ones(hd.shape), np.cos(radians), np.sin(radians)), axis=-1)
+    predicted_cos = design @ np.asarray(model["cos_coefficients"], dtype=float)
+    predicted_sin = design @ np.asarray(model["sin_coefficients"], dtype=float)
+    # Unit-vector responses can cancel to zero up to trigonometric/OLS roundoff.
+    defined = finite & (np.hypot(predicted_cos, predicted_sin) > 8 * np.finfo(float).eps)
+    angle = (np.rad2deg(np.arctan2(predicted_sin, predicted_cos)) + 180.) % 360. - 180.
+    rf_ego = np.where(defined, angle, np.nan)
+    rf_allo = (np.where(finite, hd, np.nan) % 360. + rf_ego) % 360.
+    return {"rf_ego_deg": rf_ego, "rf_allo_deg": rf_allo}
+
+
+def fit_circular_conversion(hd_deg, rf_ego_deg, *, selected_on_sum=False,
+                            n_permutations=10_000, random_seed=1):
+    """Fit RFego directly from HD and independently test association.
+
+    Separate least squares fits of cos(RFego) and sin(RFego) use the basis
+    [1, cos(HD), sin(HD)]; atan2 gives their predicted direction. Neither
+    the direction of association nor a constant HD+RFego sum is imposed.
+    This is the order-1 trigonometric circular-circular regression described
+    at https://search.r-project.org/CRAN/refmans/CircStats/html/circ.reg.html.
+    MAE is an in-sample circular error, not a held-out prediction score.
+    The two-sided permutation test shuffles unit pairings and compares |rho|.
+    Outcome-selected samples (scheme 3) receive descriptive results only;
+    testing those would require repeating their selection within each shuffle.
+    All returned values are JSON serializable, including undefined statistics.
+    """
+    statistics = fisher_lee_statistics(
+        hd_deg, rf_ego_deg, n_permutations=n_permutations,
+        random_seed=random_seed, test=not selected_on_sum,
+    )
+    hd = np.deg2rad(np.asarray(hd_deg, dtype=float) % 360.)
+    rf = np.deg2rad(np.asarray(rf_ego_deg, dtype=float) % 360.)
+    design = np.column_stack((np.ones(hd.size), np.cos(hd), np.sin(hd)))
+    coefficients = np.linalg.lstsq(design, np.column_stack((np.cos(rf), np.sin(rf))), rcond=None)[0]
+    model = {
+        "method": "first_harmonic_circular_regression",
+        "cos_coefficients": coefficients[:, 0].tolist(),
+        "sin_coefficients": coefficients[:, 1].tolist(),
+    }
+    prediction = predict_circular_conversion(hd_deg, model)
+    residual = (np.asarray(rf_ego_deg) - prediction["rf_ego_deg"] + 180.) % 360. - 180.
+    mae = float(np.mean(abs(residual))) if np.isfinite(residual).all() else None
+
+    return {
+        **model,
+        "n": int(hd.size),
+        **statistics,
+        "correlation_method": "Fisher-Lee signed circular-circular",
+        "permutation_alternative": "two-sided absolute rho",
+        "random_seed": int(random_seed),
+        "mae_deg": mae,
+        "selection_note": (
+            "Selected on HD+RF: descriptive only; no permutation p-value"
+            if selected_on_sum else "Cohort not selected on HD+RF association"
+        ),
+        "fitted_rf_ego_deg": [float(value) if np.isfinite(value) else None
+                              for value in prediction["rf_ego_deg"]],
+        "observed_rf_allo_deg": ((np.asarray(hd_deg) + np.asarray(rf_ego_deg)) % 360.).tolist(),
+    }
 
 
 def main(argv=None):

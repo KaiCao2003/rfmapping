@@ -201,11 +201,15 @@ class SessionEditStore:
     @contextmanager
     def _connect(
         database_file: str | Path,
+        *,
+        read_only: bool = False,
     ) -> Iterator[sqlite3.Connection]:
         """Connect with dot-file locking, which works on the lab CIFS mount."""
 
         database_path = Path(database_file).expanduser().resolve()
         database_uri = f"{database_path.as_uri()}?vfs=unix-dotfile"
+        if read_only:
+            database_uri += "&mode=ro"
         database_connection = sqlite3.connect(database_uri, uri=True, timeout=30)
         database_connection.execute("PRAGMA foreign_keys = ON")
         try:
@@ -264,7 +268,7 @@ class SessionEditStore:
             return False
 
         try:
-            with SessionEditStore._connect(database_path) as database_connection:
+            with SessionEditStore._connect(database_path, read_only=True) as database_connection:
                 table_names = SessionEditStore._table_names(database_connection)
                 if "session_edits" not in table_names:
                     return False
@@ -281,7 +285,7 @@ class SessionEditStore:
             return False
 
         try:
-            with SessionEditStore._connect(database_path) as database_connection:
+            with SessionEditStore._connect(database_path, read_only=True) as database_connection:
                 table_names = SessionEditStore._table_names(database_connection)
                 if not {"session_edits", "session_delete_frames"}.issubset(
                     table_names
@@ -381,7 +385,7 @@ class SessionEditStore:
                 f"session edit database is not initialized: {self.database_file}"
             )
 
-        with self._connect(self.database_file) as database_connection:
+        with self._connect(self.database_file, read_only=True) as database_connection:
             row = database_connection.execute(
                 """
                 SELECT delete_frames,
@@ -770,6 +774,34 @@ def normalize_session_edits(edits: Sequence[StoredEdit]) -> list[StoredEdit]:
     return normalized_edits
 
 
+def apply_session_edit(
+    target: list | np.ndarray,
+    session_edit: StoredSessionEdit | None,
+) -> list | np.ndarray:
+    """Apply saved deletes, then interpolation, without changing the input.
+
+    Delete indices refer to the original target; interpolation indices refer
+    to the target after deletion, matching the stored session-edit contract.
+    """
+
+    edited_target = target.copy()
+    if session_edit is None:
+        return edited_target
+
+    if session_edit["delete_frames"]:
+        edited_target = np.delete(edited_target, session_edit["delete_frames"])
+
+    if session_edit["interp_start_end"] is not None:
+        start_frame, end_frame = session_edit["interp_start_end"]
+        frames_between = session_edit["interp_frames_between"]
+        if frames_between is None:
+            raise ValueError("saved interpolation is missing interp_frames_between")
+        edited_target = interp_replace(
+            edited_target, start_frame, end_frame, new_length=frames_between + 2,
+        )
+    return edited_target
+
+
 class SessionEdit:
     """Bind one date/recording to its flattened edit parameters."""
 
@@ -787,58 +819,33 @@ class SessionEdit:
         self.date = normalized_date
         self.num_of_rec = normalized_num_of_rec
 
-    def getSessionInfo(
-        self,
-        *,
-        target: list | np.ndarray | None = None,
-    ) -> (
-        tuple[bool, list[str]]
-        | tuple[tuple[bool, list[str]], list | np.ndarray]
-    ):
-        session_edit = self._edit_store.get_session_edit(
+    def get_session_edit(self) -> StoredSessionEdit | None:
+        """Read this session's correction parameters without applying them."""
+
+        return self._edit_store.get_session_edit(
             self.date,
             self.num_of_rec,
         )
 
-        if session_edit is None:
-            if target is None:
-                return False, []
-            return (False, []), target
+    def getSessionInfo(self) -> tuple[bool, StoredSessionEdit | list[object]]:
+        """Return the legacy read-only status/data pair.
 
-        if target is None:
-            return True, session_edit
+        Use ``apply_session_edit(target, edit)`` to apply the returned data.
+        """
 
-
-        delete_frames = session_edit["delete_frames"]
-        if delete_frames:
-            target = np.delete(target, delete_frames)
-
-        interp_start_end = session_edit["interp_start_end"]
-
-        if interp_start_end is not None:
-            start_frame, end_frame = interp_start_end
-            frames_between = session_edit["interp_frames_between"]
-
-            target = interp_replace(target, start_frame, end_frame, new_length=frames_between+2)
-
-        return (True, session_edit), target
+        session_edit = self.get_session_edit()
+        return (False, []) if session_edit is None else (True, session_edit)
 
     def getDelete(self) -> list[int]:
         """Return the one flat list of original target indices to delete."""
 
-        session_edit = self._edit_store.get_session_edit(
-            self.date,
-            self.num_of_rec,
-        )
+        session_edit = self.get_session_edit()
         return [] if session_edit is None else list(session_edit["delete_frames"])
 
     def getInterp(self) -> list[tuple[int, int, int]]:
         """Return zero or one interpolation tuple for notebook compatibility."""
 
-        session_edit = self._edit_store.get_session_edit(
-            self.date,
-            self.num_of_rec,
-        )
+        session_edit = self.get_session_edit()
         if session_edit is None or session_edit["interp_start_end"] is None:
             return []
 
@@ -849,10 +856,7 @@ class SessionEdit:
         return [(start_frame, end_frame, frames_between)]
 
     def checkSaved(self) -> tuple[bool, str | None]:
-        saved_edit = self._edit_store.get_session_edit(
-            self.date,
-            self.num_of_rec,
-        )
+        saved_edit = self.get_session_edit()
         if saved_edit is None:
             return False, f"no saved edits for {self.date} rec {self.num_of_rec}"
         return True, None
@@ -934,9 +938,14 @@ class SessionEdit:
         )
 
 
-def _check_session_edit_database(
+def open_session_edit_store(
     database_path: str | Path,
 ) -> SessionEditStore:
+    """Open an existing flat edit database without creating or migrating it."""
+
+    database_path = Path(database_path).expanduser().resolve()
+    if not database_path.is_file():
+        raise FileNotFoundError(f"Session-edit database does not exist: {database_path}")
     if SessionEditStore.has_legacy_operation_schema(database_path):
         raise RuntimeError(
             "legacy ordered session-edit schema detected; it cannot be flattened "
@@ -946,11 +955,7 @@ def _check_session_edit_database(
         )
 
     if not SessionEditStore.is_database_initialized(database_path):
-        database_was_created = SessionEditStore.create_database(database_path)
-        if not database_was_created:
-            raise RuntimeError(
-                f"Could not initialize session-edit database: {database_path}"
-            )
+        raise RuntimeError(f"Session-edit database is not initialized: {database_path}")
     return SessionEditStore(database_path)
 
 
@@ -959,14 +964,17 @@ def check_session_edits(
     date: str | int,
     num_of_rec: str | int,
 ) -> SessionEdit:
-    """Return one session-bound edit object."""
+    """Return one session-bound edit object from an existing database."""
 
-    edit_store = _check_session_edit_database(database_path)
+    edit_store = open_session_edit_store(database_path)
     return SessionEdit(edit_store, date, num_of_rec)
 
 
 __all__ = [
     "SessionEdit",
+    "SessionEditStore",
+    "apply_session_edit",
     "check_session_edits",
+    "open_session_edit_store",
     "interp_replace",
 ]

@@ -7,16 +7,17 @@ Run project code on `hhw9l84` with `~/.virtualenvs/rfmapping`.
 
 ```python
 from Utils.direction_comparison import (
-    load_tc, load_rf, load_ebc, hd_pick, rf_pick, combine,
+    load_tc, hd_pick, rf_pick, concat,
+    select_rf_profiles, resample_profiles,
     normalize_tc, zscore_tc, prepare_comparison, plot_comparison_heatmaps, tcRange,
 )
+from Utils.rflocate import load_rf, rf_result_path
 
-recording = dict(mouse="m19", date=260827, probe="A")
-rf_range_overrides = {"m14": [-150, 150]}
-hd_all = load_tc(hd_file, **recording, range=tcRange(False))
-rf_all = load_rf(rf_file, **recording, rf_type="2d",
-                 range=rf_range_overrides.get(recording["mouse"], tcRange(True)))
-ebc = load_ebc(ebc_file, **recording, range=tcRange(True))
+hd_all = load_tc(hd_file)
+rf_all = load_tc(rf_csv_file, kind="RF", range=tcRange(True))
+rf_detected = load_rf(rf_result_path(rf_file))
+rf_all = select_rf_profiles(rf_all, rf_detected)
+ebc = load_tc(ebc_file, kind="EBC")
 
 hd = hd_pick(hd_all, hd_class=3)
 rf = rf_pick(rf_all, max_zero_bins=2)
@@ -33,38 +34,76 @@ plot_comparison_heatmaps(aligned, **plot_options)
 plot_comparison_heatmaps(summed, **plot_options)
 ```
 
-Loaders retain all source units and apply no smoothing by default. Filtering is
-optional and does not modify the full tables. Loading with `hd_class=3` or
-`max_zero_bins=2` gives the same selection as the corresponding `hd_pick` or
-`rf_pick` call after loading. Neither loading nor filtering writes class-list files.
+RF CSV loading retains every saved unit, native angle, and missing value. Time
+aggregation, spatial summation, saved-RF selection, smoothing, and resampling
+are explicit operations. The notebooks choose the CSV path, generate it only
+when missing, and then call `load_tc(path, kind="RF", ...)`. See
+[RF 1-D CSV generation](rfmap.md#notebook-1-d-csvs) for the `rf_only` bool.
+Filtering does not modify the full tables or write class-list files.
 
 Paths are read literally. Build repeated layouts with ordinary `str.format` or
-f-strings before loading; directory suffixes such as `ProbeA_bk` do not change
-biological probe identity.
+f-strings before loading. For standard `<mouse>/<date>/<date>_<session>/data/...`
+paths, `load_tc` derives mouse/date identity from the directories and the probe
+from a `ProbeA`/`ProbeB` directory or the generated RF CSV filename. Same-day HD
+and RF sessions therefore retain matching unit keys without repeating metadata
+in every load call. Explicit identity arguments remain compatibility overrides.
 
 ## Tables and filters
 
-The three public loaders return DataFrames with:
+`load_tc` returns a DataFrame with:
 
-- rows indexed by `(mouse, date, probe, unit_id)`;
-- 30 angular columns spanning the requested `range`, retaining source order
-  when the source already has that grid;
+- rows indexed by `(mouse, date, probe, unit_id)` for standard recording paths;
+- native angular columns for RF; the existing HD/EBC loaders prepare 30 bins;
 - `attrs["label"]` and `attrs["range"]` for plotting;
 - `attrs["unit_info"]` keyed by unit identity, retaining HD classification or
   native RF zero-bin counts for later filtering.
 
-`range` is a list of degree boundaries or tick labels and sets the actual
-30-bin angular grid. `tcRange(True)` returns the full-circle ego labels
+Use `kind="RF"` for RF CSVs; the default `kind="HD"` reads saved HD `.tc` files.
+`kind="EBC"` uses the existing EBC reader. Files outside the recording layout
+retain `(probe, unit_id)` keys and their source identity; the loader does not
+invent mouse or date values. `load_rf` and `load_ebc` remain available.
+
+Every source uses the same structure: columns contain the degree array, and
+each unit row contains its response array. Firing rates use Hz; the current RF
+CSVs contain spike counts. `attrs["response_units"]` records that distinction.
+For a CSV explicitly saved in Hz, pass `response_units="Hz"`; this labels the
+stored numbers and does not convert them.
+
+```python
+from Utils.direction_comparison import concat, plot_profiles
+
+m14_hd = load_tc(m14_path)
+m15_hd = load_tc(m15_path)
+m14_15 = concat(m14_hd, m15_hd)
+plot_profiles(m14_15)
+```
+
+`concat` stacks units and retains their recording keys, degree coordinates,
+values, and per-unit information. For generic files without recording keys,
+source identity distinguishes units from different files when concatenated.
+Matching degree grids preserve the first
+input's order. Different grids need an explicit common `range`, as with the
+existing `combine` name, which remains an alias. Plotting defaults to the
+object's label and response units and keeps input unit order. Normalization
+and z-scoring update the units label for subsequent plots.
+
+For RF, `range` records degree boundaries or tick labels without changing its
+native grid. Call `resample_profiles(table, range=..., bins=30)` explicitly to
+wrap angles into [-180, 180) and interpolate to a chosen grid. The existing
+HD/EBC loaders still use `range` to prepare their 30-bin grid.
+`tcRange(True)` returns the full-circle ego labels
 `[-180, -90, 0, 90, 180]`; `tcRange(False)` returns the equivalent allo labels
 `[180, 270, 0, 90, 180]`. Both defaults use centers −174 through 174 degrees.
 The m14 RF override `range=[-150, 150]` instead uses 30 bins with centers −145
 through 145 degrees, spaced by 10 degrees. Its HD retains the full-circle grid.
-Internal angular columns stay in [-180, 180), including when labels use [0, 360].
+Native RF columns retain their source angles; explicit resampling produces
+signed columns even when display labels use [0, 360].
 Partial angular ranges do not connect their two endpoints by circular
-interpolation or smoothing. RF responses missing from the source or generated
-outside its angular support are zero; generic HD/EBC gaps remain NaN.
+interpolation or smoothing. Missing source responses remain NaN. Explicit RF
+resampling represents angles outside its recorded support by zero; generic
+HD/EBC gaps remain NaN.
 
-`load_tc` rebins spike counts and occupancy to angular rates without smoothing.
+The HD reader used by `load_tc` rebins spike counts and occupancy to angular rates without smoothing.
 Zero-response, missing-data, and unclassified rows remain available in the full
 loaded table. HD classification reuses `update_hd_classification` on the native
 rates before display rebinning or smoothing. Class 3 uses the existing Rayleigh,
@@ -74,38 +113,48 @@ neither. A missing p value makes the class unavailable.
 `hd_pick(table)` defaults to class 3; `(2, 3)` selects both classes in source order
 without duplicates. `hd_class=None` keeps all rows.
 
-`load_rf` projects every RF source unit onto horizontal angle over the requested
-`window`, default `(0.0, 0.2)`. Optional `rf_type` selects units from saved
-localization results before applying bin limits:
+`Utils.direction_comparison.load_rf_profiles`, `load_rf`, and `load_tc(kind="RF")`
+read a TC CSV or already prepared RF map with a single time bin and singleton
+collapsed spatial axis. They reject raw maps requiring aggregation. `load_rf`
+adds recording keys and a label; it does not wrap or resample angles. The CSV
+path is read literally, without filename selection or file generation.
 
-| `rf_type` | Units retained | Localization files |
+`Utils.rflocate.load_rf` reads a saved detection without computing or replacing it.
+Choose files with `rf_result_path`, then pass the loaded results to
+`select_rf_profiles`:
+
+| Loaded results | Units retained | Localization files |
 |---|---|---|
-| `None` (default) | Every source unit | None required |
-| `"2d"` | Units with a detected 2D RF | Same-name `.npz` |
-| `"1d"` | Units with a detected 1D RF | Same stem plus `_1d.npz` |
-| `"either"` | Units detected by 2D or 1D, including both | Both files |
+| No selection call | Every source unit | None required |
+| 2D result | Units with a detected 2D RF | Same-name `.npz` |
+| 1D result | Units with a detected 1D RF | Same stem plus `_1d.npz` |
+| Both results | Units detected by 2D or 1D, including both | Both files |
 
 Both result files store `mask_2d` and `unit_ids`; independent 1D masks have a
 singleton spatial axis. Nonempty masks identify detections, matched by saved unit
 ID because localization QC may remove or reorder units. The returned curves keep
 their source values and order. A requested result file must exist; an absent file
-raises `FileNotFoundError`. `load_rf_profiles` and the collection's RF reader
-accept the same `rf_type` option. The pair notebook exposes it as one parameter.
+raises `FileNotFoundError`. Use `rf_result_path(source, rf_type="inhibitory")`
+for inhibitory results and `dimension="1d"` for independent 1D results.
+Only a 2D result defines whole-row/column selection in `sum_to_1d(rf_only=True)`.
+An absent unit ID is an error, so select the saved-result unit set explicitly
+before projecting a source whose detection file contains only a QC subset.
 
 `rf_pick(table, max_zero_bins=2)` permits at most two zero angular bins in
 its native horizontal projection, before interpolation or smoothing. Missing
-responses are loaded as zero and count toward the same limit. All zero values
-participate in response comparisons and statistics. `None` disables the limit.
+responses remain NaN and are distinct from measured zero bins; this zero-bin
+filter does not impose a missing-bin limit. `None` disables the zero-bin limit.
 The native zero count is retained in `attrs["unit_info"]`; interpolation does
 not change QC membership.
 
 `load_ebc` projects every unit in the saved angular rate map, retaining zero
-responses and loading missing source responses as zero. Source angles keep their direction and wrap to [-180, 180):
+responses and missing values. Source angles keep their direction and wrap to [-180, 180):
 90 stays 90 and 270 becomes −90. Other full-circle grids, including EBC's 60 bins,
 are periodically interpolated while retaining missing intervals. To switch
 between ego and allo labels on an existing full-circle table, use
 `convert_profile_coordinates(table, range=tcRange(False))`; this preserves its
-values and angular extent. Changing the extent belongs in the loader's `range`.
+values and angular extent. Changing the RF grid belongs in an explicit
+`resample_profiles` call.
 
 ## Pooling and choosing rows
 
@@ -278,38 +327,6 @@ and plotting functions in the analysis definition cells. The Basler arena is
 41 cm square. Frames outside the measured bounds are excluded from geometry
 after spike-to-frame assignment.
 The full, untruncated 60-direction distance vector is used for matching.
-
-Video generation has three entrances: `ebc_video_rectangle.py` for Basler
-rectangle overlays, `ebc_video_circle.py` for calibrated circular-screen camera
-overlays, and `ebc_video_sep.py` for separate world/EBC panels. See
-[EBC video entrances](ebc_videos.md) for settings and CLI usage. The rectangle
-and circle entrances save all good units as `save_path/<unit_id>.mp4`. The default
-`audio_source = "continuous"` reads the real Open Ephys `continuous.dat` voltage
-on each unit's dominant-template peak channel, after unwhitening and applying
-`channel_map.npy`. A causal 300–6000 Hz bandpass and 48 kHz resampling produce
-OE-style spike-monitor audio at the original playback speed. Other units and
-background on that electrode remain audible; this is not isolated-unit audio.
-Set `audio_source = "clicks"` for synthetic clicks at that unit's sorted spike
-times instead. Both modes use the original exposure midpoints and shared OE
-clock for video alignment, including missing pose frames and clock drift.
-Distinct electrodes are read and filtered together in one sequential pass;
-temporary channel audio is reused for units sharing an electrode. `audio_gain`
-sets the continuous track's peak level with one constant gain for the entire
-clip. `audio_gate_sigma = 3.` suppresses background below three times the robust
-noise estimate. Short centered windows retain voltage events, with smooth gate
-edges and no time shift; the original global gain is retained after gating.
-Set it to `0` to hear the full bandpassed channel. The gate can suppress weak
-spikes and does not isolate the selected unit from other units on its electrode.
-The circle entrance uses preserved Motive XYZ, the fixed level reference,
-camera registration, and the full audited frame clock for its recording.
-Geometry is calculated before projection onto the raw video. Explicit sync
-gaps retain their original frames with omitted geometry and silent audio.
-The sep entrance shows saved inner/outer EBC heatmaps beside the calibrated
-world view for one selected unit. It can reuse an existing synchronized JSON.
-Rectangle `video_start_s` is relative to the Basler AVI start; circle export
-uses the full recording, while sep uses its selected time range.
-The `auto` encoder mode checks NVENC initialization and uses eight CPU
-encoding threads if NVENC is unavailable, reporting the actual ffmpeg error.
 
 - Behavior states use 2 cm position and 12° HD bins. Geometry matching requires
   RMS distance-profile difference ≤2 cm, position separation ≥10 cm, and HD

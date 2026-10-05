@@ -25,9 +25,16 @@ analysis = [
 ]
 waveform = [
   "matplotlib>=3.9,<4",
+  "neo>=0.14.5,<0.15",
   "pandas>=2.2,<4",
   "spikeinterface>=0.104.8,<0.105",
   "probeinterface>=0.3.2,<0.4",
+]
+video = [
+  "numba>=0.61,<1",
+  "pandas>=2.2,<4",
+  "pynapple>=0.9,<1",
+  "pillow>=11,<13",
 ]
 
 [tool.setuptools.packages.find]
