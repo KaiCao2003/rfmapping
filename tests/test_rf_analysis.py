@@ -9,6 +9,7 @@ from matplotlib import pyplot as plt
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
+from Utils.direction_comparison import load_tc
 from Utils.rflocate import workflow as rf_analysis
 from Utils.rflocate.workflow import analyze_rf_file, save_rf_unit_lists
 from Utils.rflocate import RFMapList, RFResult, load_rf, load_rfmap, load_rf_tc, save_rf_tc
@@ -16,6 +17,7 @@ from Utils.rflocate.plotting import (
     export_rf_units, plot_rf_population, plot_rf_unit,
     rf_population_counts, rf_unit_plot_data,
 )
+from Utils.tc_preparation import prepare_rf_comparison
 
 
 def _write_indexed_source(path, *, counts=None, occupancy=None, unit_ids=None):
@@ -343,6 +345,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
 
     namespace = dict(
         analyze_rf_file=analyze_rf_file, save_rf_unit_lists=save_rf_unit_lists,
+        prepare_rf_comparison=prepare_rf_comparison,
         RFMapList=RFMapList, load_rfmap=load_rfmap, load_rf_tc=load_rf_tc, save_rf_tc=save_rf_tc,
         base_dir=tmp_path, probes=probes, is_rotation=False,
         date=260630, sessionID=3, rf_time_range=(0.0, 0.2),
@@ -352,6 +355,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
     exec(compile(source, str(notebook), "exec"), namespace)
     data_dir = tmp_path / "260630/260630_3/data"
     expected_tc_paths = set()
+    expected_comparison_paths = set()
     window_counts = counts[..., 1:].sum(axis=-1)
     for probe, rf_source in sources.items():
         analyses = namespace["rf_analyses_by_probe"][probe]
@@ -389,7 +393,18 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
                 assert loaded.iloc[empty_row].isna().all()
             np.testing.assert_allclose(loaded.to_numpy(), expected_tc, equal_nan=True)
             np.testing.assert_allclose(analysis["tc_1d"].to_numpy(), expected_tc, equal_nan=True)
+            comparison_path = data_dir / "tc_comparison" / (
+                f"rf_{detection_type}_x_2d{'_rfonly' if rf_only else ''}_Probe{probe}.csv"
+            )
+            assert comparison_path.is_file() == is_save
             if is_save:
+                expected_comparison_paths.add(comparison_path)
+                comparison = load_tc(comparison_path)
+                assert comparison.index.tolist() == [f"{tmp_path.name}:260630:{probe}:{unit_id}"]
+                np.testing.assert_array_equal(comparison.columns, loaded.columns)
+                np.testing.assert_allclose(
+                    comparison.to_numpy(), loaded.loc[[unit_id]].to_numpy(), equal_nan=True,
+                )
                 with np.load(paths["result_2d"], allow_pickle=False) as saved:
                     np.testing.assert_array_equal(saved["mask_2d"], analysis["mask_2d"])
                     np.testing.assert_array_equal(saved["center_2d"], analysis["center_2d"])
@@ -402,6 +417,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
             else:
                 assert set(rf_source.parent.iterdir()) == {rf_source}
     assert set(data_dir.glob("*.csv")) == expected_tc_paths
+    assert set((data_dir / "tc_comparison").glob("*.csv")) == expected_comparison_paths
     for detection_type, unit_id in (("excitatory", 7), ("inhibitory", 11)):
         suffix = "_inhibitory" if detection_type == "inhibitory" else ""
         for stem in ("units_with_rf", "units_with_rf_1d"):

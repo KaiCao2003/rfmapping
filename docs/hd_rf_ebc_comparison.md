@@ -7,188 +7,192 @@ Run project code on `hhw9l84` with `~/.virtualenvs/rfmapping`.
 
 ```python
 from Utils.direction_comparison import (
-    load_tc, hd_pick, rf_pick, concat,
-    select_rf_profiles, resample_profiles,
+    load_tc, rf_pick, concat, resample_profiles,
     normalize_tc, zscore_tc, prepare_comparison, plot_comparison_heatmaps, tcRange,
 )
-from Utils.rflocate import load_rf, rf_result_path
-
-hd_all = load_tc(hd_file)
-rf_all = load_tc(rf_csv_file, kind="RF", range=tcRange(True))
-rf_detected = load_rf(rf_result_path(rf_file))
-rf_all = select_rf_profiles(rf_all, rf_detected)
-ebc = load_tc(ebc_file, kind="EBC")
-
-hd = hd_pick(hd_all, hd_class=3)
-rf = rf_pick(rf_all, max_zero_bins=2)
+hd = load_tc(hd_class3_csv, label="HD", range=tcRange(False), response_units="Hz")
+rf_native = load_tc(rf_2d_csv, label="RF", response_units="spike_count")
+rf_selected = rf_pick(rf_native, max_zero_bins=2)
+rf = resample_profiles(rf_selected, range=tcRange(True), bins=30, fill_value=0)
 units = hd.index.intersection(rf.index)
 
 hd_normalized = normalize_tc(hd.loc[units])
 rf_normalized = normalize_tc(rf.loc[units])
 plot_options = dict(vmin=0, vmax=1, colorbar_label="Normalized response")
 native = prepare_comparison(hd_normalized, rf_normalized, mode="native")
-aligned = prepare_comparison(hd_normalized, rf_normalized, mode="aligned")
-summed = prepare_comparison(hd_normalized, rf_normalized, mode="sum", is_wrap=True)
+aligned = prepare_comparison(hd_normalized, rf_normalized, mode="aligned", matched_fill_value=0)
+summed = prepare_comparison(hd_normalized, rf_normalized, mode="sum", is_wrap=True, matched_fill_value=0)
 plot_comparison_heatmaps(native, **plot_options)
 plot_comparison_heatmaps(aligned, **plot_options)
 plot_comparison_heatmaps(summed, **plot_options)
 ```
 
-RF CSV loading retains every saved unit, native angle, and missing value. Time
-aggregation, spatial summation, saved-RF selection, smoothing, and resampling
-are explicit operations. The notebooks choose the CSV path, generate it only
-when missing, and then call `load_tc(path, kind="RF", ...)`. See
-[RF 1-D CSV generation](rfmap.md#notebook-1-d-csvs) for the `rf_only` bool.
-Filtering does not modify the full tables or write class-list files.
+The paired notebooks explicitly prepare each requested comparison CSV before
+calling `load_tc()`. Preparation skips existing outputs before accessing source
+data. Missing HD tables are generated from saved `.tc` data; missing RF tables
+use saved native projections or prepare them from RF maps and existing detection
+results. `load_tc()` itself only reads CSVs.
 
-Paths are read literally. Build repeated layouts with ordinary `str.format` or
-f-strings before loading. For standard `<mouse>/<date>/<date>_<session>/data/...`
-paths, `load_tc` derives mouse/date identity from the directories and the probe
-from a `ProbeA`/`ProbeB` directory or the generated RF CSV filename. Same-day HD
-and RF sessions therefore retain matching unit keys without repeating metadata
-in every load call. Explicit identity arguments remain compatibility overrides.
+The HD tuning notebooks, HD regeneration script, and Basler rebuild pipeline
+call `prepare_hd_tc()` after saving tuning curves. The RF notebook and MATLAB
+bridge's canonical regular ON workflow call `prepare_rf_comparison()` after
+detection. All use the same preparation functions as the paired notebooks.
 
-## Tables and filters
+On `hhw9l84`, `/home/kai/scripts/run_pipeline.sh` invokes the separate
+`/home/kai/scripts/run_tuning_curves.py` entrypoint. After saving each probe's
+`.tc`, that entrypoint runs this repository's HD exporter with
+`--comparison-code-dir` (default `~/Developer/rfmapping`) as its working
+directory. This keeps its preprocessing `Utils` separate from the comparison
+package and covers both Motive and Basler sessions.
 
-`load_tc` returns a DataFrame with:
+The published `scripts/run_pipeline.sh` instead invokes the included
+`scripts.run_tuning_curves` module from the repository root. That module imports
+`prepare_hd_tc` directly, so a fresh checkout includes the complete call chain.
 
-- rows indexed by `(mouse, date, probe, unit_id)` for standard recording paths;
-- native angular columns for RF; the existing HD/EBC loaders prepare 30 bins;
-- `attrs["label"]` and `attrs["range"]` for plotting;
-- `attrs["unit_info"]` keyed by unit identity, retaining HD classification or
-  native RF zero-bin counts for later filtering.
+## Prepare one comparison CSV
 
-Use `kind="RF"` for RF CSVs; the default `kind="HD"` reads saved HD `.tc` files.
-`kind="EBC"` uses the existing EBC reader. Files outside the recording layout
-retain `(probe, unit_id)` keys and their source identity; the loader does not
-invent mouse or date values. `load_rf` and `load_ebc` remain available.
+Run from `~/Developer/rfmapping` on `hhw9l84`. Output directories are created
+as needed. These two commands prepare one HD table and one RF table:
 
-Every source uses the same structure: columns contain the degree array, and
-each unit row contains its response array. Firing rates use Hz; the current RF
-CSVs contain spike counts. `attrs["response_units"]` records that distinction.
-For a CSV explicitly saved in Hz, pass `response_units="Hz"`; this labels the
-stored numbers and does not convert them.
+```sh
+~/.virtualenvs/rfmapping/bin/python -m scripts.export_comparison_tcs hd \
+    '/mnt/senzailab/Kai/#Recording/m14/260609/260609_1/data/tuning_curves/ProbeA/tuning_curves.tc' \
+    '/mnt/senzailab/Kai/#Recording/m14/260609/260609_1/data/tc_comparison/hd_class3_ProbeA.csv' \
+    --bins 30 --hd-class 3 --unit-prefix m14:260609:A
 
-```python
-from Utils.direction_comparison import concat, plot_profiles
-
-m14_hd = load_tc(m14_path)
-m15_hd = load_tc(m15_path)
-m14_15 = concat(m14_hd, m15_hd)
-plot_profiles(m14_15)
+~/.virtualenvs/rfmapping/bin/python -m scripts.export_comparison_tcs rf \
+    '/mnt/senzailab/Kai/#Recording/m14/260609/260609_3/data/regular_unitsSpikeCounts_260609_3_ProbeA_1d_rfonly.csv' \
+    '/mnt/senzailab/Kai/#Recording/m14/260609/260609_3/data/tc_comparison/rf_excitatory_x_2d_rfonly_ProbeA.csv' \
+    --select-results '/mnt/senzailab/Kai/#Recording/m14/260609/260609_3/data/rfmapping/good/-100_400_1ms/ProbeA/regular_unitsSpikeCounts_260609_3.npz' \
+    --unit-prefix m14:260609:A
 ```
 
-`concat` stacks units and retains their recording keys, degree coordinates,
-values, and per-unit information. For generic files without recording keys,
-source identity distinguishes units from different files when concatenated.
-Matching degree grids preserve the first
-input's order. Different grids need an explicit common `range`, as with the
-existing `combine` name, which remains an alias. Plotting defaults to the
-object's label and response units and keeps input unit order. Normalization
-and z-scoring update the units label for subsequent plots.
+Each invocation writes only its specified output. Paths and filenames are caller
+choices; the exporter has no recording-directory convention. Existing outputs
+are skipped unless `--overwrite` is supplied. Input files are never replaced.
 
-For RF, `range` records degree boundaries or tick labels without changing its
-native grid. Call `resample_profiles(table, range=..., bins=30)` explicitly to
-wrap angles into [-180, 180) and interpolate to a chosen grid. The existing
-HD/EBC loaders still use `range` to prepare their 30-bin grid.
-`tcRange(True)` returns the full-circle ego labels
-`[-180, -90, 0, 90, 180]`; `tcRange(False)` returns the equivalent allo labels
-`[180, 270, 0, 90, 180]`. Both defaults use centers −174 through 174 degrees.
-The m14 RF override `range=[-150, 150]` instead uses 30 bins with centers −145
-through 145 degrees, spaced by 10 degrees. Its HD retains the full-circle grid.
-Native RF columns retain their source angles; explicit resampling produces
-signed columns even when display labels use [0, 360].
-Partial angular ranges do not connect their two endpoints by circular
-interpolation or smoothing. Missing source responses remain NaN. Explicit RF
-resampling represents angles outside its recorded support by zero; generic
-HD/EBC gaps remain NaN.
+The `hd` command rebins saved counts and occupancy to rates, with the requested
+`--bins` and no smoothing. `--hd-class` optionally selects one class after native
+classification. Omitting it keeps every class. The `rf` command copies an already
+prepared x or y projection CSV. It preserves native angles and values, including
+zeros and missing bins. It does not open `.rfmap` files, select a time window,
+project maps, or compute detections. Prepare native projections upstream with
+[RF 1-D CSV generation](rfmap.md#notebook-1-d-csvs).
 
-The HD reader used by `load_tc` rebins spike counts and occupancy to angular rates without smoothing.
-Zero-response, missing-data, and unclassified rows remain available in the full
-loaded table. HD classification reuses `update_hd_classification` on the native
-rates before display rebinning or smoothing. Class 3 uses the existing Rayleigh,
-shuffle, and von Mises κ criteria. Class 2 retains units passing both significance
-tests without passing the κ cutoff; class 1 passes exactly one test; class 0 passes
-neither. A missing p value makes the class unavailable.
-`hd_pick(table)` defaults to class 3; `(2, 3)` selects both classes in source order
-without duplicates. `hd_class=None` keeps all rows.
+`prepare_rf_comparison()` handles that upstream dependency when needed: it calls
+`prepare_rf_projection()` to sum raw counts over the explicit response window
+and project onto native x bins, then `prepare_rf_tc()` to select units and save
+their paired identities. RF-only projections include whole rows touched by the
+saved 2D RF. Preparation never reruns detection or converts counts to Hz.
+Existing CSVs are reused; after changing the response window, classification,
+or projection settings, request `overwrite=True` explicitly to regenerate.
 
-`Utils.direction_comparison.load_rf_profiles`, `load_rf`, and `load_tc(kind="RF")`
-read a TC CSV or already prepared RF map with a single time bin and singleton
-collapsed spatial axis. They reject raw maps requiring aggregation. `load_rf`
-adds recording keys and a label; it does not wrap or resample angles. The CSV
-path is read literally, without filename selection or file generation.
+`--select-results` optionally restricts RF rows to units with a nonempty saved
+mask. Multiple supplied files select their union by numeric source unit ID;
+output order follows the source CSV. Omitting the option retains all source rows.
+Choosing a full projection or an RF-only projection is the caller's source-file
+choice. The paired notebooks use explicitly listed files under each session's
+`data/tc_comparison/` directory; exporting does not enumerate class, detection,
+or projection combinations.
 
-`Utils.rflocate.load_rf` reads a saved detection without computing or replacing it.
-Choose files with `rf_result_path`, then pass the loaded results to
-`select_rf_profiles`:
+Every output contains only `unit_id` and numeric degree columns. A source unit
+23 with `--unit-prefix m14:260609:A` is saved as `m14:260609:A:23`. Use the same
+prefix when HD and RF recordings share the same sorted neurons, and distinct
+prefixes for different mice, dates, or probes. The prefix is supplied explicitly;
+no part of it is inferred from the path.
 
-| Loaded results | Units retained | Localization files |
-|---|---|---|
-| No selection call | Every source unit | None required |
-| 2D result | Units with a detected 2D RF | Same-name `.npz` |
-| 1D result | Units with a detected 1D RF | Same stem plus `_1d.npz` |
-| Both results | Units detected by 2D or 1D, including both | Both files |
+## Tables, selection, and resampling
 
-Both result files store `mask_2d` and `unit_ids`; independent 1D masks have a
-singleton spatial axis. Nonempty masks identify detections, matched by saved unit
-ID because localization QC may remove or reorder units. The returned curves keep
-their source values and order. A requested result file must exist; an absent file
-raises `FileNotFoundError`. Use `rf_result_path(source, rf_type="inhibitory")`
-for inhibitory results and `dimension="1d"` for independent 1D results.
-Only a 2D result defines whole-row/column selection in `sum_to_1d(rf_only=True)`.
-An absent unit ID is an error, so select the saved-result unit set explicitly
-before projecting a source whose detection file contains only a QC subset.
+`load_tc(path)` reads only CSVs and returns a DataFrame with:
 
-`rf_pick(table, max_zero_bins=2)` permits at most two zero angular bins in
-its native horizontal projection, before interpolation or smoothing. Missing
-responses remain NaN and are distinct from measured zero bins; this zero-bin
-filter does not impose a missing-bin limit. `None` disables the zero-bin limit.
-The native zero count is retained in `attrs["unit_info"]`; interpolation does
-not change QC membership.
+- a simple `unit_id` index containing the exact opaque strings in the file;
+- the saved degree columns, values, missing bins, and row order;
+- optional `label`, `range`, and `response_units` attributes supplied by the caller.
 
-`load_ebc` projects every unit in the saved angular rate map, retaining zero
-responses and missing values. Source angles keep their direction and wrap to [-180, 180):
-90 stays 90 and 270 becomes −90. Other full-circle grids, including EBC's 60 bins,
-are periodically interpolated while retaining missing intervals. To switch
-between ego and allo labels on an existing full-circle table, use
+Loading performs no classification, detection, zero-bin counting, or resampling.
+It has no `kind` switch, path-based identity, or assumed response units.
+`response_units="Hz"` or `"spike_count"` labels stored values without converting
+them. `save_tc(table, path)` writes the same plain format; it requires a simple,
+unique `unit_id` index. DataFrame attributes are not saved in the CSV.
+
+`rf_pick(table, max_zero_bins=2)` counts measured zero bins in the supplied
+curves. Call it on native RF curves before interpolation or smoothing. Missing
+bins remain NaN and do not count as zeros; the filter imposes no missing-bin
+limit. `None` disables the zero-bin limit. Selection does not write any files.
+
+`range` supplied to `load_tc` only records plotting labels. To change the grid,
+call `resample_profiles(table, range=..., bins=...)` explicitly. It wraps output
+angles to [-180, 180) and interpolates onto the requested grid, preserving source
+order when that grid already matches. `tcRange(True)` supplies full-circle ego
+labels `[-180, -90, 0, 90, 180]`; `tcRange(False)` supplies equivalent allo labels
+`[180, 270, 0, 90, 180]`. With `bins=30`, these grids have centers −174 through
+174 degrees. The m14 RF choice `range=[-150, 150], bins=30` instead has centers
+−145 through 145 degrees.
+
+`fill_value` explicitly controls values outside measured angular support. It
+defaults to NaN. The paired notebooks use `fill_value=0` for their RF comparison
+policy, including m14 outside ±150° when pooling onto a full-circle grid.
+Missing responses inside the measured support remain NaN. Partial angular
+ranges do not connect their endpoints by circular interpolation or smoothing.
+Full-circle source grids use periodic interpolation.
+
+The source readers remain separate from `load_tc`. `load_hd_profiles` reads
+original HD `.tc` data, rebins counts and occupancy into rates, and classifies
+native rates before rebinning or optional smoothing. Class 3 uses the existing
+Rayleigh, shuffle, and von Mises κ criteria. Class 2 passes both significance
+tests without passing κ; class 1 passes exactly one test; class 0 passes neither.
+An unavailable p value leaves the class unavailable. `hd_pick` selects classes
+from this source table; class metadata is not stored in comparison CSVs.
+
+`load_rf_profiles` reads a native RF CSV or an already prepared RF map with a
+single time bin and collapsed spatial axis. `load_rf` adds explicitly supplied
+recording keys for existing source-reader workflows. `Utils.rflocate.load_rf`
+reads a saved detection; `select_rf_profiles` selects its detected numeric unit
+IDs from native source tables before opaque IDs are exported. Only a 2D result
+defines whole-row/column selection in `sum_to_1d(rf_only=True)`; an independent
+1D result can select units but cannot define that projection.
+
+`load_ebc` retains the separate EBC preparation workflow: it projects saved
+angular rate maps and prepares their comparison grid. Zero responses and
+missing values retain their meaning. To switch ego and allo display labels on
+an existing full-circle table, use
 `convert_profile_coordinates(table, range=tcRange(False))`; this preserves its
-values and angular extent. Changing the RF grid belongs in an explicit
-`resample_profiles` call.
+values and angular extent.
 
 ## Pooling and choosing rows
 
-`combine(A, B, ...)` stacks rows without averaging and preserves per-unit filter
-metadata. Tables sharing a grid retain the first table's bin order and display
-settings. For different grids, supply an explicit common `range`: the paired
-notebooks pool m14's partial RF grid and the other sessions on
-`range=tcRange(True)`. m14 angles outside ±150° are zero in that pooled RF table.
-The pooled curves use 12-degree bins, so peaks extracted from them can differ
-from the native 10-degree m14 peaks; single-session plots use the native m14 grid.
-Combining probes from the same m14 session instead retains `range=[-150, 150]`.
-The function accepts an optional `label`, rejects duplicate unit keys, and
-returns the same table structure for further filtering or combination.
+`concat(A, B, ...)` only stacks rows on matching degree grids. It retains the
+first table's bin order, preserves values and unit IDs, and rejects duplicate
+IDs. It does not create identity from source paths or interpolate. `combine`
+remains an alias with the same behavior. Resample differing grids explicitly
+before pooling:
 
 ```python
-hd_all = combine(hd_m19, hd_m20, label="Pooled HD")
-rf_all = combine(rf_m14, rf_m19, rf_m20, range=tcRange(True), label="Pooled RF")
-hd = hd_pick(hd_all, hd_class=3)
-rf = rf_pick(rf_all, max_zero_bins=2)
-units = hd.index.intersection(rf.index)
-
-# Optional numeric-ID selection; mouse/date/probe remain part of each key.
-units = units[units.get_level_values("unit_id").isin([10, 20])]
-hd_normalized = normalize_tc(hd.loc[units])
-rf_normalized = normalize_tc(rf.loc[units])
+hd_all = concat(hd_m14, hd_m19, label="Pooled HD")
+rf_m14_native = load_tc(m14_rf_csv, label="m14 RF", response_units="spike_count")
+rf_m19_native = load_tc(m19_rf_csv, label="m19 RF", response_units="spike_count")
+rf_m14 = resample_profiles(
+    rf_pick(rf_m14_native, max_zero_bins=2),
+    range=tcRange(True), bins=30, fill_value=0,
+)
+rf_m19 = resample_profiles(
+    rf_pick(rf_m19_native, max_zero_bins=2),
+    range=tcRange(True), bins=30, fill_value=0,
+)
+rf_all = concat(rf_m14, rf_m19, label="Pooled RF")
+units = hd_all.index.intersection(rf_all.index)
+hd_normalized = normalize_tc(hd_all.loc[units])
+rf_normalized = normalize_tc(rf_all.loc[units])
 pooled = prepare_comparison(hd_normalized, rf_normalized)
 plot_comparison_heatmaps(pooled, **plot_options)
 ```
 
-Unit identity excludes session because same-day sessions share spike sorting.
-Different mice, dates and probes remain distinct even when numeric IDs match.
-Repeated sessions of the same neurons can be compared directly without pooling.
-For an inclusive numeric range, narrow `units` with a mask on its `unit_id` level
-before `.loc`; the plotting functions do not implement row selection.
+For a chosen neuron subset, use complete saved IDs such as
+`["m14:260609:A:10", "m14:260609:A:20"]` in `.loc`. The loader and plotting
+functions do not parse those strings. Separate sessions of the same neurons
+can be compared directly; pooling the same identity twice raises an error.
+The pooled 12-degree grid can give different sampled peaks from a native
+10-degree m14 RF grid, so retain native curves for analyses of native peaks.
 
 ## Explicit normalization and z-scores
 
@@ -239,6 +243,11 @@ rates, counts, or information about constant curves.
 peaks, row order, and transformed tables. Inputs must contain the same unique
 unit-key set; an explicit `order` must be a permutation of those keys. The
 caller selects the overlap before calculation.
+
+By default, units with equal reference peaks retain their order in the reference
+input table. Renaming opaque unit IDs therefore does not change the row order
+fed to seeded permutation tests. Reordering the input rows can still change the
+sampled permutations; keep input order and random seed fixed for exact repeats.
 
 - `mode="native"` retains source angles.
 - `mode="aligned"` subtracts the reference peak from both curves.

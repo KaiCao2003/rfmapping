@@ -45,6 +45,49 @@ def test_pairing_uses_hd_maximum_and_rf_minimum_without_changing_curves(mode, rf
     pd.testing.assert_frame_equal(rf, originals[1])
 
 
+@pytest.mark.parametrize("unit_ids", [
+    [40, 7, 13, 9],
+    ["m15:260630:A:40", "m15:260630:A:7", "m15:260630:A:13", "m15:260630:A:9"],
+    ["zebra", "alpha", "middle", "missing"],
+])
+@pytest.mark.parametrize("mode", ["native", "aligned", "sum"])
+@pytest.mark.parametrize("reference_min", [False, True])
+def test_paired_peak_ties_keep_reference_rows_regardless_of_unit_labels(
+    unit_ids, mode, reference_min,
+):
+    reference = pd.DataFrame(
+        [[0, 1, 9, 2], [0, 3, 9, 1], [0, 9, 2, 1], [np.nan] * 4],
+        index=unit_ids, columns=[-180, -90, 0, 90],
+    )
+    if reference_min:
+        reference = 10 - reference
+    matched = pd.DataFrame(
+        [[1, 9, 4, 0], [2, 1, 4, 9], [9, 3, 1, 0], [3, 1, 9, 0]],
+        index=unit_ids, columns=reference.columns,
+    ).iloc[::-1]
+
+    result = comparison.prepare_comparison(
+        reference, matched, mode=mode, reference_min=reference_min,
+    )
+
+    assert result["order"] == [unit_ids[i] for i in [2, 0, 1, 3]]
+    np.testing.assert_array_equal(result["reference_peak_deg"], [-90, 0, 0, np.nan])
+    np.testing.assert_array_equal(result["matched_peak_deg"], [-180, -90, 90, 0])
+
+
+def test_explicit_pair_order_overrides_peak_and_missing_row_order():
+    reference = pd.DataFrame([[0, 1], [0, 2], [np.nan, np.nan]],
+                             index=["z", "a", "missing"], columns=[-90, 90])
+    matched = pd.DataFrame([[1, 0], [0, 1], [1, 0]],
+                           index=reference.index, columns=reference.columns)
+    order = ["missing", "a", "z"]
+
+    result = comparison.prepare_comparison(reference, matched, order=order)
+
+    assert result["order"] == order
+    np.testing.assert_array_equal(result["reference_peak_deg"], [np.nan, 90, 90])
+
+
 @pytest.mark.parametrize("is_batch", [False, True])
 @pytest.mark.parametrize("method,z", [("rf_2d", 1.5), ("rf_1d", 0.75)])
 def test_inhibitory_defaults_use_requested_sd_cutoff(is_batch, method, z):

@@ -1,7 +1,7 @@
 """Shared unit-keyed angular profiles, peak sorting, and circular alignment."""
 
+import csv
 from pathlib import Path
-import re
 
 import numpy as np
 import pandas as pd
@@ -115,14 +115,18 @@ def sorted_by_peak(profiles, overlap):
 
 def paired_peak_angles(reference, matched, *, order=None, is_wrap=True,
                        reference_min=False, matched_min=False):
-    """Select paired maxima/minima; order rearranges the full unit set only."""
+    """Sort paired maxima/minima, retaining reference row order for equal peaks.
+
+    An explicit order rearranges the full unit set without sorting. Opaque unit
+    labels do not determine tie order or seeded permutation inputs.
+    """
     units = set(reference.index)
     if (not reference.index.is_unique or not matched.index.is_unique
             or units != set(matched.index)):
         raise ValueError("tables must have the same unique unit keys; select overlap before plotting")
     sort_by_reference = order is None
     if sort_by_reference:
-        order = sorted(units)
+        order = list(reference.index)
     else:
         order = list(order)
         if len(order) != len(units) or set(order) != units:
@@ -207,9 +211,8 @@ def _interpolate_angles(angles, values, targets, range, *, is_wrap=True, fill_va
     return result
 
 
-def _resample_profiles(profiles, centers):
+def _resample_profiles(profiles, centers, *, fill_value=np.nan):
     angle_range = profiles.attrs["range"]
-    fill_value = 0. if profiles.attrs.get("response_kind") == "RF" else np.nan
     values = np.array([
         _interpolate_angles(profiles.columns, row, centers, angle_range, fill_value=fill_value)
         for row in profiles.to_numpy()
@@ -219,12 +222,14 @@ def _resample_profiles(profiles, centers):
     return table
 
 
-def align_profiles(profiles, units, offset_deg, *, is_wrap=True):
-    """Add each unit's offset; unwrapped sums use a wider 12° grid without repetition."""
+def align_profiles(profiles, units, offset_deg, *, is_wrap=True, fill_value=np.nan):
+    """Add each unit's offset; fill unmeasured angles only as explicitly requested.
+
+    Unwrapped sums use a wider 12° grid without repetition.
+    """
     relative_deg = np.arange(-180., 180., 12.) if is_wrap else np.arange(-360., 361., 12.)
     rows = profiles.reindex(units)
     angle_range = profiles.attrs.get("range", tcRange(True))
-    fill_value = 0. if profiles.attrs.get("response_kind") == "RF" else np.nan
     shifted = np.array([
         _interpolate_angles(profiles.columns, row, relative_deg - offset,
                             angle_range, is_wrap=is_wrap, fill_value=fill_value)
@@ -310,11 +315,13 @@ def plot_profiles(profiles, order=None, name=None, *, axis=None, sort_name=None,
 
 
 def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap=True,
-                       reference_min=False, matched_min=False):
+                       reference_min=False, matched_min=False,
+                       reference_fill_value=np.nan, matched_fill_value=np.nan):
     """Calculate paired peaks, row order, and explicit angular transformations.
 
     Native keeps source angles. Aligned subtracts the reference direction from
     both tables. Sum centers the reference and adds its direction to the match.
+    Padding outside each measured angular range is specified per panel.
     """
     if mode not in ("native", "aligned", "sum"):
         raise ValueError("mode must be 'native', 'aligned', or 'sum'")
@@ -327,9 +334,10 @@ def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap
     reference_panel = reference.loc[order]
     matched_panel = matched.loc[order]
     if mode != "native":
-        reference_panel = align_profiles(reference, order, offsets)
+        reference_panel = align_profiles(reference, order, offsets, fill_value=reference_fill_value)
         matched_panel = align_profiles(matched, order, matched_offsets,
-                                       is_wrap=is_wrap if mode == "sum" else True)
+                                       is_wrap=is_wrap if mode == "sum" else True,
+                                       fill_value=matched_fill_value)
     return {
         "reference": reference_panel, "matched": matched_panel,
         "order": order, "reference_peak_deg": peaks.reference_peak_deg.to_numpy(),
@@ -394,12 +402,13 @@ def hd_pick(table, hd_class=3):
 
 
 def rf_pick(table, max_zero_bins=2):
-    """Copy RF units within the native zero-bin limit; None keeps every unit."""
-    info = table.attrs["unit_info"]
+    """Select by measured zero bins; call on native curves before resampling."""
     selected = (np.ones(len(table), dtype=bool) if max_zero_bins is None else
-                np.asarray([info[key]["zero_bins"] for key in table.index]) <= max_zero_bins)
+                table.eq(0).sum(axis=1) <= max_zero_bins)
     result = table.loc[selected].copy()
-    result.attrs["unit_info"] = {key: info[key].copy() for key in result.index}
+    if "unit_info" in table.attrs:
+        info = table.attrs["unit_info"]
+        result.attrs["unit_info"] = {key: info[key].copy() for key in result.index}
     return result
 
 
@@ -515,8 +524,8 @@ def load_rf_centers(source, *, probe="A"):
     return pd.DataFrame({"rf_x_deg": maps[0].x_positions[x], "rf_y_deg": maps[0].y_positions[y]}, index=index)
 
 
-def resample_profiles(profiles, *, range: list[int], bins=30):
-    """Explicitly wrap angles and interpolate curves to the requested bin grid."""
+def resample_profiles(profiles, *, range: list[int], bins=30, fill_value=np.nan):
+    """Interpolate to the requested grid, using fill_value outside measured angles."""
     if isinstance(bins, (bool, np.bool_)) or not isinstance(bins, (int, np.integer)) or bins < 1:
         raise ValueError("bins must be a positive integer")
     angles = np.asarray(profiles.columns, dtype=float)
@@ -530,7 +539,7 @@ def resample_profiles(profiles, *, range: list[int], bins=30):
         table = profiles.copy()
         table.columns = angles
     else:
-        table = _resample_profiles(profiles, centers)
+        table = _resample_profiles(profiles, centers, fill_value=fill_value)
     table.attrs["range"] = list(range)
     return table
 
@@ -557,59 +566,37 @@ def _prepare_profiles(profiles, *, mouse, date, range: list[int]):
     return recording_profiles(resample_profiles(profiles, range=range), mouse=mouse, date=date)
 
 
-def _tc_path_identity(path):
-    """Read identity from the session data layout and Probe directory/CSV name."""
-    probe = None
-    for parent in path.parents:
-        match = re.fullmatch(r"Probe([A-Za-z0-9]+)(?:_.*)?", parent.name)
-        if match:
-            probe = match[1]
-            break
-    if probe is None:
-        match = re.search(r"(?:^|_)Probe([A-Za-z0-9]+)(?:_|$)", path.stem)
-        probe = match[1] if match else "A"
-    for parent in path.parents:
-        if parent.name == "data":
-            session = parent.parent
-            day = session.parent
-            if day.name.isdigit() and session.name.startswith(f"{day.name}_"):
-                return day.parent.name, day.name, probe
-    return None, None, probe
+def save_tc(table, path):
+    """Write opaque unit IDs and numeric degree columns without altering values.
 
-
-def load_tc(path, *, mouse=None, date=None, probe=None, label=None, kind="HD",
-            range: list[int] | None = None, response_units=None, **options):
-    """Read a file into the shared TC table, deriving identity from its path.
-
-    ``kind="RF"`` reads a saved TC CSV or prepared RF map without generating,
-    detecting, selecting, or resampling curves. ``range`` only sets its display
-    labels. HD and EBC retain their existing readers and comparison grids;
-    reader-specific options, such as HD ``bins``, are passed through.
-    ``response_units`` supplies a units label for stored values, not a conversion.
-    Explicit recording keys override the session layout for existing callers.
-    Other layouts keep the source path so concat can distinguish same-ID units.
+    Encode complete unit identity in the index before saving. DataFrame
+    attributes are not stored in this plain numerical format.
     """
-    if (mouse is None) != (date is None):
-        raise ValueError("mouse and date must be supplied together")
-    source = Path(path).resolve()
-    source_mouse, source_date, source_probe = _tc_path_identity(Path(path).absolute())
-    if mouse is None:
-        mouse, date = source_mouse, source_date
-    if probe is None:
-        probe = source_probe
-    readers = {"HD": load_hd_profiles, "RF": load_rf_profiles, "EBC": load_ebc_profiles}
-    kind = kind.upper()
-    if kind not in readers:
-        raise ValueError("kind must be HD, RF, or EBC")
-    if kind == "RF":
-        options["range"] = range
-    table = readers[kind](Path(path), probe=probe, **options)
-    if kind != "RF":
-        table = resample_profiles(table, range=tcRange(kind != "HD") if range is None else range)
-    if mouse is not None:
-        table = recording_profiles(table, mouse=mouse, date=date)
-    table.attrs["source"] = str(source)
-    table.attrs["label"] = kind if label is None else label
+    if isinstance(table.index, pd.MultiIndex):
+        raise ValueError("TC CSV requires a simple index containing complete unit identity")
+    unit_ids = table.index.astype(str)
+    if unit_ids.has_duplicates:
+        raise ValueError("TC CSV unit IDs must be unique")
+    angles = table.columns.to_numpy(dtype=float)
+    with Path(path).open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["unit_id", *angles])
+        writer.writerows([unit_id, *row] for unit_id, row in zip(unit_ids, table.to_numpy(), strict=True))
+
+
+def load_tc(path, *, label=None, range: list[int] | None = None, response_units=None):
+    """Read a numerical CSV with opaque unit IDs and degree columns.
+
+    Identity comes only from ``unit_id`` in the file. Optional metadata describes
+    the stored values; loading does not classify, select, or transform curves.
+    """
+    table = pd.read_csv(path, converters={"unit_id": str},
+                        float_precision="round_trip").set_index("unit_id")
+    table.columns = table.columns.astype(float)
+    if label is not None:
+        table.attrs["label"] = label
+    if range is not None:
+        table.attrs["range"] = list(range)
     if response_units is not None:
         table.attrs["response_units"] = response_units
     return table
@@ -617,8 +604,8 @@ def load_tc(path, *, mouse=None, date=None, probe=None, label=None, kind="HD",
 
 def load_rf(path, *, mouse, date, probe="A", label="RF", axis="x", range: list[int] | None = None):
     """Read prepared RF curves with recording keys, preserving the native grid."""
-    return load_tc(path, kind="RF", mouse=mouse, date=date, probe=probe,
-                   label=label, axis=axis, range=range)
+    profiles = load_rf_profiles(path, axis=axis, probe=probe, range=range)
+    return recording_profiles(profiles, mouse=mouse, date=date, label=label)
 
 
 def load_ebc(path, *, mouse, date, probe="A", label="EBC", range: list[int] | None = None):
@@ -630,49 +617,27 @@ def load_ebc(path, *, mouse, date, probe="A", label="EBC", range: list[int] | No
     return table
 
 
-def concat(*curves, label=None, range: list[int] | None = None):
+def concat(*curves, label=None):
     """Stack curve tables without averaging; reject duplicate unit keys.
 
     Matching grids retain the first input's bin order and display labels.
-    Different grids require an explicit common range and are interpolated in
-    physical degrees onto 30 bins, with partial fields left blank outside coverage.
+    Resample differing grids explicitly before concatenation.
     """
-    inputs = []
-    for curve in curves:
-        if curve.index.names == ["probe", "unit_id"] and "source" in curve.attrs:
-            source = curve.attrs["source"]
-            keyed = pd.concat({source: curve}, names=["source"])
-            keyed.attrs = curve.attrs.copy()
-            keyed.attrs["unit_info"] = {
-                (source, *key): info.copy()
-                for key, info in curve.attrs.get("unit_info", {}).items()
-                if key in curve.index
-            }
-            curve = keyed
-        inputs.append(curve)
-    curves = inputs
-    if range is None:
-        centers = curves[0].columns
-        if any(set(curve.columns) != set(centers) for curve in curves[1:]):
-            raise ValueError("different angular grids require an explicit common range in concat")
-        aligned = [curve.reindex(columns=centers) for curve in curves]
-    else:
-        ticks = _range_ticks(range)
-        edges = np.linspace(ticks[0], ticks[-1], 31)
-        centers = ((edges[:-1] + edges[1:]) / 2 + 180) % 360 - 180
-        aligned = [resample_profiles(curve, range=range).reindex(columns=centers) for curve in curves]
+    centers = curves[0].columns
+    if any(set(curve.columns) != set(centers) for curve in curves[1:]):
+        raise ValueError("different angular grids; call resample_profiles explicitly before concat")
+    aligned = [curve.reindex(columns=centers) for curve in curves]
     table = pd.concat(aligned, verify_integrity=True)
     table.attrs = curves[0].attrs.copy()
     table.attrs.pop("source", None)
     for attribute in ("response_units", "response_kind"):
         if any(curve.attrs.get(attribute) != curves[0].attrs.get(attribute) for curve in curves[1:]):
             table.attrs.pop(attribute, None)
-    if range is not None:
-        table.attrs["range"] = list(range)
-    table.attrs["unit_info"] = {
-        key: curve.attrs["unit_info"][key].copy()
-        for curve in curves for key in curve.index if key in curve.attrs.get("unit_info", {})
-    }
+    if any("unit_info" in curve.attrs for curve in curves):
+        table.attrs["unit_info"] = {
+            key: curve.attrs["unit_info"][key].copy()
+            for curve in curves for key in curve.index if key in curve.attrs.get("unit_info", {})
+        }
     if label is not None:
         table.attrs["label"] = label
     else:
@@ -686,10 +651,7 @@ combine = concat
 
 
 class TuningCurveCollection:
-    """Named 30-bin curves matched by mouse, date, probe, and unit ID.
-
-    Prefixes name datasets; sessions from the same mouse and date share unit keys.
-    """
+    """Named TC tables matched by the unit keys stored in each table."""
 
     def __init__(self):
         self.profiles = {}
@@ -706,32 +668,19 @@ class TuningCurveCollection:
         self.profiles[prefix] = table
         return table
 
-    def load_tc(self, path, *, mouse, date, probe, prefix, kind="HD", range: list[int] | None = None,
-                **options):
-        """Read path directly; mouse/date/probe identify units, prefix names the group.
-
-        Build paths with ordinary f-strings at the call site. ``kind`` selects
-        the reader; ``range`` supplies angular boundaries and display labels.
-        """
-        readers = {"HD": load_hd_profiles, "RF": load_rf_profiles, "EBC": load_ebc_profiles}
-        kind = kind.upper()
-        if kind not in readers:
-            raise ValueError("kind must be HD, RF, or EBC")
-        if kind == "RF":
-            options["range"] = range
-        profiles = readers[kind](Path(path), probe=probe, **options)
-        table = (recording_profiles(profiles, mouse=mouse, date=date) if kind == "RF" else
-                 _prepare_profiles(profiles, mouse=mouse, date=date,
-                                   range=tcRange(False) if range is None else range))
+    def load_tc(self, path, *, prefix, label=None, range: list[int] | None = None,
+                response_units=None):
+        """Read a TC CSV and register it under the supplied dataset name."""
+        table = load_tc(path, label=label, range=range, response_units=response_units)
         self.profiles[prefix] = table
         return table
 
-    def combine(self, prefix, sources, *, range: list[int] | None = None):
+    def combine(self, prefix, sources):
         """Pool units in the first dataset's bin order; reject duplicate unit keys.
 
         This preserves tied peaks when sources share a bin order. Sources with
         another order use the first dataset's tie-breaking order after pooling.
         """
-        table = combine(*(self.profiles[name] for name in sources), range=range)
+        table = combine(*(self.profiles[name] for name in sources))
         self.profiles[prefix] = table
         return table

@@ -62,11 +62,13 @@ def test_rf_loader_preserves_missing_values_and_records_only_measured_zero_bins(
     assert comparison.rf_pick(profiles, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
     assert len(comparison.rf_pick(profiles, max_zero_bins=None)) == 3
 
-    pooled = comparison.combine(profiles, range=comparison.tcRange(True))
+    selected = comparison.rf_pick(profiles, max_zero_bins=0)
+    pooled = comparison.resample_profiles(selected, range=comparison.tcRange(True), fill_value=0.)
     assert pooled.loc[profiles.index[0]].isna().any()
     assert pooled.iloc[:, np.abs(pooled.columns) > 150].eq(0).all().all()
-    # QC uses the native zero count rather than zeros added by angular conversion.
-    assert comparison.rf_pick(pooled, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
+    # Select on the native grid before interpolation introduces padding zeros.
+    assert pooled.index.get_level_values("unit_id").tolist() == [7, 11]
+    assert comparison.rf_pick(pooled, max_zero_bins=0).empty
 
 
 def test_rf_loader_preserves_native_nonstandard_grid_and_single_time_bin(tmp_path, monkeypatch):
@@ -124,14 +126,44 @@ def test_explicit_resampling_wraps_angles_and_preserves_partial_support():
     assert profiles.attrs == original.attrs
 
 
-def test_default_hd_preserves_source_order_for_tied_peaks(monkeypatch):
+def test_partial_field_padding_is_explicit_and_independent_of_response_kind():
+    profiles = pd.DataFrame([[1., 5., 2.]], index=["unit"], columns=[30., 90., 150.])
+    profiles.attrs = {"range": [0, 180], "response_kind": "RF"}
+
+    missing = comparison.resample_profiles(profiles, range=[0, 360], bins=6)
+    zero = comparison.resample_profiles(profiles, range=[0, 360], bins=6, fill_value=0.)
+    assert missing.iloc[0, 3:].isna().all()
+    np.testing.assert_array_equal(zero.iloc[0, 3:], 0.)
+    np.testing.assert_array_equal(missing.iloc[0, :3], zero.iloc[0, :3])
+
+    missing = comparison.align_profiles(profiles, profiles.index, [0.])
+    zero = comparison.align_profiles(profiles, profiles.index, [0.], fill_value=0.)
+    outside = (missing.columns > -180) & (missing.columns < 0)
+    assert missing.iloc[0, outside].isna().all()
+    np.testing.assert_array_equal(zero.iloc[0, outside], 0.)
+    assert missing.loc["unit", -180.] == zero.loc["unit", -180.] == 2.
+
+
+def test_comparison_padding_is_chosen_separately_for_each_panel():
+    profiles = pd.DataFrame([[1., 5., 2.]], index=["unit"], columns=[30., 90., 150.])
+    profiles.attrs["range"] = [0, 180]
+    result = comparison.prepare_comparison(profiles, profiles, mode="aligned",
+                                           reference_fill_value=0.)
+    assert result["reference"].eq(0).any().any()
+    assert not result["reference"].isna().any().any()
+    assert result["matched"].isna().any().any()
+
+
+def test_explicit_hd_preparation_preserves_source_order_for_tied_peaks(monkeypatch):
     angles = np.arange(6., 360., 12.)
     values = np.ones(30)
     values[[0, 15]] = 9.  # 6 and -174 degrees tie; source order chooses 6.
     source = comparison.profile_table([values], [7], angles, probe="A")
     monkeypatch.setattr(comparison, "load_hd_profiles", lambda *args, **kwargs: source)
 
-    result = comparison.load_tc("unused.tc", mouse="m19", date="260827")
+    profiles = comparison.load_hd_profiles("unused.tc", probe="A")
+    profiles = comparison.resample_profiles(profiles, range=comparison.tcRange(False))
+    result = comparison.recording_profiles(profiles, mouse="m19", date="260827")
 
     np.testing.assert_array_equal(result.columns, source.columns)
     np.testing.assert_array_equal(result.iloc[0], values)
@@ -215,16 +247,18 @@ def test_combine_same_grid_reorders_by_angle_without_losing_values():
     assert not result.isna().any().any()
 
 
-def test_mixed_grids_require_explicit_range_and_keep_finite_rows_and_gaps():
+def test_mixed_grids_require_separate_resampling_and_keep_finite_rows_and_gaps():
     full = _table(np.arange(-174., 180., 12.), np.ones(30), mouse="m20", angular_range=[-180, 180])
     partial_values = np.linspace(1., 2., 30)
     partial_values[15] = np.nan
     partial = _table(np.arange(-145., 150., 10.), partial_values,
                      mouse="m14", angular_range=[-150, 150])
-    with pytest.raises(ValueError, match="range"):
+    with pytest.raises(ValueError, match="resample_profiles explicitly"):
         comparison.combine(full, partial)
 
-    result = comparison.combine(full, partial, range=[-180, 180])
+    prepared = [comparison.resample_profiles(table, range=[-180, 180])
+                for table in (full, partial)]
+    result = comparison.combine(*prepared)
 
     assert result.shape == (2, 30)
     assert set(result.index) == set(full.index) | set(partial.index)

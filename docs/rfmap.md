@@ -162,8 +162,13 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 ### Notebook 1-D CSVs
 
 `locate_rf.ipynb` and the RF comparison notebooks use `rf_only: bool = True`.
-Set it to `False` to sum all rows. Each notebook chooses its CSV filename and
-generates the file only when it is missing, then reads that exact file.
+Set it to `False` to use all rows. The RF pipeline and comparison notebooks
+call `Utils.tc_preparation` to prepare their chosen CSV only when it is missing,
+then read the prepared HD/RF CSVs with `load_tc`.
+`scripts/export_comparison_tcs.py` writes one explicitly requested comparison
+CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
+use these outputs under `data/tc_comparison/`; see
+[comparison preparation](hd_rf_ebc_comparison.md).
 
 Files live directly under the RF session's `data/` directory:
 
@@ -174,7 +179,7 @@ Files live directly under the RF session's `data/` directory:
 | Rows containing inhibitory RF | `regular_unitsSpikeCounts_260630_3_ProbeA_inhibitory_1d_rfonly.csv` |
 
 Each CSV contains only `unit_id` and the TC values, with native positions as
-column headers. The notebooks sum native response counts over their selected
+column headers. Preparation sums native response counts over the selected
 time window, then over the chosen rows. RF-only generation uses the unit IDs
 and masks in the 2-D result; an empty mask gives a missing TC. The saved 1-D
 detection masks remain separate `.npz` files.
@@ -182,24 +187,28 @@ detection masks remain separate `.npz` files.
 `save_rf_tc(prepared_maps, path)` writes already prepared singleton-time,
 singleton-spatial maps. `load_rf_tc(path)` only reads the specified CSV into a
 DataFrame indexed by unit ID. Neither function chooses filenames or runs
-detection. Comparison notebooks use one call to read and wrap the CSV:
+detection. Export the chosen projection with an explicit unit prefix before
+reading it in the paired comparison notebook:
 
 ```python
 from Utils.direction_comparison import load_tc
 
-m14_rf = load_tc(path, kind="RF")
+m14_rf = load_tc(comparison_csv, label="m14 RF", response_units="spike_count")
 ```
 
-This returns the existing TC DataFrame with native degree columns and response
-rows. Standard `<mouse>/<date>/<date>_<session>/data/...` paths supply
-`(mouse, date, probe, unit_id)` keys. Probe identity comes from a `ProbeA`/`ProbeB`
-directory or the generated CSV filename, including `_rfonly` and inhibitory
-variants. Explicit identity arguments remain available for nonstandard inputs.
-Files outside the recording layout keep `(probe, unit_id)` keys and their source
-identity; `concat(first, second)` retains that source identity when pooling them.
-`range`, when supplied for RF, only adds display labels. An existing CSV
-is reused as-is; changing the time window or detection does not automatically
-regenerate it. The loader never chooses `_rfonly` filenames.
+This reads native degree columns, response values, and the exact `unit_id`
+strings in the file, such as `m14:260609:A:23`. The loader does not infer identity
+or numerical units from paths. `range` only adds display labels. Select measured
+zero-bin limits with `rf_pick` on the native table; use `resample_profiles`
+explicitly if a common grid is needed before `concat`.
+
+The export CLI preserves the supplied RF CSV's projection and values and can
+select units using explicitly named saved detection files. The shared
+`prepare_rf_comparison` function also creates a missing native projection from
+the raw map and saved 2-D detection, using an explicit response window and
+`rf_only` setting. It never reruns detection. Existing comparison CSVs are
+skipped before opening inputs; use `--overwrite` or `overwrite=True` explicitly
+to replace them.
 
 `rf_only` also controls row selection in the locate notebook's mean-Hz
 previews and figure exports. `collapse_from_2d` independently controls whether

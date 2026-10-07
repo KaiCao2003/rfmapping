@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from Utils.rflocate.workflow import analyze_rf_file
+from Utils.tc_preparation import prepare_rf_comparison
 
 
 def main() -> None:
@@ -23,7 +24,14 @@ def main() -> None:
     parser.add_argument("--drop-bins", type=int, default=2)
     parser.add_argument("--collapse-from-2d", action="store_true")
     parser.add_argument("--no-wrap-x", action="store_true")
+    parser.add_argument("--unit-prefix", help="Comparison unit identity, e.g. mouse:date:probe")
+    parser.add_argument("--comparison-output-dir", type=Path,
+                        help="Write comparison CSVs here and native projections in its parent directory")
+    parser.add_argument("--all-rf-rows", action="store_true",
+                        help="Sum all spatial rows in comparison CSVs instead of only detected RF rows")
     args = parser.parse_args()
+    if (args.unit_prefix is None) != (args.comparison_output_dir is None):
+        parser.error("--unit-prefix and --comparison-output-dir must be supplied together")
     analyses = analyze_rf_file(
         args.source, probe=args.probe, rf_type=args.rf_type, time_range_s=tuple(args.time_range),
         max_zero_bins=args.max_zero_bins,
@@ -41,6 +49,21 @@ def main() -> None:
         )
         for name, path in result["output_paths"].items():
             print(f"{name}: {path}")
+        if args.comparison_output_dir is not None:
+            rf_only = not args.all_rf_rows
+            rf_suffix = "_rfonly" if rf_only else ""
+            projection_name = f"{args.source.stem}_Probe{args.probe}"
+            if rf_only and rf_type == "inhibitory":
+                projection_name += "_inhibitory"
+            projection_path = args.comparison_output_dir.parent / f"{projection_name}_1d{rf_suffix}.csv"
+            comparison_path = args.comparison_output_dir / f"rf_{rf_type}_x_2d{rf_suffix}_Probe{args.probe}.csv"
+            prepare_rf_comparison(
+                args.source, comparison_path, projection_path=projection_path,
+                detected_rf_path=result["output_paths"]["result_2d"],
+                time_range_s=tuple(args.time_range), rf_only=rf_only,
+                unit_prefix=args.unit_prefix,
+            )
+            print(f"Comparison CSV: {comparison_path}")
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import hd_pick, load_tc
+from Utils.direction_comparison import hd_pick, load_hd_profiles, recording_profiles, resample_profiles, tcRange
 from Utils.hd_rf_prediction import wrap_deg
 from Utils.json_tools import read_formatted_json
 from Utils.rflocate import load_rf, load_rfmap, rf_result_path
@@ -26,7 +26,10 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
     """
     hd_path, rf_path = Path(hd_path), Path(rf_path)
     recording = dict(mouse=mouse, date=date, probe=probe)
-    cohort = hd_pick(load_tc(hd_path, **recording, bins=30, smoothing_deg=0), hd_class=3)
+    cohort = load_hd_profiles(hd_path, probe=probe, bins=30, smoothing_deg=0)
+    cohort = resample_profiles(cohort, range=tcRange(False), bins=30)
+    cohort = recording_profiles(cohort, mouse=mouse, date=date, label="HD")
+    cohort = hd_pick(cohort, hd_class=3)
     unit_ids = cohort.index.get_level_values("unit_id").to_numpy(dtype=int)
     hd_profiles = cohort.copy()
     hd_profiles.index = unit_ids

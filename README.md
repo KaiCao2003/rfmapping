@@ -28,25 +28,59 @@ regular square-stimulus ON map; OFF and vertical-bar variants follow.
   `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
   are `hd_kappa_distribution`, `probe_position`,
   `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
-- Git tracks the raw-to-RF workflow, RF detection, and RF/tuning comparisons.
-  Independent EBC/spatial experiments, decoder/video workflows, recording-specific
-  calibration, generated results, and their tests stay on disk under `.gitignore`.
-  They are not included in a fresh clone.
+- Git tracks the raw-to-RF workflow, the operational HD/spatial pipeline,
+  RF/tuning comparisons, and the shared EBC/video source and tests used by those
+  workflows. `scripts/run_pipeline.sh` supplies the orchestration entrypoint;
+  `preprocessing/spikeinterface/` includes the canonical unit-artifact producer.
+  Independent decoder experiments, recording-specific calibration, raw data,
+  generated figures/videos, and local caches remain outside the source snapshot.
+  Notebook source is published without saved execution outputs.
 
 Analysis follows explicit stages: load native data, select units/bins,
 transform for display, calculate statistics, then plot. Pitch/RF selection
 returns an audit table; interpolation does not replace native peak values.
 Plotting functions consume prepared data and statistics.
 
+### Operational HD and spatial pipeline
+
+`scripts/run_pipeline.sh` includes the batch entrypoint previously maintained
+outside this repository. Edit its mouse, date, session lists, and Motive rotation
+representation before running it. It copies raw recordings, sorts/splits units,
+exports canonical unit positions and waveforms, then runs HD, spatial analysis,
+and EBC videos. It is a full processing run, not a validation command.
+
+The runner resolves Python source from this checkout. Set `PIPELINE_PYTHON`,
+`SPIKEINTERFACE_PYTHON`, and `RFMAPPING_PYTHON` to the prepared sorting,
+SpikeInterface, and RF analysis environments. `LOCAL_RAW_BASE` and
+`RECORDING_ROOT` select raw storage and the all-mice recording directory;
+`ANALYZER_OUTPUT_DIR` selects the analyzer cache. The bundled sorter is used by
+default; `PIPELINE_DIR` can select an explicitly maintained checkout.
+
+Motive analysis and YOLO tracking are separate applications. Supply their
+`MOTIVE_ANALYSIS_DIR`/`MOTIVE_PYTHON` and `YOLO_DIR`/`YOLO_PYTHON` settings.
+The EBC video stage also requires `ffmpeg` and `ffprobe`. Install this checkout's
+`analysis`, `waveform`, and `video` extras in the relevant analysis environments.
+The operational `scripts.spatial_cell_analysis` and `scripts.ebc_video` preserve
+their recording conventions; the root calibrated video entries use their own
+explicit configuration, described in [EBC videos](docs/ebc_videos.md).
+
 For existing analysis code, use these explicit calls:
 
 TCs share one DataFrame structure: degree columns and one response row per
-unit. `load_tc(path)` reads HD curves; `load_tc(path, kind="RF")` reads a saved
-RF CSV. Standard recording paths supply mouse, date, and probe identity, so
-callers do not need to repeat those values. Use `concat(m14_hd, m15_hd)` to stack
-curves with their identities. Files outside the recording layout retain source
-identity when concatenated. `plot_profiles(tc)` reads its label, angles, and
-response units from the object. See [TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
+unit. `load_tc(path)` reads the `unit_id` strings and numbers stored in any TC
+CSV. Callers supply labels and response units explicitly, such as
+`response_units="Hz"` or `"spike_count"`. HD and RF pipelines prepare comparison
+CSVs through `Utils.tc_preparation`, using an explicit unit prefix such as
+`m14:260609:A` to retain paired identity. Paired notebooks call the same
+preparation functions before reading from `data/tc_comparison/`: existing
+outputs are skipped before accessing any source data. `load_tc()` itself only
+reads CSVs. `scripts/export_comparison_tcs.py` exposes the shared HD/native RF
+exporters for explicit command-line use. Apply native RF zero-bin filtering
+before any explicit resampling.
+`concat(m14_hd, m15_hd)` only stacks tables sharing a degree grid; it never
+interpolates or invents unit identities. `plot_profiles(tc)` reads its label,
+angles, and response units from the object. See
+[TC loading and comparisons](docs/hd_rf_ebc_comparison.md).
 
 | Previous combined call | Current calls |
 | --- | --- |
