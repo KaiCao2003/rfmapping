@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
-from Utils.direction_comparison import load_tc
+from Utils.direction_comparison import tc_loader
 from Utils.rflocate import workflow as rf_analysis
 from Utils.rflocate.workflow import analyze_rf_file, save_rf_unit_lists
 from Utils.rflocate import RFMapList, RFResult, load_rf, load_rfmap, load_rf_tc, save_rf_tc
@@ -270,7 +270,7 @@ def test_cli_matches_direct_analysis_from_arbitrary_cwd_and_quoted_path(tmp_path
         sys.executable, str(script), str(source), "--probe", "C",
         "--time-range", "0.0", "0.1",
         "--max-zero-bins", "2", "--cluster-forming-z-2d", "1.2",
-        "--cluster-forming-z-1d", "0.8", "--drop-bins", "1", "--no-wrap-x",
+        "--cluster-forming-z-1d", "0.8", "--drop-bins", "1", "--no-wrap-x", "--no-plots",
     ]
     if collapse_from_2d:
         command.append("--collapse-from-2d")
@@ -278,6 +278,7 @@ def test_cli_matches_direct_analysis_from_arbitrary_cwd_and_quoted_path(tmp_path
         command.extend(("--rf-type", rf_type))
     completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=True)
     assert source.stem in completed.stdout
+    assert not source.with_name(f"{source.stem}_figures").exists()
     paths = _output_paths(source, rf_type)
     with np.load(paths["result_2d"], allow_pickle=False) as saved:
         np.testing.assert_array_equal(saved["mask_2d"], expected["mask_2d"])
@@ -305,22 +306,52 @@ def test_cli_qc_failure_returns_nonzero_without_outputs(tmp_path):
     assert set(tmp_path.iterdir()) == {source}
 
 
-def test_cli_both_saves_both_rf_types_with_their_default_thresholds(tmp_path):
-    source = tmp_path / "both.rfmap"
-    _write_indexed_source(source)
+@pytest.mark.parametrize("custom_plot_dir", [False, True])
+def test_cli_both_saves_both_rf_types_and_source_specific_plots(tmp_path, custom_plot_dir):
     script = Path(__file__).resolve().parents[1] / "locate_rf.py"
-    completed = subprocess.run(
-        [sys.executable, str(script), str(source), "--probe", "B", "--rf-type", "both"],
-        cwd=tmp_path, capture_output=True, text=True, check=True,
-    )
-    for rf_type, z_2d, z_1d in (("excitatory", 1.8, 1.0), ("inhibitory", 1.5, 0.75)):
-        assert f"ProbeB {rf_type}:" in completed.stdout
-        paths = _output_paths(source, rf_type)
-        assert all(path.is_file() for path in paths.values())
-        summary = json.loads(paths["summary"].read_text())
-        assert summary["parameters"]["rf_type"] == rf_type
-        assert summary["parameters"]["cluster_forming_z_2d"] == z_2d
-        assert summary["parameters"]["cluster_forming_z_1d"] == z_1d
+    cwd = tmp_path / "unrelated working directory"
+    cwd.mkdir()
+    source_names = ["both input 'quoted'.rfmap"]
+    if not custom_plot_dir:
+        source_names.append("other stimulus.rfmap")
+    previous_exports = {}
+    for source_name in source_names:
+        source = tmp_path / source_name
+        _write_indexed_source(source)
+        default_plot_dir = source.with_name(f"{source.stem}_figures")
+        plot_dir = tmp_path / "custom figures 'quoted'" if custom_plot_dir else default_plot_dir
+        command = [sys.executable, str(script), str(source), "--probe", "B", "--rf-type", "both"]
+        if custom_plot_dir:
+            command.extend(("--plot-output-dir", str(plot_dir)))
+        completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=True)
+        expected_exports = set()
+        for rf_type, z_2d, z_1d in (("excitatory", 1.8, 1.0), ("inhibitory", 1.5, 0.75)):
+            assert f"ProbeB {rf_type}:" in completed.stdout
+            paths = _output_paths(source, rf_type)
+            assert all(path.is_file() for path in paths.values())
+            summary = json.loads(paths["summary"].read_text())
+            assert summary["parameters"]["rf_type"] == rf_type
+            assert summary["parameters"]["cluster_forming_z_2d"] == z_2d
+            assert summary["parameters"]["cluster_forming_z_1d"] == z_1d
+            figure_dir = plot_dir / ("inhibitory/rfmap" if rf_type == "inhibitory" else "rfmap")
+            expected_exports.update(
+                figure_dir / f"{name}{suffix}"
+                for name in ("ProbeB/rf_summary", "units/B/7")
+                for suffix in (".png", ".svg")
+            )
+            assert not (figure_dir / "all").exists()
+        assert set(plot_dir.rglob("*.png")) | set(plot_dir.rglob("*.svg")) == expected_exports
+        for path in expected_exports:
+            assert path.stat().st_size > 0
+            if path.suffix == ".png":
+                with Image.open(path) as image:
+                    rgba = image.convert("RGBA")
+                    assert rgba.getextrema()[3] == (255, 255)
+                    assert rgba.getpixel((0, 0)) == (255, 255, 255, 255)
+        if custom_plot_dir:
+            assert not default_plot_dir.exists()
+        assert {path: path.read_bytes() for path in previous_exports} == previous_exports
+        previous_exports.update({path: path.read_bytes() for path in expected_exports})
 
 
 @pytest.mark.parametrize("rf_type", ["excitatory", "inhibitory"])
@@ -399,7 +430,7 @@ def test_notebook_saves_both_types_for_configured_probes(tmp_path, rf_type, is_s
             assert comparison_path.is_file() == is_save
             if is_save:
                 expected_comparison_paths.add(comparison_path)
-                comparison = load_tc(comparison_path)
+                comparison = tc_loader(comparison_path)
                 assert comparison.index.tolist() == [f"{tmp_path.name}:260630:{probe}:{unit_id}"]
                 np.testing.assert_array_equal(comparison.columns, loaded.columns)
                 np.testing.assert_allclose(

@@ -10,8 +10,9 @@ import pytest
 
 from Utils import direction_comparison as comparison
 from Utils import rflocate
+from Utils import tc_comparison as paired_comparison
 from Utils import tc_preparation as preparation
-from Utils.direction_comparison import load_rf_profiles, load_tc
+from Utils.direction_comparison import load_rf_profiles, tc_loader
 from Utils.rflocate import (
     RFMapList, RFResult, load_rf, load_rfmap,
     rf_result_path, save_rf, save_rf_tc,
@@ -46,7 +47,7 @@ def _csv_blocks(name, start_name="rf_csv_stem"):
                         and isinstance(statement.value, ast.Call)
                         and isinstance(statement.value.func, ast.Name)
                         and (statement.value.func.id == "load_rf_profiles"
-                             or (statement.value.func.id == "load_tc"
+                             or (statement.value.func.id == "tc_loader"
                                  and any(keyword.arg == "kind" and isinstance(keyword.value, ast.Constant)
                                          and keyword.value.value == "RF" for keyword in statement.value.keywords)))):
                     block = ast.Module(body=node.body[start:index + 1], type_ignores=[])
@@ -100,7 +101,9 @@ def test_paired_notebooks_prepare_explicit_sources_then_load_csv(name):
     path = Path(__file__).resolve().parents[1] / name
     notebook = json.loads(path.read_text())
     calls = set()
-    counts = {function: 0 for function in ("load_tc", "prepare_hd_tc", "prepare_rf_comparison")}
+    counts = {function: 0 for function in (
+        "tc_loader", "prepare_hd_tc", "prepare_rf_comparison", "prep_hd_tc", "prep_rf_tc",
+    )}
     for cell in notebook["cells"]:
         if cell["cell_type"] != "code":
             continue
@@ -114,38 +117,45 @@ def test_paired_notebooks_prepare_explicit_sources_then_load_csv(name):
                         counts[node.func.id] += 1
                 elif isinstance(node.func, ast.Attribute):
                     calls.add(node.func.attr)
-    assert counts["prepare_hd_tc"] == counts["prepare_rf_comparison"] > 0
-    assert counts["load_tc"] == counts["prepare_hd_tc"] + counts["prepare_rf_comparison"]
+    if name == "tc_comparison_pairs.ipynb":
+        assert counts["prep_hd_tc"] == counts["prep_rf_tc"] > 0
+        assert counts["tc_loader"] == counts["prepare_hd_tc"] == counts["prepare_rf_comparison"] == 0
+    else:
+        assert counts["prepare_hd_tc"] == counts["prepare_rf_comparison"] > 0
+        assert counts["tc_loader"] == counts["prepare_hd_tc"] + counts["prepare_rf_comparison"]
     assert not calls.intersection({
         "RFMapList", "load_rfmap", "load_rf", "load_hd_profiles", "save_rf_tc", "save_tc",
         "sum_to_1d", "detect_rf", "hd_pick", "select_rf_profiles", "update_hd_classification",
     })
 
 
-def _paired_source_specs(prepared, namespace):
-    """Read the notebook's actual source declarations without loading raw data."""
+def _seed_paired_comparison_csvs(prepared, namespace, monkeypatch):
+    """Seed the paths requested by the notebook and its actual preparation helpers."""
     specs = []
 
     def collect(kind):
         def record(source, output, **options):
             specs.append((kind, source, output, options))
+            prefix = options["unit_prefix"]
+            values = np.tile(np.arange(1., 31.), (4, 1))
+            values[0, 5] = np.nan
+            unit_ids = [23, 7, 99, 42] if kind == "HD" else [7, 23, 99, 11]
+            if kind == "RF":
+                values[0, 2:4] = [np.nan, 0.]
+                values[1, :2] = 0.
+                values[2, :3] = 0.
+            output.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(values, columns=np.arange(-174., 180., 12.),
+                         index=pd.Index([f"{prefix}:{unit}" for unit in unit_ids], name="unit_id")).to_csv(output)
             return output
         return record
 
-    names = {"hd_session_dir", "hd_csv_path", "rf_session_dir", "rf_source", "rf_csv_path"}
     scope = {**namespace, "prepare_hd_tc": collect("HD"), "prepare_rf_comparison": collect("RF")}
-    for tree in prepared:
-        statements = []
-        for node in tree.body:
-            if isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id in names for target in node.targets
-            ):
-                statements.append(node)
-            elif (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                  and isinstance(node.value.func, ast.Name)
-                  and node.value.func.id in {"prepare_hd_tc", "prepare_rf_comparison"}):
-                statements.append(node)
-        exec(compile(ast.Module(body=statements, type_ignores=[]), "source declarations", "exec"), scope)
+    with monkeypatch.context() as patch:
+        patch.setattr(preparation, "prepare_hd_tc", scope["prepare_hd_tc"])
+        patch.setattr(preparation, "prepare_rf_comparison", scope["prepare_rf_comparison"])
+        for tree in prepared:
+            exec(compile(tree, "comparison cache fixtures", "exec"), scope)
     return specs
 
 
@@ -163,7 +173,8 @@ def test_paired_comparison_reuses_existing_csvs_for_all_declared_sections(
                 statement.value = ast.parse(f"_config[{target.id!r}]", mode="eval").body
     namespace = {"_config": overrides}
     exec(compile(ast.fix_missing_locations(config), str(path), "exec"), namespace)
-    specs = _paired_source_specs(prepared, namespace)
+    namespace.update(prep_hd_tc=paired_comparison.prep_hd_tc, prep_rf_tc=paired_comparison.prep_rf_tc)
+    specs = _seed_paired_comparison_csvs(prepared, namespace, monkeypatch)
     prefixes = {options["unit_prefix"] for _, _, _, options in specs}
     if name == "tc_comparison_pairs.ipynb":
         assert "m21:261006:A" in prefixes
@@ -172,17 +183,9 @@ def test_paired_comparison_reuses_existing_csvs_for_all_declared_sections(
     }
     saved = {}
     for kind, source, output, options in specs:
-        prefix = options["unit_prefix"]
-        values = np.tile(np.arange(1., 31.), (4, 1))
-        values[0, 5] = np.nan
-        unit_ids = [23, 7, 99, 42] if kind == "HD" else [7, 23, 99, 11]
         if kind == "RF":
-            values[0, 2:4] = [np.nan, 0.]
-            values[1, :2] = 0.
-            values[2, :3] = 0.
-        output.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(values, columns=np.arange(-174., 180., 12.),
-                     index=pd.Index([f"{prefix}:{unit}" for unit in unit_ids], name="unit_id")).to_csv(output)
+            assert options["rf_only"] is rf_only
+            assert options["time_range_s"] == (0., .2)
         saved[output] = output.read_bytes()
         assert not source.exists()
 
@@ -211,12 +214,17 @@ def test_paired_comparison_reuses_existing_csvs_for_all_declared_sections(
         assert hd.index.names == rf.index.names == ["unit_id"]
         assert hd.index.tolist() == rf.index.tolist() == unit_keys
         assert unit_keys
-        assert {unit.rsplit(":", 1)[-1] for unit in unit_keys} == {"23", "7"}
+        assert [unit.rsplit(":", 1)[-1] for unit in unit_keys] == ["23", "7"] * (len(unit_keys) // 2)
+        assert {unit.rsplit(":", 1)[-1] for unit in raw_hd.index} == {"23", "7", "99", "42"}
+        assert {unit.rsplit(":", 1)[-1] for unit in raw_rf.index} == {"7", "23", "11"}
         for table, raw in ((hd, raw_hd), (rf, raw_rf)):
             values = raw.loc[unit_keys].to_numpy()
             np.testing.assert_allclose(table.to_numpy(), values / np.nanmax(values, axis=1)[:, None], equal_nan=True)
-        assert raw_hd.attrs["response_units"] == "Hz"
-        assert raw_rf.attrs["response_units"] == "spike_count"
+        if name == "tc_comparison_pairs.ipynb":
+            assert raw_hd.attrs["response_units"] == raw_rf.attrs["response_units"] == "normalized"
+        else:
+            assert raw_hd.attrs["response_units"] == "Hz"
+            assert raw_rf.attrs["response_units"] == "spike_count"
     assert set(tmp_path.rglob("*.*")) == set(saved)
     assert all(file.read_bytes() == contents for file, contents in saved.items())
 
@@ -247,7 +255,7 @@ def test_comparison_csv_generation_and_existing_file_read(tmp_path, monkeypatch,
     monkeypatch.setattr(_detector, "detect_rf", unexpected)
     namespace = dict(
         RFMapList=RFMapList, load_rfmap=load_rfmap, load_rf=load_rf,
-        load_tc=load_tc, load_rf_profiles=load_rf_profiles,
+        tc_loader=tc_loader, load_rf_profiles=load_rf_profiles,
         rf_range_overrides={"m14": [-150, 150]}, tcRange=comparison.tcRange,
         save_rf_tc=save_rf_tc, rf_result_path=rf_result_path,
         rf_source=source, rfmap_file=source,

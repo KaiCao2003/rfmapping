@@ -7,11 +7,11 @@ Run project code on `hhw9l84` with `~/.virtualenvs/rfmapping`.
 
 ```python
 from Utils.direction_comparison import (
-    load_tc, rf_pick, concat, resample_profiles,
+    tc_loader, rf_pick, concat, resample_profiles,
     normalize_tc, zscore_tc, prepare_comparison, plot_comparison_heatmaps, tcRange,
 )
-hd = load_tc(hd_class3_csv, label="HD", range=tcRange(False), response_units="Hz")
-rf_native = load_tc(rf_2d_csv, label="RF", response_units="spike_count")
+hd = tc_loader(hd_class3_csv, label="HD", range=tcRange(False), response_units="Hz")
+rf_native = tc_loader(rf_2d_csv, label="RF", response_units="spike_count")
 rf_selected = rf_pick(rf_native, max_zero_bins=2)
 rf = resample_profiles(rf_selected, range=tcRange(True), bins=30, fill_value=0)
 units = hd.index.intersection(rf.index)
@@ -27,11 +27,20 @@ plot_comparison_heatmaps(aligned, **plot_options)
 plot_comparison_heatmaps(summed, **plot_options)
 ```
 
-The paired notebooks explicitly prepare each requested comparison CSV before
-calling `load_tc()`. Preparation skips existing outputs before accessing source
+`tc_comparison_pairs.ipynb` uses `Utils.tc_comparison.prep_hd_tc` and `prep_rf_tc`
+with mouse, date, probe, and session IDs. These helpers prepare and read each
+comparison CSV, then return normalized curves before shared-unit selection.
+RF zero-bin filtering uses the native grid before resampling. The inhibitory
+notebook calls the preparation functions and `tc_loader()` directly.
+Preparation skips existing outputs before accessing source
 data. Missing HD tables are generated from saved `.tc` data; missing RF tables
 use saved native projections or prepare them from RF maps and existing detection
-results. `load_tc()` itself only reads CSVs.
+results. `tc_loader()` itself only reads CSVs.
+
+`calculate_tc_statistics(hd, rf)` matches shared units in HD table order and
+prepares both reference orders for native, aligned, and summed comparisons,
+plus peak-angle and peak-sum statistics. `plot_tc_comparison(hd, rf, stats)`
+plots those prepared results without repeating the statistics.
 
 The HD tuning notebooks, HD regeneration script, and Basler rebuild pipeline
 call `prepare_hd_tc()` after saving tuning curves. The RF notebook and MATLAB
@@ -103,7 +112,7 @@ no part of it is inferred from the path.
 
 ## Tables, selection, and resampling
 
-`load_tc(path)` reads only CSVs and returns a DataFrame with:
+`tc_loader(path)` reads only CSVs and returns a DataFrame with:
 
 - a simple `unit_id` index containing the exact opaque strings in the file;
 - the saved degree columns, values, missing bins, and row order;
@@ -120,7 +129,7 @@ curves. Call it on native RF curves before interpolation or smoothing. Missing
 bins remain NaN and do not count as zeros; the filter imposes no missing-bin
 limit. `None` disables the zero-bin limit. Selection does not write any files.
 
-`range` supplied to `load_tc` only records plotting labels. To change the grid,
+`range` supplied to `tc_loader` only records plotting labels. To change the grid,
 call `resample_profiles(table, range=..., bins=...)` explicitly. It wraps output
 angles to [-180, 180) and interpolates onto the requested grid, preserving source
 order when that grid already matches. `tcRange(True)` supplies full-circle ego
@@ -136,7 +145,7 @@ Missing responses inside the measured support remain NaN. Partial angular
 ranges do not connect their endpoints by circular interpolation or smoothing.
 Full-circle source grids use periodic interpolation.
 
-The source readers remain separate from `load_tc`. `load_hd_profiles` reads
+The source readers remain separate from `tc_loader`. `load_hd_profiles` reads
 original HD `.tc` data, rebins counts and occupancy into rates, and classifies
 native rates before rebinning or optional smoothing. Class 3 uses the existing
 Rayleigh, shuffle, and von Mises κ criteria. Class 2 passes both significance
@@ -169,8 +178,8 @@ before pooling:
 
 ```python
 hd_all = concat(hd_m14, hd_m19, label="Pooled HD")
-rf_m14_native = load_tc(m14_rf_csv, label="m14 RF", response_units="spike_count")
-rf_m19_native = load_tc(m19_rf_csv, label="m19 RF", response_units="spike_count")
+rf_m14_native = tc_loader(m14_rf_csv, label="m14 RF", response_units="spike_count")
+rf_m19_native = tc_loader(m19_rf_csv, label="m19 RF", response_units="spike_count")
 rf_m14 = resample_profiles(
     rf_pick(rf_m14_native, max_zero_bins=2),
     range=tcRange(True), bins=30, fill_value=0,

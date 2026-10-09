@@ -11,7 +11,7 @@ import pytest
 import locate_rf
 from Utils import direction_comparison as comparison
 from Utils import tc_preparation as preparation
-from Utils.direction_comparison import load_tc
+from Utils.direction_comparison import tc_loader
 from Utils.rflocate import RFResult, load_rf_tc, save_rf
 from Utils.rflocate import _detector
 
@@ -59,7 +59,7 @@ def test_missing_rf_comparison_generates_counts_then_selects_saved_units(
 
     assert returned == output
     native = load_rf_tc(projection)
-    actual = load_tc(output)
+    actual = tc_loader(output)
     expected_ids = [23, 7] if rf_only else [7, 23]
     expected_values = [[88, 132], [110, 220]] if rf_only else [[154, 286], [308, 572]]
     assert actual.index.tolist() == [f"mouse:day:A:{unit}" for unit in expected_ids]
@@ -93,7 +93,7 @@ def test_existing_native_projection_is_reused_without_raw_map(tmp_path, monkeypa
     )
     expected = load_rf_tc(projection).loc[[7, 23]]
     expected.index = pd.Index(["paired:7", "paired:23"], name="unit_id")
-    pd.testing.assert_frame_equal(load_tc(output), expected)
+    pd.testing.assert_frame_equal(tc_loader(output), expected)
     assert projection.read_bytes() == before
     assert not source.exists()
 
@@ -144,7 +144,7 @@ def test_missing_hd_csv_rebins_unsmoothed_counts_and_selects_class(tmp_path, hd_
     returned = preparation.prepare_hd_tc(
         source, output, bins=6, hd_class=hd_class, unit_prefix="paired",
     )
-    actual = load_tc(output)
+    actual = tc_loader(output)
     expected = counts.reshape(3, 6, 30).sum(axis=2) / occupancy.reshape(6, 30).sum(axis=1)
     expected_ids = ["paired:23", "paired:7", "paired:99"]
     if hd_class is not None:
@@ -167,7 +167,7 @@ def test_rf_preparation_overwrite_is_explicit_and_retains_native_values(tmp_path
     preparation.prepare_rf_tc(source, output, unit_prefix="second", overwrite=True)
     expected = load_rf_tc(source).astype(float)
     expected.index = pd.Index(["second:23", "second:7"], name="unit_id")
-    pd.testing.assert_frame_equal(load_tc(output), expected)
+    pd.testing.assert_frame_equal(tc_loader(output), expected)
 
 
 @pytest.mark.parametrize("output_input", ["source", "projection", "detected"])
@@ -233,7 +233,7 @@ def test_locate_rf_cli_prepares_both_comparisons_from_saved_detections(
     arguments = [
         "locate_rf.py", str(source), "--probe", "B", "--rf-type", "both",
         "--time-range", "0", ".2", "--unit-prefix", "m21:261006:B",
-        "--comparison-output-dir", str(output_dir),
+        "--comparison-output-dir", str(output_dir), "--no-plots",
     ]
     if not rf_only:
         arguments.append("--all-rf-rows")
@@ -246,7 +246,7 @@ def test_locate_rf_cli_prepares_both_comparisons_from_saved_detections(
         projection = output_dir.parent / f"source_ProbeB{native_suffix}_1d{suffix}.csv"
         output = output_dir / f"rf_{kind}_x_2d{suffix}_ProbeB.csv"
         assert projection.is_file()
-        actual = load_tc(output)
+        actual = tc_loader(output)
         expected_ids = [23, 7] if rf_only and kind == "excitatory" else [7, 23]
         if rf_only:
             expected = [[88, 132], [110, 220]] if kind == "excitatory" else [[11, 22], [66, 88]]

@@ -66,7 +66,7 @@ def test_load_tc_preserves_opaque_ids_and_native_data_without_guessed_metadata(
     tc_csv, forbid_csv_analysis,
 ):
     before = tc_csv.read_bytes()
-    table = comparison.load_tc(tc_csv)
+    table = comparison.tc_loader(tc_csv)
     _assert_native_csv(table)
     assert table.attrs == {}
     assert tc_csv.read_bytes() == before
@@ -74,8 +74,8 @@ def test_load_tc_preserves_opaque_ids_and_native_data_without_guessed_metadata(
 
 
 def test_load_tc_metadata_only_describes_values(tc_csv, forbid_csv_analysis):
-    table = comparison.load_tc(tc_csv, label="Chosen counts", range=[-180, 180],
-                               response_units="spike_count")
+    table = comparison.tc_loader(tc_csv, label="Chosen counts", range=[-180, 180],
+                                 response_units="spike_count")
     _assert_native_csv(table)
     assert table.attrs == {
         "label": "Chosen counts", "range": [-180, 180], "response_units": "spike_count",
@@ -92,12 +92,12 @@ def test_relocation_and_filename_never_change_identity(tc_csv, forbid_csv_analys
     path = tc_csv.parent / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(tc_csv.read_bytes())
-    original = comparison.load_tc(tc_csv)
-    relocated = comparison.load_tc(path)
+    original = comparison.tc_loader(tc_csv)
+    relocated = comparison.tc_loader(path)
     pd.testing.assert_frame_equal(relocated, original)
     assert relocated.attrs == original.attrs
     monkeypatch.chdir(path.parent)
-    pd.testing.assert_frame_equal(comparison.load_tc(path.name), original)
+    pd.testing.assert_frame_equal(comparison.tc_loader(path.name), original)
 
 
 @pytest.mark.parametrize("option", [
@@ -105,13 +105,13 @@ def test_relocation_and_filename_never_change_identity(tc_csv, forbid_csv_analys
 ])
 def test_raw_reader_and_identity_options_are_not_supported(tc_csv, option):
     with pytest.raises(TypeError):
-        comparison.load_tc(tc_csv, **option)
+        comparison.tc_loader(tc_csv, **option)
 
 
 def test_missing_csv_raises_for_exact_path_without_fallback(tmp_path, forbid_csv_analysis):
     path = tmp_path / "missing.csv"
     with pytest.raises(FileNotFoundError) as exc:
-        comparison.load_tc(path)
+        comparison.tc_loader(path)
     assert Path(exc.value.filename) == path
     assert list(tmp_path.iterdir()) == []
 
@@ -120,7 +120,7 @@ def test_load_tc_does_not_dispatch_raw_files(tmp_path, forbid_csv_analysis):
     path = tmp_path / "tuning_curves.tc"
     path.write_text('{"unit_id": [7], "spike_counts": [[1, 2]]}', encoding="utf-8")
     with pytest.raises(KeyError):
-        comparison.load_tc(path)
+        comparison.tc_loader(path)
 
 
 def test_csv_exact_round_trip_preserves_complete_ids_values_and_angles(tmp_path, forbid_csv_analysis):
@@ -136,7 +136,7 @@ def test_csv_exact_round_trip_preserves_complete_ids_values_and_angles(tmp_path,
     original = table.copy(deep=True)
     path = tmp_path / "prepared.csv"
     comparison.save_tc(table, path)
-    loaded = comparison.load_tc(path)
+    loaded = comparison.tc_loader(path)
     np.testing.assert_array_equal(loaded.to_numpy(), values)
     pd.testing.assert_index_equal(loaded.index, index)
     np.testing.assert_array_equal(loaded.columns, angles)
@@ -172,7 +172,7 @@ def test_save_tc_rejects_duplicate_serialized_ids(tmp_path, ids):
 
 
 def test_concat_only_stacks_and_reorders_matching_degrees(tc_csv, forbid_csv_analysis):
-    first = comparison.load_tc(tc_csv, label="First", response_units="Hz")
+    first = comparison.tc_loader(tc_csv, label="First", response_units="Hz")
     second = pd.DataFrame([[4., 0., np.nan], [0., 6., 8.]],
                           index=pd.Index(["m15:260630:B:23", "m15:260630:B:8"], name="unit_id"),
                           columns=[-12.5, -170., 210.125])
@@ -189,7 +189,7 @@ def test_concat_only_stacks_and_reorders_matching_degrees(tc_csv, forbid_csv_ana
 
 
 def test_concat_does_not_disambiguate_duplicates_by_source_path(tc_csv, forbid_csv_analysis):
-    first = comparison.load_tc(tc_csv)
+    first = comparison.tc_loader(tc_csv)
     second = first.copy()
     first.attrs["source"] = "/first.csv"
     second.attrs["source"] = "/second.csv"
@@ -198,7 +198,7 @@ def test_concat_does_not_disambiguate_duplicates_by_source_path(tc_csv, forbid_c
 
 
 def test_concat_rejects_different_grids_without_transforming(tc_csv, forbid_csv_analysis):
-    first = comparison.load_tc(tc_csv)
+    first = comparison.tc_loader(tc_csv)
     second = pd.DataFrame([[1., 2.]], index=["another"], columns=[-90., 90.])
     with pytest.raises(ValueError, match="resample_profiles explicitly"):
         comparison.concat(first, second)
@@ -238,7 +238,7 @@ def test_concat_merges_only_explicit_metadata():
 
 
 def test_rf_pick_uses_supplied_native_values_and_does_not_need_cached_qc(tc_csv):
-    table = comparison.load_tc(tc_csv)
+    table = comparison.tc_loader(tc_csv)
     selected = comparison.rf_pick(table, max_zero_bins=1)
     assert selected.index.tolist() == ["m14:260609:B:23", "007"]
     assert selected.attrs == {}
@@ -254,7 +254,7 @@ def test_rf_pick_uses_supplied_native_values_and_does_not_need_cached_qc(tc_csv)
 ])
 def test_plot_profiles_uses_only_explicit_units(tc_csv, forbid_csv_analysis,
                                                response_units, colorbar_label):
-    table = comparison.load_tc(tc_csv, label="Chosen", response_units=response_units)
+    table = comparison.tc_loader(tc_csv, label="Chosen", response_units=response_units)
     original = table.copy(deep=True)
     figure, axis = comparison.plot_profiles(table, show=False)
     try:
@@ -274,7 +274,7 @@ def test_plot_profiles_uses_only_explicit_units(tc_csv, forbid_csv_analysis,
     (comparison.zscore_tc, "zscore", "Z-score (SD)"),
 ])
 def test_explicit_transforms_update_result_units_only(tc_csv, transform, response_units, colorbar_label):
-    raw = comparison.load_tc(tc_csv, label="Chosen", response_units="spike_count")
+    raw = comparison.tc_loader(tc_csv, label="Chosen", response_units="spike_count")
     transformed = transform(raw)
     assert transformed.attrs["response_units"] == response_units
     assert raw.attrs["response_units"] == "spike_count"

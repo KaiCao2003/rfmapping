@@ -164,7 +164,7 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 `locate_rf.ipynb` and the RF comparison notebooks use `rf_only: bool = True`.
 Set it to `False` to use all rows. The RF pipeline and comparison notebooks
 call `Utils.tc_preparation` to prepare their chosen CSV only when it is missing,
-then read the prepared HD/RF CSVs with `load_tc`.
+then read the prepared HD/RF CSVs with `tc_loader`.
 `scripts/export_comparison_tcs.py` writes one explicitly requested comparison
 CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
 use these outputs under `data/tc_comparison/`; see
@@ -191,9 +191,9 @@ detection. Export the chosen projection with an explicit unit prefix before
 reading it in the paired comparison notebook:
 
 ```python
-from Utils.direction_comparison import load_tc
+from Utils.direction_comparison import tc_loader
 
-m14_rf = load_tc(comparison_csv, label="m14 RF", response_units="spike_count")
+m14_rf = tc_loader(comparison_csv, label="m14 RF", response_units="spike_count")
 ```
 
 This reads native degree columns, response values, and the exact `unit_id`

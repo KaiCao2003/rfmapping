@@ -584,7 +584,7 @@ def save_tc(table, path):
         writer.writerows([unit_id, *row] for unit_id, row in zip(unit_ids, table.to_numpy(), strict=True))
 
 
-def load_tc(path, *, label=None, range: list[int] | None = None, response_units=None):
+def tc_loader(path, *, label=None, range: list[int] | None = None, response_units=None):
     """Read a numerical CSV with opaque unit IDs and degree columns.
 
     Identity comes only from ``unit_id`` in the file. Optional metadata describes
@@ -671,7 +671,7 @@ class TuningCurveCollection:
     def load_tc(self, path, *, prefix, label=None, range: list[int] | None = None,
                 response_units=None):
         """Read a TC CSV and register it under the supplied dataset name."""
-        table = load_tc(path, label=label, range=range, response_units=response_units)
+        table = tc_loader(path, label=label, range=range, response_units=response_units)
         self.profiles[prefix] = table
         return table
 
