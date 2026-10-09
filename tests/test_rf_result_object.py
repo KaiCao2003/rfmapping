@@ -97,7 +97,7 @@ def test_projection_preserves_units_singleton_axes_and_empty_rf(axis, expected):
 @pytest.mark.parametrize("field, value, message", [
     ("unit_ids", [7, 7], "unique"),
     ("mask_2d", np.ones((2, 3, 2)) * 2, "zero and one"),
-    ("center_2d", np.zeros((2, 3, 2)), "exactly one"),
+    ("center_2d", np.zeros((2, 3, 2)), "at least one"),
     ("manifest", {"threshold": float("nan")}, "JSON-compatible"),
     ("schema_version", 99, "schema version"),
     ("cache_key", "", "non-empty string"),

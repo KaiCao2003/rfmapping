@@ -1,7 +1,8 @@
 """Recompute Probe A HD tuning curves for the selected clockwise-HD sessions.
 
-Run on hhw9l84 with the rfmapping virtualenv. --apply overwrites only the
-tuning_curves.tc and hd_cells_{1,2}.npy outputs for sessions that can be run.
+Run on hhw9l84 with the rfmapping virtualenv. --apply overwrites the
+tuning_curves.tc and hd_cells_{1,2,3}.npy outputs for sessions that can be run,
+and prepares the Class-3 comparison CSV only when it is missing.
 Missing preprocessing caches are generated in /tmp, not in recording folders.
 """
 
@@ -23,6 +24,7 @@ from Utils.json_tools import read_formatted_json, write_formatted_json
 from Utils.load_files import get_interval_pairs
 from Utils.recording import gen_recording_interval_table
 from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, tuning_curve
+from Utils.tc_preparation import prepare_hd_tc
 
 
 SESSIONS = {
@@ -171,6 +173,12 @@ def run_session(session_dir: Path, kilosort_dir: Path, file_names: dict) -> tupl
             "head_direction_source": str(hd_path),
             "ttl_qc": ttl_qc,
         },
+    )
+    prepare_hd_tc(
+        data_dir / "tuning_curves" / f"Probe{PROBE}" / "tuning_curves.tc",
+        data_dir / "tc_comparison" / f"hd_class3_Probe{PROBE}.csv",
+        bins=30, hd_class=3,
+        unit_prefix=f"{session_dir.parent.parent.name}:{session_dir.parent.name}:{PROBE}",
     )
     return len(result["unit_id"]), len(hd_frames)
 

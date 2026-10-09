@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from Utils.direction_comparison import (
-    hd_pick, load_tc, recording_profiles, resample_profiles, rf_pick, rf_profiles,
+    hd_pick, load_hd_profiles, recording_profiles, resample_profiles, rf_pick, rf_profiles,
     select_rf_profiles, tcRange,
 )
 from Utils.plotting import LIGHT_PLOT_STYLE
@@ -56,8 +56,9 @@ def collect_units(root):
             np.testing.assert_allclose(rates, np.asarray(data["spike_counts"]) / occupancy)
             angles = np.deg2rad((edges[:-1] + edges[1:]) / 2)
 
-            recording = dict(mouse=mouse, date=date, probe=probe)
-            hd = load_tc(tc_path, **recording)
+            hd = load_hd_profiles(tc_path, probe=probe, bins=30, smoothing_deg=0)
+            hd = resample_profiles(hd, range=tcRange(False), bins=30)
+            hd = recording_profiles(hd, mouse=mouse, date=date, label="HD")
             # This cutoff audit includes both classes that pass the significance tests.
             hd_significant = hd_pick(hd, hd_class=(2, 3))
             raw_rf = load_rfmap(rf_path)
@@ -65,10 +66,9 @@ def collect_units(root):
             maps = rf_rates.mean_rate(0., .2, show_progress=False).sum_to_1d(axis="x")
             profiles = rf_profiles(maps, probe=probe)
             profiles = select_rf_profiles(profiles, load_rf(rf_result_path(rf_path)))
-            rf = recording_profiles(
-                resample_profiles(profiles, range=tcRange(True)), mouse=mouse, date=date,
-            )
-            paired = hd_significant.index.intersection(rf_pick(rf, max_zero_bins=2).index)
+            rf = rf_pick(profiles, max_zero_bins=2)
+            rf = recording_profiles(rf, mouse=mouse, date=date)
+            paired = hd_significant.index.intersection(rf.index)
             for index, (unit_id, curve) in enumerate(zip(data["unit_id"], rates, strict=True)):
                 key = (mouse, str(date), probe, unit_id)
                 info = data["unit_data"]
@@ -96,7 +96,9 @@ def plot_distribution(units, output):
     assert np.isfinite(hd.kappa).all()
     upper = np.ceil(hd.kappa.max())
     edges = np.arange(0, upper + .25, .25)
-    colors = ("#2874A6", "#148A80", "#B57929", "#8064AF")
+    groups = list(units.groupby(["mouse", "date", "hd_session", "rf_session"], sort=False))
+    ncols = min(2, len(groups))
+    nrows = (len(groups) + ncols - 1) // ncols
     with plt.rc_context(LIGHT_PLOT_STYLE | {
         "figure.facecolor": "white", "axes.facecolor": "white",
         "savefig.facecolor": "white", "savefig.transparent": False,
@@ -104,17 +106,21 @@ def plot_distribution(units, output):
         "xtick.color": "#222222", "ytick.color": "#222222",
         "font.size": 10,
     }):
-        fig, axes = plt.subplots(2, 2, figsize=(10.6, 6.5), sharex=True)
-        for ax, recording, color in zip(axes.flat, RECORDINGS, colors, strict=True):
-            mouse, date, hd_session, rf_session, probes = recording
-            group = hd.loc[hd.mouse == mouse]
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        fig, axes = plt.subplots(nrows, ncols, figsize=(10.6, max(6.5, 3.25 * nrows)),
+                                 sharex=True, squeeze=False)
+        for index, (ax, (recording, source_units)) in enumerate(
+                zip(axes.flat[:len(groups)], groups, strict=True)):
+            mouse, date, hd_session, rf_session = recording
+            color = colors[index % len(colors)]
+            group = source_units.loc[source_units.passes_rayleigh_and_shuffle]
             paired = group.loc[group.paired_rf_unit, "kappa"]
             ax.hist(group.kappa, bins=edges, color=color, edgecolor="white", linewidth=.5)
             ax.plot(paired, np.full(len(paired), .035), "|", color="#17212B",
                     markersize=9, markeredgewidth=1.1, transform=ax.get_xaxis_transform())
             ax.axvline(group.kappa.median(), color=color, linestyle="--", linewidth=1)
-            probe_label = "+".join(probes)
-            ax.set_title(f"{mouse} · {str(date)[2:]}_{rf_session} · Probe {probe_label}",
+            probe_label = "+".join(source_units.probe.unique())
+            ax.set_title(f"{mouse} · {date} · RF {rf_session} / HD {hd_session} · Probe {probe_label}",
                          loc="left", fontweight="bold", pad=10)
             ax.text(.98, .94, f"Class 2 + 3: n = {len(group)}\nPaired RF: n = {len(paired)}\n"
                     f"Median κ = {group.kappa.median():.3f}",
@@ -124,14 +130,16 @@ def plot_distribution(units, output):
             ax.spines[["top", "right"]].set_visible(False)
             ax.set_axisbelow(True)
             ax.grid(axis="y", color="#E8EBEE", linewidth=.6)
-        for ax in axes[-1]:
             ax.set_xlabel("von Mises concentration κ")
+            ax.tick_params(axis="x", labelbottom=True)
+        for ax in axes.flat[len(groups):]:
+            ax.remove()
         fig.suptitle("HD concentration before choosing a cutoff", x=.07, ha="left",
                      fontsize=16, fontweight="bold", y=.98)
         fig.text(.07, .927, "Class 2 + 3 = Rayleigh + shuffle (both p ≤ 0.01)  ·  Bars: before κ cutoff  ·  Black ticks: paired RF subset",
                  fontsize=9, color="#404850")
         fig.text(.07, .015, "κ from normalized 180-bin HD rates; occupancy corrected, no smoothing or baseline subtraction.\n"
-                 "HD source sessions: m14/m15 = 1; m19/m20 = 9. Dashed lines mark medians; histogram bin width = 0.25.",
+                 "Source sessions and probes are shown in each panel. Dashed lines mark medians; histogram bin width = 0.25.",
                  fontsize=8.5, color="#404850")
         fig.subplots_adjust(left=.07, right=.98, top=.84, bottom=.15, hspace=.42, wspace=.2)
         for suffix in ("png", "svg"):
@@ -149,7 +157,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     units.to_csv(args.output / "hd_kappa_units.csv", index=False)
     hd = units.loc[units.passes_rayleigh_and_shuffle]
-    summary = hd.groupby("mouse", sort=False).agg(
+    summary = hd.groupby(["mouse", "date", "hd_session", "rf_session"], sort=False).agg(
         n=("kappa", "size"), paired_n=("paired_rf_unit", "sum"),
         minimum=("kappa", "min"), median=("kappa", "median"), maximum=("kappa", "max"),
     )

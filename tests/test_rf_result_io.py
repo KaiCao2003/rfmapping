@@ -70,7 +70,7 @@ def test_saved_result_reader_rejects_malformed_archive(tmp_path, corruption):
     elif corruption == "unit_ids":
         arrays["unit_ids"] = np.asarray([23, 23])
     elif corruption == "center":
-        arrays["center_2d"][0, 0, 0] = 1
+        arrays["center_2d"][0, 0, 2] = 1
     else:
         del arrays["manifest_json"]
     np.savez(path, **arrays)

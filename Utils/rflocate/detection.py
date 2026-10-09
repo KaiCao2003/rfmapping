@@ -6,7 +6,7 @@ from typing import Any, TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
-from ._detector import _RF_DETECTION_OPTION_DEFAULTS
+from ._detector import _RF_DETECTION_OPTION_DEFAULTS, _label_clusters
 from ._validation import (
     _EDGE_ATOL_S,
     _axis_name,
@@ -45,7 +45,7 @@ def _center_only_mask(
         wrap_x: bool,
         show_progress: bool,
 ) -> NDArray[np.uint8]:
-    """Reduce each non-empty final RF to one response-weighted grid bin."""
+    """Select one response-weighted grid bin per connected final RF sector."""
 
     final_mask = np.asarray(result["final_mask"], dtype=bool)
     response_map = np.asarray(result["response_map"], dtype=np.float64)
@@ -78,42 +78,43 @@ def _center_only_mask(
     n_x = mask_batch.shape[2]
     for unit_index in unit_indices:
         unit_mask = mask_batch[unit_index]
-        candidate_flat = np.flatnonzero(unit_mask)
-        candidate_y, candidate_x = np.unravel_index(
-            candidate_flat,
-            unit_mask.shape,
-        )
-
         effect = direction * (
                 response_batch[unit_index] - null_batch[unit_index]
         )
         effect = np.where(np.isfinite(effect), np.maximum(effect, 0.0), 0.0)
-        weights = effect.ravel()[candidate_flat]
-        if not np.any(weights > 0.0):
-            weights = np.ones(candidate_flat.size, dtype=np.float64)
+        # Use the detector's four-connectivity and optional horizontal seam.
+        labels, masses = _label_clusters(effect, unit_mask, wrap_x=wrap_x)
+        for label in range(1, masses.size + 1):
+            candidate_flat = np.flatnonzero(labels == label)
+            candidate_y, candidate_x = np.unravel_index(
+                candidate_flat, unit_mask.shape,
+            )
+            weights = effect.ravel()[candidate_flat]
+            if not np.any(weights > 0.0):
+                weights = np.ones(candidate_flat.size, dtype=np.float64)
 
-        y_coordinates = candidate_y.astype(np.float64, copy=False)
-        x_coordinates = candidate_x.astype(np.float64, copy=False)
-        dy = np.abs(y_coordinates[:, None] - y_coordinates[None, :])
-        dx = np.abs(x_coordinates[:, None] - x_coordinates[None, :])
-        if wrap_x:
-            dx = np.minimum(dx, n_x - dx)
-        costs = ((dy * dy + dx * dx) * weights[None, :]).sum(axis=1)
+            y_coordinates = candidate_y.astype(np.float64, copy=False)
+            x_coordinates = candidate_x.astype(np.float64, copy=False)
+            dy = np.abs(y_coordinates[:, None] - y_coordinates[None, :])
+            dx = np.abs(x_coordinates[:, None] - x_coordinates[None, :])
+            if wrap_x:
+                dx = np.minimum(dx, n_x - dx)
+            costs = ((dy * dy + dx * dx) * weights[None, :]).sum(axis=1)
 
-        minimum_cost = float(costs.min())
-        tie_tolerance = (
-                16.0
-                * np.finfo(np.float64).eps
-                * max(1.0, abs(minimum_cost))
-        )
-        tied = np.flatnonzero(
-            np.isclose(costs, minimum_cost, rtol=0.0, atol=tie_tolerance)
-        )
-        tied_weights = weights[tied]
-        highest_local_weight = float(tied_weights.max())
-        tied = tied[tied_weights == highest_local_weight]
-        selected_flat = int(candidate_flat[int(tied[0])])
-        centers[unit_index].flat[selected_flat] = 1
+            minimum_cost = float(costs.min())
+            tie_tolerance = (
+                    16.0
+                    * np.finfo(np.float64).eps
+                    * max(1.0, abs(minimum_cost))
+            )
+            tied = np.flatnonzero(
+                np.isclose(costs, minimum_cost, rtol=0.0, atol=tie_tolerance)
+            )
+            tied_weights = weights[tied]
+            highest_local_weight = float(tied_weights.max())
+            tied = tied[tied_weights == highest_local_weight]
+            selected_flat = int(candidate_flat[int(tied[0])])
+            centers[unit_index].flat[selected_flat] = 1
 
     return centers[0] if is_single else centers
 
@@ -288,7 +289,7 @@ def _rf_result_manifest(
             if parameters["is_shuffle"]
             else "pooled-spatial-z-v3-zero-filled"
         ),
-        "center_algorithm": "response-weighted-medoid-v1",
+        "center_algorithm": "component-response-weighted-medoid-v2",
         "nonshuffle_filter": "drop-small-components-inclusive-v1",
         "grid_shape": [first.n_y, first.n_x],
         "storage_shape": [len(maps), first.n_y, first.n_x],
@@ -605,7 +606,7 @@ def _legacy_rf_2d(
     of the default increased responses. An explicit ``alternative``
     overrides ``rf_type`` for compatibility with existing calls.
     ``is_center=False`` returns the complete mask; ``True`` returns one
-    response-weighted bin for each non-empty RF.  A ``.npz``
+    response-weighted bin for each connected RF sector. A ``.npz``
     ``result_path`` persists both views, so switching ``is_center`` later
     does not repeat detection.  ``drop_bins`` is used only by exploratory
     ``is_shuffle=False`` runs and removes connected components whose size

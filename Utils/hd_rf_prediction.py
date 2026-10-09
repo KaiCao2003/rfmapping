@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from Utils.direction_comparison import (
-    hd_pick, load_tc, recording_profiles, resample_profiles, rf_pick, rf_profiles,
+    hd_pick, load_hd_profiles, recording_profiles, resample_profiles, rf_pick, rf_profiles,
     select_rf_profiles, tcRange,
 )
 from Utils.json_tools import read_formatted_json
@@ -195,7 +195,10 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
                      hd_heading_source=None, heading_profile_cache=None):
     """Match the paired notebook's Class 3, detected-2D RF, and bin-quality selection."""
     recording = dict(mouse=mouse, date=date, probe=probe)
-    hd = hd_pick(load_tc(hd_path, **recording, bins=30, smoothing_deg=0), hd_class=3)
+    hd = load_hd_profiles(hd_path, probe=probe, bins=30, smoothing_deg=0)
+    hd = resample_profiles(hd, range=tcRange(False), bins=30)
+    hd = recording_profiles(hd, mouse=mouse, date=date, label="HD")
+    hd = hd_pick(hd, hd_class=3)
     heading_provenance = {}
     if hd_heading_source is not None:
         profiles, heading_provenance = _json_hd_profiles(
@@ -206,14 +209,13 @@ def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
     count_maps = raw_maps.sum(0., .2, show_progress=False).sum_to_1d(axis="x")
     counts = rf_profiles(count_maps, probe=probe)
     counts = select_rf_profiles(counts, load_rf(rf_result_path(rf_path)))
-    detected = recording_profiles(
-        resample_profiles(counts, range=tcRange(True)), mouse=mouse, date=date,
-    )
+    detected = recording_profiles(counts, mouse=mouse, date=date)
     count_profiles = rf_pick(detected, max_zero_bins=2)
+    count_profiles = resample_profiles(count_profiles, range=tcRange(True), bins=30, fill_value=0)
     rate_maps = raw_maps.to_firing_rate(reconstruct_presentations=True).mean_rate(0., .2, show_progress=False).sum_to_1d(axis="x")
     rates = rf_profiles(rate_maps, probe=probe)
     rf = recording_profiles(
-        resample_profiles(rates, range=tcRange(True)), mouse=mouse, date=date,
+        resample_profiles(rates, range=tcRange(True), bins=30, fill_value=0), mouse=mouse, date=date,
     ).loc[count_profiles.index]
     shared = hd.index.intersection(rf.index)
     rows = []

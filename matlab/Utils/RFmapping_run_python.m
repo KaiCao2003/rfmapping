@@ -17,6 +17,19 @@ function RFmapping_run_python(rfmapPath, probe, params)
         commandParts{end + 1} = '--no-wrap-x';
     end
 
+    [rfDirectory, rfName] = fileparts(rfmapPath);
+    % Paired notebooks use the regular ON source; other maps need distinct CSV targets.
+    if ~isempty(regexp(rfName, ['^regular_unitsSpikeCounts_', params.date, '_[0-9]+$'], 'once'))
+        [~, mouse] = fileparts(regexprep(params.base_dir, '[\\/]+$', ''));
+        dataDirectory = rfDirectory;
+        for level = 1:4
+            dataDirectory = fileparts(dataDirectory);
+        end
+        commandParts = [commandParts, { ...
+            '--unit-prefix', ShellQuote([mouse, ':', params.date, ':', probe]), ...
+            '--comparison-output-dir', ShellQuote(fullfile(dataDirectory, 'tc_comparison'))}];
+    end
+
     [status, output] = system([strjoin(commandParts, ' '), ' 2>&1']);
     if status ~= 0
         error('RFmapping:PythonDetectionFailed', ...

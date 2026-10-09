@@ -10,11 +10,11 @@ from Utils.rf_cache import save_rf_result
 
 def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkeypatch):
     ids = [7, 8, 9, 10, 11, 12]
-    index = pd.MultiIndex.from_product([["m19"], ["260827"], ["A"], ids],
-                                      names=["mouse", "date", "probe", "unit_id"])
-    hd = pd.DataFrame([[0., 3.]] * len(ids), index=index, columns=[6., 18.])
+    index = pd.MultiIndex.from_product([["A"], ids], names=["probe", "unit_id"])
+    hd = pd.DataFrame(np.zeros((len(ids), 30)), index=index, columns=np.arange(6., 360., 12.))
+    hd[18.] = 3.
     hd.attrs["unit_info"] = {key: {"hd_class": 2 if key[-1] == 12 else 3} for key in index}
-    monkeypatch.setattr(hd_rf_schemes, "load_tc", lambda *a, **k: hd)
+    monkeypatch.setattr(hd_rf_schemes, "load_hd_profiles", lambda *a, **k: hd)
     tc = tmp_path / "tuning_curves.json"
     tc.write_text(json.dumps({"metadata": {"angle_convention_note": "counter-clockwise"}}))
     before = tc.read_bytes()
@@ -64,11 +64,11 @@ def test_native_global_rate_peak_is_not_projection_or_mask_peak(tmp_path, monkey
 
 
 def test_explicit_detection_path_overrides_adjacent_file(tmp_path, monkeypatch):
-    index = pd.MultiIndex.from_tuples([("m20", "260922", "A", 7)],
-                                      names=["mouse", "date", "probe", "unit_id"])
-    hd = pd.DataFrame([[0., 3.]], index=index, columns=[6., 18.])
+    index = pd.MultiIndex.from_tuples([("A", 7)], names=["probe", "unit_id"])
+    hd = pd.DataFrame(np.zeros((1, 30)), index=index, columns=np.arange(6., 360., 12.))
+    hd[18.] = 3.
     hd.attrs["unit_info"] = {index[0]: {"hd_class": 3}}
-    monkeypatch.setattr(hd_rf_schemes, "load_tc", lambda *a, **k: hd)
+    monkeypatch.setattr(hd_rf_schemes, "load_hd_profiles", lambda *a, **k: hd)
     tc = tmp_path / "tuning_curves.json"
     tc.write_text(json.dumps({"metadata": {}}))
     rf = tmp_path / "rf.json"

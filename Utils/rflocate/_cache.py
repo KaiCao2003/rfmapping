@@ -1,7 +1,7 @@
 """Internal, pickle-free persistence for versioned RF result sidecars.
 
 An RF result sidecar contains both possible public ``rf_2d`` outputs: the full
-binary RF mask and its single-bin center.  Consequently, choosing one of those
+binary RF mask and its per-sector centers. Consequently, choosing one of those
 outputs is not part of the result identity.
 """
 

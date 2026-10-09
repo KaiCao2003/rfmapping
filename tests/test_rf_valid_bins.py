@@ -105,7 +105,7 @@ def test_excluded_bin_cannot_bridge_components_or_become_center(gap):
     expected[0, [5, 6, 8, 9]] = 1
     np.testing.assert_array_equal(mask, expected)
     center = rf_map.rf_2d(drop_bins=0, is_center=True, **options)
-    assert center.sum() == 1
+    assert center.sum() == 2
     assert center[0, 7] == 0
     assert np.all(center <= mask)
 

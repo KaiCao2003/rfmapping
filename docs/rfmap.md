@@ -162,8 +162,13 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 ### Notebook 1-D CSVs
 
 `locate_rf.ipynb` and the RF comparison notebooks use `rf_only: bool = True`.
-Set it to `False` to sum all rows. Each notebook chooses its CSV filename and
-generates the file only when it is missing, then reads that exact file.
+Set it to `False` to use all rows. `locate_rf.ipynb` and `hd_rf_comparison.ipynb`
+generate their chosen CSV only when it is missing. The two
+`tc_comparison_pairs` notebooks read only prepared HD/RF CSVs with `load_tc`.
+`scripts/export_comparison_tcs.py` writes one explicitly requested comparison
+CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
+use these outputs under `data/tc_comparison/`; see
+[comparison preparation](hd_rf_ebc_comparison.md).
 
 Files live directly under the RF session's `data/` directory:
 
@@ -174,7 +179,7 @@ Files live directly under the RF session's `data/` directory:
 | Rows containing inhibitory RF | `regular_unitsSpikeCounts_260630_3_ProbeA_inhibitory_1d_rfonly.csv` |
 
 Each CSV contains only `unit_id` and the TC values, with native positions as
-column headers. The notebooks sum native response counts over their selected
+column headers. Preparation sums native response counts over the selected
 time window, then over the chosen rows. RF-only generation uses the unit IDs
 and masks in the 2-D result; an empty mask gives a missing TC. The saved 1-D
 detection masks remain separate `.npz` files.
@@ -182,24 +187,25 @@ detection masks remain separate `.npz` files.
 `save_rf_tc(prepared_maps, path)` writes already prepared singleton-time,
 singleton-spatial maps. `load_rf_tc(path)` only reads the specified CSV into a
 DataFrame indexed by unit ID. Neither function chooses filenames or runs
-detection. Comparison notebooks use one call to read and wrap the CSV:
+detection. Export the chosen projection with an explicit unit prefix before
+reading it in the paired comparison notebook:
 
 ```python
-from Utils.direction_comparison import load_tc
+from Utils.direction_comparison import tc_loader
 
-m14_rf = load_tc(path, kind="RF")
+m14_rf = tc_loader(comparison_csv, label="m14 RF", response_units="spike_count")
 ```
 
-This returns the existing TC DataFrame with native degree columns and response
-rows. Standard `<mouse>/<date>/<date>_<session>/data/...` paths supply
-`(mouse, date, probe, unit_id)` keys. Probe identity comes from a `ProbeA`/`ProbeB`
-directory or the generated CSV filename, including `_rfonly` and inhibitory
-variants. Explicit identity arguments remain available for nonstandard inputs.
-Files outside the recording layout keep `(probe, unit_id)` keys and their source
-identity; `concat(first, second)` retains that source identity when pooling them.
-`range`, when supplied for RF, only adds display labels. An existing CSV
-is reused as-is; changing the time window or detection does not automatically
-regenerate it. The loader never chooses `_rfonly` filenames.
+This reads native degree columns, response values, and the exact `unit_id`
+strings in the file, such as `m14:260609:A:23`. The loader does not infer identity
+or numerical units from paths. `range` only adds display labels. Select measured
+zero-bin limits with `rf_pick` on the native table; use `resample_profiles`
+explicitly if a common grid is needed before `concat`.
+
+The exporter preserves the supplied RF CSV's projection and values. It can
+select units using explicitly named saved detection files, but does not generate
+native projections or choose `_rfonly` files. Existing comparison outputs require
+`--overwrite` to replace them.
 
 `rf_only` also controls row selection in the locate notebook's mean-Hz
 previews and figure exports. `collapse_from_2d` independently controls whether
@@ -250,10 +256,17 @@ single `RFMap`. `for_unit()` selects by recorded ID and returns `(y, x)`;
 `project(axis="x")` returns `(unit, 1, x)` and `project(axis="y")` returns
 `(unit, y, 1)`. Projection is deterministic and cannot invoke detection.
 
-An empty mask has an empty center. A nonempty mask has exactly one selected
-center bin. `manifest`, `cache_key`, and `schema_version` describe the persisted
-analysis and its identity. Existing dictionary-style access remains supported
-for compatibility; new code uses attributes.
+An empty mask has no centers. New detections select exactly one center bin per
+connected RF sector, using the detector's four-connectivity and `wrap_x` option.
+Projection preserves these selected bins; centers that land in the same
+projected bin merge. `manifest`, `cache_key`, and `schema_version` describe the
+persisted analysis and its identity. Existing dictionary-style access remains
+supported for compatibility; new code uses attributes.
+
+The center algorithm is `component-response-weighted-medoid-v2`. Its cache key
+differs from the previous one-center-per-unit algorithm, so explicit detection
+recomputes old caches. Loading a saved result still preserves its original
+centers and never silently migrates a historical analysis.
 
 ### Source files and detection files
 
@@ -370,11 +383,13 @@ a pixelwise p-value. `exclude_zero_bins` is unsupported with shuffling.
 
 Inhibitory detection identifies decreased spatial responses under the chosen
 null; it does not compare against a prestimulus baseline. Center selection uses
-nonnegative response-effect weights inside the final mask and chooses the
-RF-positive bin minimizing weighted squared distance. Horizontal distance is
+nonnegative response-effect weights separately inside each connected sector
+of the final mask and chooses the sector's RF-positive bin minimizing weighted
+squared distance to bins in that sector. Horizontal distance is
 circular when `wrap_x=True`. Zero total weight uses equal weights; remaining
 ties use higher local weight, then row-major order. The center always lies in
-the detected mask.
+its own detected sector. Thus a unit with three sectors has three centers;
+an empty unit has none.
 
 A long response window can overlap adjacent stimuli (about 100 ms apart in
 some recordings). The test does not remove that overlap or attribute each spike

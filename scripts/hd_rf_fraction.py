@@ -8,7 +8,7 @@ from pathlib import Path
 
 from matplotlib import pyplot as plt
 
-from Utils.direction_comparison import load_tc
+from Utils.direction_comparison import hd_pick, load_hd_profiles, recording_profiles
 from Utils.plotting import LIGHT_PLOT_STYLE
 from Utils.rflocate import load_rf, rf_result_path
 
@@ -46,11 +46,12 @@ def main():
     hd_with_2d = set()
     for mouse, date, hd_session, rf_session, probes in RECORDINGS:
         for probe in probes:
-            recording = dict(mouse=mouse, date=date, probe=probe)
             base = ROOT / mouse / str(date)
             hd_file = base / f"{date}_{hd_session}/data/tuning_curves/Probe{probe}/tuning_curves.tc"
             rf_file = base / f"{date}_{rf_session}/data/rfmapping/good/-100_400_1ms/Probe{probe}/regular_unitsSpikeCounts_{date}_{rf_session}.rfmap"
-            hd = set(load_tc(hd_file, **recording, hd_class=HD_CLASS).index)
+            hd_profiles = load_hd_profiles(hd_file, probe=probe, bins=30, smoothing_deg=0)
+            hd_profiles = recording_profiles(hd_profiles, mouse=mouse, date=date, label="HD")
+            hd = set(hd_pick(hd_profiles, hd_class=HD_CLASS).index)
             ids_1d, ids_2d = rf_unit_ids(rf_file)
             with_1d = {key for key in hd if key[-1] in ids_1d}
             with_2d = {key for key in hd if key[-1] in ids_2d}

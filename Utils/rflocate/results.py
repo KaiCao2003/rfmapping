@@ -108,10 +108,12 @@ def _validated_result_arrays(
         raise ValueError("every center_2d bin must also belong to mask_2d")
 
     mask_nonempty = np.any(mask != 0, axis=(1, 2))
-    center_counts = np.sum(center != 0, axis=(1, 2))
-    if not np.array_equal(center_counts, mask_nonempty.astype(np.int64)):
+    center_nonempty = np.any(center != 0, axis=(1, 2))
+    # Saved legacy centers and projected centers can differ from the number
+    # of components in this mask; loading must preserve those supplied views.
+    if not np.array_equal(center_nonempty, mask_nonempty):
         raise ValueError(
-            "center_2d must contain exactly one bin for each non-empty unit "
+            "center_2d must contain at least one bin for each non-empty unit "
             "and zero bins for each empty unit"
         )
 
