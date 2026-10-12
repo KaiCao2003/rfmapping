@@ -1,0 +1,138 @@
+diff --git a/ebc_video.py b/ebc_video.py
+index beacaa5..30dcf42 100644
+--- a/ebc_video.py
++++ b/ebc_video.py
+@@ -60,7 +60,7 @@ CYLINDER_COLORS = ("#2463ad", "#c26b18")
+ 
+ 
+ def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectangle", fps=30.,
+-                    ignore_hd_ttl=False):
++                    ignore_hd_ttl=False, bounds_px=BASLER_BOUNDS_PX):
+     """Load pose and exposure timing without computing statistical controls."""
+     if arena_type == "cylinder":
+         return _load_cylinder_data(session, probe=probe, phase=phase, fps=fps,
+@@ -85,11 +85,11 @@ def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectang
+     interval = intervals.loc[intervals.interval_type == phase, ["start", "end"]].iloc[0].to_numpy(float)
+     selected = (times >= interval[0]) & (times <= interval[1])
+     pose = pose.loc[selected]
+-    left, right, top, bottom = BASLER_BOUNDS_PX
++    left, right, top, bottom = bounds_px
+     xy = np.c_[(pose.center_x - left) * BASLER_SIZE_CM / (right - left),
+                (bottom - pose.center_y) * BASLER_SIZE_CM / (bottom - top)]
+     kilosort = next((session / "kilosort" / f"Probe{probe}").glob("kilosort_*"))
+-    return dict(session=session, probe=probe, phase=phase, arena_type="rectangle", xy=xy,
++    return dict(session=session, probe=probe, phase=phase, arena_type="rectangle", bounds_px=bounds_px, xy=xy,
+                 hd=pose.hd_deg.to_numpy() % 360, frame_ids=frames[selected], times=times[selected],
+                 exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
+                 source=dict(kilosort_dir=str(kilosort), selected_interval_s=interval,
+@@ -167,7 +167,7 @@ def cylinder_geometry(data):
+ def overlay_geometry(data):
+     """Invert the analysis calibration; distances are untruncated cm, not bins."""
+     xy, hd = np.asarray(data["xy"]), np.asarray(data["hd"])
+-    left, right, top, bottom = BASLER_BOUNDS_PX
++    left, right, top, bottom = data["bounds_px"]
+     pixels_per_cm = np.array([right - left, bottom - top]) / BASLER_SIZE_CM
+     positions = xy * pixels_per_cm * [1, -1] + [left, bottom]
+     valid = (np.isfinite(hd) & np.isfinite(xy).all(axis=1)
+@@ -235,7 +235,7 @@ class _Overlay:
+             tile, offset = self._label(text)
+             canvas.paste(tile, (round(point[0] + offset[0]), round(point[1] + offset[1])))
+ 
+-        left, right, top, bottom = BASLER_BOUNDS_PX
++        left, right, top, bottom = self.data["bounds_px"]
+         draw.rectangle((left, top, right, bottom), outline="#111111", width=6)
+         draw.rectangle((left, top, right, bottom), outline=BOUNDARY_COLOR, width=3)
+         label(((left + right) / 2, top - 55), f"Arena boundary: {BASLER_SIZE_CM:g} × {BASLER_SIZE_CM:g} cm")
+@@ -446,7 +446,7 @@ class _SharedRenderer:
+         self.memory = shared_memory.SharedMemory(create=True, size=self.slots * self.stride)
+         # No spike-count matrices are copied to drawing workers.
+         pose = {key: data[key] for key in ("session", "phase", "times", "xy", "hd", "arena_type",
+-                                          "pose_frame_ids", "video_time_origin_s", "boundary_radii_cm")
++                                          "pose_frame_ids", "video_time_origin_s", "boundary_radii_cm", "bounds_px")
+                 if key in data}
+         try:
+             self.pool = ProcessPoolExecutor(
+@@ -682,7 +682,7 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
+     geometry_info = (dict(boundary_radii_cm=list(data["boundary_radii_cm"]),
+                           center_raw=np.asarray(data["center_raw"]).tolist(), cm_per_unit=data["cm_per_unit"],
+                           angle_convention="Motive XY: HD CCW from +X; ray bearing CCW relative to HD")
+-                     if cylinder else dict(bounds_px=BASLER_BOUNDS_PX, arena_size_cm=BASLER_SIZE_CM,
++                     if cylinder else dict(bounds_px=data["bounds_px"], arena_size_cm=BASLER_SIZE_CM,
+                                            angle_convention="HD: north-zero CW; ray bearing: CCW relative to HD"))
+     summary = dict(video=str(output_path), source_video=str(video_path) if video_path is not None else None,
+                    preview=str(preview), arena_type="cylinder" if cylinder else "rectangle",
+@@ -1164,6 +1164,7 @@ def main(argv=None):
+     parser.add_argument("session", type=Path, nargs="?")
+     parser.add_argument("--probe", default=probe)
+     parser.add_argument("--phase", default=phase)
++    parser.add_argument("--boundary", choices=("old", "new"), default="new")
+     parser.add_argument("--workers", type=int, default=video_workers)
+     parser.add_argument("--audio-workers", type=int, default=audio_workers)
+     parser.add_argument("--video-encoder", choices=("auto", "h264_nvenc", "libx264"),
+@@ -1192,6 +1193,7 @@ def main(argv=None):
+         arena_type=args.arena_type,
+         fps=video_fps,
+         ignore_hd_ttl=args.ignore_hd_ttl,
++        bounds_px=boundary_old if args.boundary == "old" else boundary_new,
+     )
+     unit_videos = export_good_unit_videos(
+         video_data, selected_video, selected_save_path,
+diff --git a/run_pipeline.sh b/run_pipeline.sh
+index 7b730e2..297f304 100755
+--- a/run_pipeline.sh
++++ b/run_pipeline.sh
+@@ -198,6 +198,7 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
+     fi
+ 
+     cd "$YOLO_DIR"
++    ENV_BOUNDARY=$("$YOLO_PYTHON" "$YOLO_DIR/select_env.py" "$VIDEO_PATH")
+     "$YOLO_PYTHON" "$YOLO_DIR/detect_stream.py" \
+         "$RECORDING_BASE" \
+         "$DATE" \
+@@ -222,7 +223,8 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
+             --date "$DATE" \
+             --recording-number "$SESSION_ID" \
+             --probe "$PROBE_NAME" \
+-            --phase baseline
++            --phase baseline \
++            --boundary "$ENV_BOUNDARY"
+ 
+         LD_LIBRARY_PATH="$NVIDIA_VIDEO_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+             "$RFMAPPING_PYTHON" "$RFMAPPING_DIR/ebc_video.py" \
+@@ -230,6 +232,7 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
+             --probe "$PROBE_NAME" \
+             --phase baseline \
+             --arena-type rectangle \
++            --boundary "$ENV_BOUNDARY" \
+             --workers "$VIDEO_WORKERS" \
+             --audio-workers "$AUDIO_WORKERS" \
+             --video-encoder "$VIDEO_ENCODER"
+diff --git a/spatial_cell_analysis.py b/spatial_cell_analysis.py
+index 90f0856..41ada6a 100644
+--- a/spatial_cell_analysis.py
++++ b/spatial_cell_analysis.py
+@@ -490,6 +490,7 @@ def run_analysis(
+ 
+ def main(argv=None):
+     global recording_root, date, recording_number, probe_name, phase_key
++    global x_min, x_max, y_min, y_max, cm_per_px
+ 
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--recording-root", type=Path, default=recording_root)
+@@ -497,6 +498,7 @@ def main(argv=None):
+     parser.add_argument("--recording-number", type=int, default=recording_number)
+     parser.add_argument("--probe", choices=("A", "B"), default=probe_name)
+     parser.add_argument("--phase", default=phase_key)
++    parser.add_argument("--boundary", choices=("old", "new"), default="new")
+     parser.add_argument(
+         "--output", type=Path,
+         help="Full .rfmap filename; three distance-band files use the same stem (all replaced on rerun)",
+@@ -515,6 +517,8 @@ def main(argv=None):
+     recording_number = args.recording_number
+     probe_name = args.probe
+     phase_key = args.phase
++    x_min, x_max, y_min, y_max = boundary_old if args.boundary == "old" else boundary_new
++    cm_per_px = rig_size_cm / (x_max - x_min)
+     return run_analysis(
+         output=args.output, units=args.units, workers=args.workers,
+         basler_output=args.basler_output, optihub2_output=args.optihub2_output,
