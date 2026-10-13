@@ -59,18 +59,13 @@ preprocessing/pipeline/config_result.yaml
 /tmp.ipynb
 
 # Optional video workflows and recording-specific calibration
-/Utils/ebc_camera.py
-/Utils/ebc_replay.py
 /Utils/ebc_screen.py
-/Utils/ebc_video.py
 /Utils/hd_rf_video_data.py
 /Utils/hd_rf_video_decode.py
 /config/cylinder.calib
 /config/cylinder_camera_registration.json
 /config/m20_260922_3/
 /ebc_tuning_video.py
-/ebc_video_circle.py
-/ebc_video_rectangle.py
 /ebc_video_sep.py
 /hd_rf_population_video.py
 
@@ -78,7 +73,6 @@ preprocessing/pipeline/config_result.yaml
 /tests/test_cross_session_head_direction.py
 /tests/test_cylinder_video.py
 /tests/test_ebc_tuning_video.py
-/tests/test_ebc_video_entries.py
 /tests/test_hd_rf_cylinder_population.py
 /tests/test_hd_rf_population_video.py
 /tests/test_hd_rf_video_clock.py
@@ -90,31 +84,19 @@ preprocessing/pipeline/config_result.yaml
 /docs/angle_audit_20260916.md
 /docs/angle_display_20260917.png
 /docs/cw_ego_allo_alignment.svg
-/docs/ebc_videos.md
 /docs/internal_head_direction.md
 /docs/screen_ebc_overlay.md
 /docs/unit125_ego_bearing_20260917.md
 
-# Independent EBC/spatial research and legacy notebook (kept on disk)
-/Utils/bearing.py
-/Utils/motive_pose.py
-/Utils/ebc_analysis.py
-/Utils/ebc_geometry.py
-/Utils/ebc_overlay.py
-/Utils/ebc_pose.py
-/Utils/ebc_workflow.py
-/Utils/spatial_cell_analysis.py
+# Recording-specific research notebooks and legacy entries (kept on disk)
 /ebc_arena_bounds.ipynb
-/ebc_artifact_controls.ipynb
 /hd_rf_ebc_comparison.ipynb
 /spatial_cell_analysis.ipynb
 /spatial_cell_analysis.py
-/spatial_cell_plotting.ipynb
 /matlab_parser.ipynb
-/docs/spatial_cells.md
-/tests/test_ebc_geometry.py
-/tests/test_ebc_overlay.py
-/tests/test_spatial_cell.py
 
 # Detailed local experiment notes
 /docs/ebc_experiments.md
+
+# Small archived numerical inputs used by the ADN comparison
+!config/retinotopography_adn/*.csv

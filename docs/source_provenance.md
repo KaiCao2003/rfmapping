@@ -1,5 +1,34 @@
 # Source provenance
 
+## Operational pipeline source restored on 2026-10-07
+
+The source snapshot now includes the entrypoints used by
+`hhw9l84:/home/kai/scripts/run_pipeline.sh`: HD tuning, HD distribution plots,
+cylinder spatial analysis, and the operational spatial/video commands under
+`scripts/`. The runner uses the repository's bundled sorting and SpikeInterface
+entrypoints. `preprocessing/spikeinterface/` now also includes `app.py`,
+`canonical_unit_artifacts.py`, and `make_analyzer_for_sigui.py` from
+`hhw9l84:/home/kai/spikeinterface`; its ADC exporter includes the source's shared
+Probe/ADC clock checks. Deployment paths are explicit configuration; Motive and
+YOLO applications remain external dependencies.
+
+The operational `scripts/spatial_cell_analysis.py` and `scripts/ebc_video.py`
+preserve their remote CLI conventions. They are distinct from the research
+`Utils/spatial_cell_analysis.py` model and calibrated root video entrypoints;
+their heading conventions, camera timing, and arena geometry are not silently
+substituted. The restored `Utils/ebc_analysis.py` retains the remote Motive
+trailing-frame rule when a continuous pose sequence has one more frame than
+saved camera exposures.
+
+The small numerical ADN inputs under `config/retinotopography_adn/` retain their
+original verification hashes. PDF/HEIC annotation paths and hashes are recorded
+as provenance; those recording-specific binaries and generated figures remain
+outside the source snapshot. Notebook execution outputs are removed only from
+the publication copies. Local results and annotations are preserved.
+
+The tables below document earlier source snapshots and their historical hashes;
+they do not claim byte identity for files subsequently updated here.
+
 The initial publication was assembled on **2026-09-22**. The regular MATLAB sources and RFMap Python API were refreshed on **2026-09-30**. The MATLAB source revision is `f8958692bc11ed961e9d7575a35baefd53b44687`; its files were checked against `hhw9l84:/mnt/ssd4.1/Matlab`. The bundled FMAToolbox and preprocessing snapshots remain from September 22. The hashes below identify the published file bytes.
 
 ## Source trees

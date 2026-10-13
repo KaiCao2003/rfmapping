@@ -162,9 +162,9 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 ### Notebook 1-D CSVs
 
 `locate_rf.ipynb` and the RF comparison notebooks use `rf_only: bool = True`.
-Set it to `False` to use all rows. `locate_rf.ipynb` and `hd_rf_comparison.ipynb`
-generate their chosen CSV only when it is missing. The two
-`tc_comparison_pairs` notebooks read only prepared HD/RF CSVs with `load_tc`.
+Set it to `False` to use all rows. The RF pipeline and comparison notebooks
+call `Utils.tc_preparation` to prepare their chosen CSV only when it is missing,
+then read the prepared HD/RF CSVs with `tc_loader`.
 `scripts/export_comparison_tcs.py` writes one explicitly requested comparison
 CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
 use these outputs under `data/tc_comparison/`; see
@@ -202,10 +202,13 @@ or numerical units from paths. `range` only adds display labels. Select measured
 zero-bin limits with `rf_pick` on the native table; use `resample_profiles`
 explicitly if a common grid is needed before `concat`.
 
-The exporter preserves the supplied RF CSV's projection and values. It can
-select units using explicitly named saved detection files, but does not generate
-native projections or choose `_rfonly` files. Existing comparison outputs require
-`--overwrite` to replace them.
+The export CLI preserves the supplied RF CSV's projection and values and can
+select units using explicitly named saved detection files. The shared
+`prepare_rf_comparison` function also creates a missing native projection from
+the raw map and saved 2-D detection, using an explicit response window and
+`rf_only` setting. It never reruns detection. Existing comparison CSVs are
+skipped before opening inputs; use `--overwrite` or `overwrite=True` explicitly
+to replace them.
 
 `rf_only` also controls row selection in the locate notebook's mean-Hz
 previews and figure exports. `collapse_from_2d` independently controls whether
