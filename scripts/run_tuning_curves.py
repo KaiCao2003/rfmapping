@@ -1,14 +1,18 @@
 import argparse
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
 
+from EBB.spatial_cell_analysis import basler_session_defaults
 from Utils.json_tools import read_formatted_json
 from Utils.load_files import get_interval_pairs
+from Utils.motive_pose import matched_motive_frame_count
 from Utils.recording import gen_recording_interval_table
-from Utils.tc_preparation import prepare_hd_tc
-from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, tuning_curve
+from Utils.camera_timing import get_exposure_timestamps, make_head_direction_tsd
+from HD.tuning_curve_utils import tuning_curve
 
 
 parser = argparse.ArgumentParser()
@@ -18,11 +22,20 @@ parser.add_argument("session_id")
 parser.add_argument("probe_list")
 parser.add_argument("--headplate-name", default="hp4")
 parser.add_argument("--basler", action="store_true")
+parser.add_argument("--camera-input-channel", type=int,
+                    help="Override the camera TTL channel selected for this session.")
+parser.add_argument("--ignore-hd-ttl", action="store_true",
+                    help="Front-align mismatched Motive frames/TTLs to the shorter count.")
+parser.add_argument("--comparison-code-dir", type=Path,
+                    default=Path(__file__).resolve().parents[1])
 args = parser.parse_args()
 
 session_dir = args.base_dir / args.date / f"{args.date}_{args.session_id}"
 data_dir = session_dir / "data"
-camera_input_channel = 6 if args.basler else 1
+session_key = f"{args.base_dir.name}_{args.date}_{args.session_id}"
+camera_input_channel = args.camera_input_channel
+if camera_input_channel is None:
+    camera_input_channel = basler_session_defaults(session_key)[1] if args.basler else 1
 
 interval_result = gen_recording_interval_table(
     base_dir=str(session_dir),
@@ -83,20 +96,12 @@ if args.basler:
         "zero_based_pose_frame_id_to_saved_camera_timestamp"
     )
 else:
-    assert np.array_equal(hd_frames, np.arange(len(hd_frames))), (
-        "Motive frame IDs must be zero-based and continuous."
-    )
-    if len(hd_frames) == len(exposure_timestamps) + 1:
-        print(f"Dropping trailing Motive frame: {hd_frames[-1]}")
-        hd = hd[:-1]
-        hd_frames = hd_frames[:-1]
-    elif len(hd_frames) != len(exposure_timestamps):
-        raise ValueError(
-            f"Motive frame/TTL count mismatch: {len(hd_frames)} frames vs "
-            f"{len(exposure_timestamps)} exposure pulses."
-        )
     assert len(hd) == len(hd_frames)
-    ttl_qc["motive_frame_count"] = int(len(hd_frames))
+    count = matched_motive_frame_count(
+        hd_frames, exposure_timestamps, ttl_qc, ignore_hd_ttl=args.ignore_hd_ttl,
+    )
+    hd, hd_frames = hd[:count], hd_frames[:count]
+    exposure_timestamps = exposure_timestamps[:count]
 
 HD_tsd, feature_fs_hz = make_head_direction_tsd(exposure_timestamps, hd_frames, hd)
 
@@ -133,10 +138,11 @@ for probe_name in args.probe_list:
         },
     )
     print(f"Saved tuning curves: {save_path}")
-    prepare_hd_tc(
-        save_path,
-        data_dir / "tc_comparison" / f"hd_class3_Probe{probe_name}.csv",
-        bins=30,
-        hd_class=3,
-        unit_prefix=f"{args.base_dir.name}:{args.date}:{probe_name}",
+    # The comparison exporter uses the repository's own Utils in a separate process.
+    subprocess.run(
+        [sys.executable, "-m", "scripts.export_comparison_tcs", "hd", str(save_path),
+         str(data_dir / "tc_comparison" / f"hd_class3_Probe{probe_name}.csv"),
+         "--bins", "30", "--hd-class", "3",
+         "--unit-prefix", f"{args.base_dir.name}:{args.date}:{probe_name}"],
+        cwd=args.comparison_code_dir, check=True,
     )

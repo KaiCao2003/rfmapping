@@ -1,7 +1,10 @@
 import json
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from Utils.hd_rf_prediction import fit_hd_rf_model, predict_hd_rf, wrap_deg
 
@@ -53,9 +56,12 @@ def test_fit_requires_eligible_pairs(hd, rf):
         fit_hd_rf_model(hd, rf)
 
 
-def test_json_profiles_use_current_heading_and_preserve_saved_cohort_file(tmp_path, monkeypatch):
-    from Utils import tuning_curve_utils
-    from Utils.hd_rf_prediction import _json_hd_profiles
+@pytest.mark.parametrize("write_cache", [False, True])
+def test_generated_profiles_use_current_heading_and_preserve_saved_cohort_file(
+    tmp_path, monkeypatch, write_cache,
+):
+    from Utils import camera_timing
+    from Utils.hd_rf_prediction import generate_heading_profiles
 
     session = tmp_path / "260827_12"
     tc_path = session / "data/tuning_curves/ProbeA/tuning_curves.tc"
@@ -72,14 +78,88 @@ def test_json_profiles_use_current_heading_and_preserve_saved_cohort_file(tmp_pa
     np.save(session / "data/probeA/adc_spike_time.npy", [100.2, 100.4, 100.6, 100.8])
     heading = session / "head_direction.json"
     heading.write_text(json.dumps(dict(hp4=dict(frames=list(range(40)), hd=[90.] * 20 + [270.] * 20))))
-    monkeypatch.setattr(tuning_curve_utils, "get_exposure_timestamps",
+    monkeypatch.setattr(camera_timing, "get_exposure_timestamps",
                         lambda *a, **kw: (np.arange(40) / 10., 100., {}))
-    cache = tmp_path / "profiles.json"
+    cache = tmp_path / "profiles.json" if write_cache else None
+    files_before = set(tmp_path.rglob("*"))
 
-    profiles, provenance = _json_hd_profiles(tc_path, heading, [7], cache)
+    profiles, provenance = generate_heading_profiles(tc_path, heading, [7], cache)
 
     assert profiles.loc[7].idxmax() == 90.
     assert tc_path.read_bytes() == before
-    assert json.loads(cache.read_text())["spike_counts"][0][7] == 4
+    expected_rates = np.full((1, 30), np.nan)
+    expected_rates[0, [7, 22]] = [2., 0.]
+    np.testing.assert_allclose(profiles, expected_rates, rtol=1e-14, atol=0)
+    if write_cache:
+        saved = json.loads(cache.read_text())
+        expected_counts = np.zeros((1, 30), dtype=int)
+        expected_counts[0, 7] = 4
+        expected_occupancy = np.zeros(30)
+        expected_occupancy[[7, 22]] = 2.
+        assert saved["spike_counts"] == expected_counts.tolist()
+        np.testing.assert_allclose(saved["occupancy_time_s"], expected_occupancy, rtol=1e-14, atol=0)
+        assert saved["unit_id"] == [7]
+        assert saved["angle_bin_edges_deg"] == np.arange(0., 361., 12.).tolist()
+        np.testing.assert_array_equal(np.asarray(saved["firing_rate_hz"], dtype=float), profiles)
+    else:
+        assert set(tmp_path.rglob("*")) == files_before
     assert provenance["hd_heading_source"] == str(heading)
     assert provenance["dropped_unsynchronized_frames"] == 0
+
+
+def test_heading_profile_calculation_is_in_memory_and_preserves_missing_bins(monkeypatch):
+    import pynapple as nap
+    from Utils.hd_rf_prediction import calculate_heading_profiles
+
+    counts = np.zeros((30, 2))
+    counts[[3, 12]] = [[4., 6.], [8., 0.]]
+    occupancy_samples = np.zeros(30)
+    occupancy_samples[[3, 12]] = [20., 40.]
+    curves = xr.DataArray(counts, dims=("angle", "unit"), coords={"unit": [9, 7]},
+                          attrs={"occupancy": occupancy_samples})
+    spikes, feature, epochs = object(), object(), object()
+
+    def compute(**settings):
+        assert settings == dict(data=spikes, features=feature, bins=30, epochs=epochs,
+                                range=(0., 360.), return_counts=True, fs=10.)
+        return curves
+
+    def fail_io(*args, **kwargs):
+        pytest.fail("The in-memory heading calculation must not open files")
+
+    monkeypatch.setattr(nap, "compute_tuning_curves", compute)
+    monkeypatch.setattr(Path, "open", fail_io)
+    profiles, actual_counts, occupancy = calculate_heading_profiles(
+        spikes, feature, epochs, feature_fs_hz=10.,
+    )
+    assert profiles.index.tolist() == [9, 7]
+    np.testing.assert_array_equal(profiles.columns, np.arange(6., 360., 12.))
+    np.testing.assert_array_equal(actual_counts, counts.T)
+    np.testing.assert_array_equal(occupancy, occupancy_samples / 10.)
+    np.testing.assert_array_equal(profiles.iloc[:, [3, 12]], [[2., 2.], [3., 0.]])
+    assert np.isnan(profiles.drop(columns=[42., 150.])).all().all()
+
+
+def test_heading_profile_writer_saves_supplied_values_without_calculating(tmp_path, monkeypatch):
+    from Utils import hd_rf_prediction as prediction
+
+    def fail_calculation(*args, **kwargs):
+        pytest.fail("Writing a saved heading profile must not rerun calculation")
+
+    monkeypatch.setattr(prediction, "calculate_heading_profiles", fail_calculation)
+    values = np.full((1, 30), np.nan)
+    values[0, 7] = 2.
+    table = pd.DataFrame(values, index=[7], columns=np.arange(6., 360., 12.))
+    counts = np.zeros((1, 30))
+    counts[0, 7] = 4.
+    occupancy = np.zeros(30)
+    occupancy[7] = 2.
+    path = tmp_path / "profiles.json"
+    prediction.save_heading_profiles(path, table, counts, occupancy, metadata={"source": "test"},
+                                     epoch_intervals_s=[[0., 2.]], feature_fs_hz=10.)
+    saved = json.loads(path.read_text())
+    assert saved["metadata"] == {"source": "test"}
+    assert saved["epoch_intervals_s"] == [[0., 2.]]
+    assert saved["feature_fs_hz"] == 10.
+    assert saved["spike_counts"] == counts.astype(int).tolist()
+    np.testing.assert_array_equal(np.asarray(saved["firing_rate_hz"], dtype=float), values)

@@ -11,15 +11,18 @@ regular square-stimulus ON map; OFF and vertical-bar variants follow.
 
 ### Code layout and entrypoints
 
-- `Utils/` contains reusable acquisition, RF, and tuning comparison code.
-  Circular HD/RF fits live together in `hd_rf_prediction.py`; interval summaries
-  and explicit curve smoothing live in `statistic_utils.py`.
-- `Utils/rflocate/` contains the RF API: data objects in `models.py`, detected
+- `RF/` contains RF helpers, `HD/` contains HD helpers, and `EBB/` contains
+  egocentric boundary geometry, tuning, plotting, and video helpers.
+  `Utils/` contains shared acquisition, timing, statistics, and comparisons.
+  Mixed HD/RF fits remain in `Utils/hd_rf_prediction.py`.
+  Historical `Utils.ebc_*` imports forward to the same `EBB` modules; they do
+  not retain separate geometry, replay, or video implementations.
+- `RF/rflocate/` contains the RF API: data objects in `models.py`, detected
   results in `results.py`, file loading in `io.py`, and explicit detection in
   `detection.py`. Plotting and complete analyses live in `plotting.py` and
-  `workflow.py`. Start with `from Utils.rflocate import load_rfmap, load_rf,
-  detect_rf`; see the [RF API guide](docs/rfmap.md). The old `Utils.rfmap` and
-  `Utils.rf_*` modules remain compatibility imports.
+  `workflow.py`. Start with `from RF.rflocate import load_rfmap, load_rf,
+  detect_rf`; see the [RF API guide](docs/rfmap.md). The old `RF.rfmap` and
+  `RF.rf_*` modules remain compatibility imports within the RF folder.
 - The main notebooks remain at the repository root. `rfmap_session_comparison.ipynb`
   preserves the separate two-session RF comparison with its explicit recording paths. `locate_rf.py` also
   stays there because the MATLAB bridge calls its file path.
@@ -28,55 +31,38 @@ regular square-stimulus ON map; OFF and vertical-bar variants follow.
   `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
   are `hd_kappa_distribution`, `probe_position`,
   `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
-- Git tracks the raw-to-RF workflow, the operational HD/spatial pipeline,
-  RF/tuning comparisons, and the shared EBC/video source and tests used by those
-  workflows. `scripts/run_pipeline.sh` supplies the orchestration entrypoint;
-  `preprocessing/spikeinterface/` includes the canonical unit-artifact producer.
-  Independent decoder experiments, recording-specific calibration, raw data,
-  generated figures/videos, and local caches remain outside the source snapshot.
-  Notebook source is published without saved execution outputs.
+- Git tracks the raw-to-RF workflow, RF detection, and RF/tuning comparisons.
+  Independent EBC/spatial experiments, decoder/video workflows, recording-specific
+  calibration, generated results, and their tests stay on disk under `.gitignore`.
+  They are not included in a fresh clone.
 
 Analysis follows explicit stages: load native data, select units/bins,
 transform for display, calculate statistics, then plot. Pitch/RF selection
 returns an audit table; interpolation does not replace native peak values.
 Plotting functions consume prepared data and statistics.
 
-### Operational HD and spatial pipeline
-
-`scripts/run_pipeline.sh` includes the batch entrypoint previously maintained
-outside this repository. Edit its mouse, date, session lists, and Motive rotation
-representation before running it. It copies raw recordings, sorts/splits units,
-exports canonical unit positions and waveforms, then runs HD, spatial analysis,
-and EBC videos. It is a full processing run, not a validation command.
-
-The runner resolves Python source from this checkout. Set `PIPELINE_PYTHON`,
-`SPIKEINTERFACE_PYTHON`, and `RFMAPPING_PYTHON` to the prepared sorting,
-SpikeInterface, and RF analysis environments. `LOCAL_RAW_BASE` and
-`RECORDING_ROOT` select raw storage and the all-mice recording directory;
-`ANALYZER_OUTPUT_DIR` selects the analyzer cache. The bundled sorter is used by
-default; `PIPELINE_DIR` can select an explicitly maintained checkout.
-
-Motive analysis and YOLO tracking are separate applications. Supply their
-`MOTIVE_ANALYSIS_DIR`/`MOTIVE_PYTHON` and `YOLO_DIR`/`YOLO_PYTHON` settings.
-The EBC video stage also requires `ffmpeg` and `ffprobe`. Install this checkout's
-`analysis`, `waveform`, and `video` extras in the relevant analysis environments.
-The operational `scripts.spatial_cell_analysis` and `scripts.ebc_video` preserve
-their recording conventions; the root calibrated video entries use their own
-explicit configuration, described in [EBC videos](docs/ebc_videos.md).
-
 For existing analysis code, use these explicit calls:
 
 TCs share one DataFrame structure: degree columns and one response row per
-unit. `tc_loader(path)` reads the `unit_id` strings and numbers stored in any TC
+unit. `load_tc(path)` reads the `unit_id` strings and numbers stored in any TC
 CSV. Callers supply labels and response units explicitly, such as
 `response_units="Hz"` or `"spike_count"`. HD and RF pipelines prepare comparison
-CSVs through `Utils.tc_preparation`, using an explicit unit prefix such as
-`m14:260609:A` to retain paired identity. Paired notebooks call the same
-preparation functions before reading from `data/tc_comparison/`: existing
-outputs are skipped before accessing any source data. `tc_loader()` itself only
-reads CSVs. `scripts/export_comparison_tcs.py` exposes the shared HD/native RF
-exporters for explicit command-line use. Apply native RF zero-bin filtering
-before any explicit resampling.
+CSVs through explicit `HD.tc_generation.generate_hd_tc()` and
+`RF.tc_generation.generate_rf_comparison()` calls, using an explicit unit prefix
+such as `m14:260609:A` to retain paired identity. These generators read saved
+sources, call pure calculations, and save the results. RF generation reads the
+response map and detection once and passes the projection in memory to selection.
+Replacing a saved TC requires `overwrite=True`.
+
+Normal comparison notebooks only read existing files in `data/tc_comparison/`.
+Readers never generate missing data; a missing file raises `FileNotFoundError`.
+First-time generation is a separate explicit step. `HD.profiles.prep_hd_tc(table)`
+and `RF.profiles.prep_rf_tc(table)` take already loaded tables and apply selection,
+rebinning, and normalization in memory. Native RF zero-bin selection comes before
+rebinning. Neither preparation nor plotting writes the saved CSVs.
+`scripts/export_comparison_tcs.py` provides the explicit HD/native RF exporters.
+Generate HD comparison CSVs at 30 bins; comparison and statistics bin counts are
+independent choices applied to loaded data.
 `concat(m14_hd, m15_hd)` only stacks tables sharing a degree grid; it never
 interpolates or invents unit identities. `plot_profiles(tc)` reads its label,
 angles, and response units from the object. See
@@ -904,11 +890,12 @@ params.rfPythonExecutable = getenv('RFMAP_PYTHON');
 params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
 params.rfTimeRange = [0 0.2];
 params.maxZeroBins = 2;
-params.clusterFormingZ2d = 1.8;
-params.clusterFormingZ1d = 1;
-params.dropBins = 2;
+params.rfSigma2d = [1.8 -1]; % Signed excitatory/inhibitory thresholds.
+params.rfSigma1d = [1 -0.75];
+params.rfReference2d = 'global'; % Explicit 2-D baseline: 'global' or 'bottom_row'.
+params.dropBins = 2; % Explicit choice: remove components containing one or two bins.
 params.rfWrapX = true;
-params.rfCollapseFrom2d = false;
+params.rfPlotWorkers = 8;
 
 params.isBackgroundMoving = false;
 params.isAllocentricPixelBins = false;
@@ -1031,7 +1018,7 @@ In the RF notebook, load the generated file for the first selected probe:
 import os
 from pathlib import Path
 import numpy as np
-from Utils.rflocate import load_rfmap, load_rf
+from RF.rflocate import load_rfmap, load_rf
 
 session_dir = Path(os.environ["RF_SESSION_DIR"])
 date = os.environ["RF_DATE"]
@@ -1098,15 +1085,26 @@ its extension.
 
 With `params.runRfDetection=true`, MATLAB calls `locate_rf.py` after writing
 each `.rfmap`, before its CSV/PDF exports. The caller passes the probe, response
-window, bin QC limits, cluster thresholds, and projection settings explicitly.
+window, bin QC limits, 2-D reference, component-size cutoff, signed thresholds for both response directions, and
+plot-worker count explicitly. The 1-D input sums the spatial rows before
+calling the same `detect_rf(data, sigma=..., drop_bins=...)` function used for 2-D maps.
 A Python failure stops that MATLAB run and reports the source file and output.
+
+The analysis workflows require both `reference_2d` and `drop_bins`, with no
+defaults. Choose `reference_2d="global"` for whole-map mean/SD or
+`reference_2d="bottom_row"` for last-row mean with whole-map SD. Choose
+`drop_bins=0` to retain every candidate component or `drop_bins=2` to remove
+components containing one or two bins. The examples here explicitly choose
+`"global"` and `2`; the baseline choice does not change the component cutoff.
+The two CLIs likewise require `--reference-2d` and `--drop-bins`.
 
 The default analysis uses 0–200 ms mean rates and keeps units with at most
 two zero or missing bins in total, with at least one finite nonzero response.
 Its no-shuffle detector represents missing responses as zero and includes zero
-responses in the spatial mean/SD. It detects 2-D RFs at mean + 1.8 SD and
-independent horizontal 1-D RFs at mean + 1 SD, without shuffling. Each source
-gets five adjacent files:
+responses in the spatial mean/SD. It detects excitatory 2-D/1-D RFs with
+`sigma=(1.8, 1)` and inhibitory 2-D/1-D RFs with `sigma=(-1, -0.75)`, matching
+the current notebook. Each source gets the following files for each direction;
+inhibitory filenames add `_inhibitory` before the dimensional suffix:
 
 | Suffix added to the source stem | Contents |
 | --- | --- |
@@ -1121,23 +1119,37 @@ a population summary for the current probe as PNG and SVG, without opening
 windows. Figures use opaque white backgrounds and are saved beside the source
 in `<source_stem>_figures/rfmap/`: `units/<probe>/<unit_id>` and
 `Probe<probe>/rf_summary`. Source-specific directories keep ON/OFF, rotation,
-and other maps separate. `--rf-type both` also exports inhibitory figures under
+and other maps separate. Both directions are detected by default, with inhibitory figures under
 `<source_stem>_figures/inhibitory/rfmap/`.
 Use `--plot-output-dir` to choose a different figure root or `--no-plots` to
-skip figures. Horizontal unit responses use detected RF rows by default;
-`--all-rf-rows` includes every row. Multi-probe pooled and smoothed population
-figures remain available in `locate_rf.ipynb`.
+skip figures. Horizontal unit responses show the actual input to 1-D detection.
+`--all-rf-rows` changes only the comparison CSV projection. Supplied comparison
+CSVs are regenerated from the current detection and time window.
 
 To analyze an existing file from the configured Linux/macOS terminal:
 
 ```bash
 probe_letter="${RF_PROBES:0:1}"
 rf_source="$RF_SESSION_DIR/data/rfmapping/good/-100_400_1ms/Probe${probe_letter}/regular_unitsSpikeCounts_${RF_DATE}_${RF_SESSION}.rfmap"
-"$RFMAP_PYTHON" "$RFMAP_CODE_DIR/locate_rf.py" "$rf_source" --probe "$probe_letter"
+"$RFMAP_PYTHON" "$RFMAP_CODE_DIR/locate_rf.py" "$rf_source" --probe "$probe_letter" --reference-2d global --drop-bins 2
 ```
 
 Use `--help` for the detector options. The [RFMap API guide](docs/rfmap.md)
-also describes the shared `analyze_rf_file()` function and result reuse.
+also describes the shared `analyze_rf_file()` function.
+
+For session-wide detection, pooled unit lists, comparison CSVs, and the
+notebook's per-unit, per-probe, pooled, and smoothed population plots, run:
+
+```bash
+cd "$RFMAP_CODE_DIR"
+"$RFMAP_PYTHON" -m scripts.redetect_rf_sessions "$RF_SESSION_DIR" --reference-2d global --drop-bins 2 --plot-workers 8
+```
+
+On hhw9l84, `/home/kai/scripts/run_pipeline.sh` invokes this session command
+after ADC spike-time generation for sessions that already contain regular
+`good/-100_400_1ms/Probe*/regular_unitsSpikeCounts_<session>.rfmap` files.
+This stage redetects existing RF maps; newly generated MATLAB maps are detected
+by `RFmapping_run_python` immediately after export.
 
 ## 9. Variations
 
@@ -1220,7 +1232,7 @@ paths before running a save cell, and preserve any result you need to retain.
 | `matlab_auto.ipynb` final cell | The same session `on_list_times.npy` | Keep `is_save_on_list_time=False` for preview; `True` replaces an existing file. It does not read or update the correction database. |
 | Spike-time exporter | `data/probeA/adc_spike_time.npy` | Regeneration writes the same target. Preserve a prior timestamp alignment before changing its method. |
 | MATLAB RF generator | Same-named `.rfmap`, CSV and PDF outputs | Identical output paths are reused on a rerun. Preserve an earlier run before generating a replacement. |
-| Optional Python RF detection | `.npz` at `result_path` | A different valid cache key can trigger recalculation and replacement; use a distinct result path to retain alternatives. Loading or summing a `.rfmap` alone does not write this sidecar. |
+| Optional Python RF detection | Explicit `save_rf(result, path)` output | `detect_rf()` only calculates from supplied data. Reading, calculating, and saving are separate calls; loading a missing result does not generate it. |
 
 The [platform guide](docs/platforms_and_data_safety.md#3-other-path-and-cache-assumptions)
 covers filename capitalization, reused paths, and platform-specific MATLAB

@@ -2,7 +2,9 @@
 
 Predictions evaluated on behavioral HD are a model-derived hypothesis. They
 are not measurements of a neuron's RF changing within a behavioral recording.
-The fit uses native saved classifications through the existing HD loader.
+The fit uses native saved classifications. Pair analysis and optional heading
+profile generation are explicit workflows; cache writing is separate from
+the in-memory calculation.
 """
 
 import argparse
@@ -13,12 +15,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import (
-    hd_pick, load_hd_profiles, recording_profiles, resample_profiles, rf_pick, rf_profiles,
-    select_rf_profiles, tcRange,
-)
+from HD.profiles import hd_pick, hd_profiles, load_hd_tc
+from Utils.direction_comparison import recording_profiles, resample_profiles, tcRange
+from RF.profiles import rf_pick, rf_profiles, select_rf_profiles
 from Utils.json_tools import read_formatted_json
-from Utils.rflocate import load_rf, load_rfmap, rf_result_path
+from RF.rflocate import load_rf, load_rfmap, rf_result_path
 from Utils.statistic_utils import fisher_lee_correlation, fisher_lee_statistics
 
 
@@ -140,10 +141,43 @@ def predict_hd_rf(model, hd_deg):
     return {key: value.reshape(query.shape) for key, value in result.items()}
 
 
-def _json_hd_profiles(hd_path, heading_path, unit_ids, cache_path):
-    """Recompute only directional counts/rates; retain the saved Class 3 cohort."""
+def calculate_heading_profiles(spikes, feature, epochs, *, feature_fs_hz):
+    """Calculate 30-bin counts and rates from supplied synchronized inputs; no I/O."""
     import pynapple as nap
-    from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd
+
+    curves = nap.compute_tuning_curves(data=spikes, features=feature, bins=30, epochs=epochs,
+                                      range=(0., 360.), return_counts=True, fs=feature_fs_hz)
+    curves = curves.transpose("unit", *[dim for dim in curves.dims if dim != "unit"])
+    counts = np.asarray(curves.values, dtype=float)
+    occupancy = np.asarray(curves.attrs["occupancy"]).reshape(-1) / feature_fs_hz
+    rates = np.divide(counts, occupancy, out=np.full_like(counts, np.nan), where=occupancy > 0)
+    ids = curves.coords["unit"].values.astype(int)
+    profiles = pd.DataFrame(rates, index=ids, columns=np.arange(6., 360., 12.))
+    return profiles, counts, occupancy
+
+
+def save_heading_profiles(path, profiles, counts, occupancy, *, metadata,
+                          epoch_intervals_s, feature_fs_hz):
+    """Write an already calculated heading profile cache without recomputing it."""
+    rates = profiles.to_numpy()
+    cache = dict(metadata=metadata, unit_id=profiles.index.tolist(),
+                 angle_bin_edges_deg=np.arange(0., 361., 12.).tolist(),
+                 spike_counts=counts.astype(int).tolist(), occupancy_time_s=occupancy.tolist(),
+                 firing_rate_hz=np.where(np.isfinite(rates), rates, None).tolist(),
+                 epoch_intervals_s=epoch_intervals_s, feature_fs_hz=feature_fs_hz)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, allow_nan=False) + "\n")
+
+
+def generate_heading_profiles(hd_path, heading_path, unit_ids, cache_path=None):
+    """Read source inputs and explicitly regenerate profiles for a supplied cohort.
+
+    The caller selects saved Class 3 IDs. No classification or shuffles run;
+    an optional cache is written only after the in-memory calculation.
+    """
+    import pynapple as nap
+    from Utils.camera_timing import get_exposure_timestamps, make_head_direction_tsd
 
     session = Path(hd_path).parents[3]
     metadata = read_formatted_json(hd_path)["metadata"]
@@ -165,43 +199,38 @@ def _json_hd_profiles(hd_path, heading_path, unit_ids, cache_path):
     times = np.load(session / "data" / f"probe{probe}/adc_spike_time.npy", mmap_mode="r").reshape(-1)
     spikes = nap.TsGroup({int(unit): nap.Ts(t=np.asarray(times[clusters == unit]) - origin)
                          for unit in unit_ids})
-    curves = nap.compute_tuning_curves(data=spikes, features=feature, bins=30, epochs=epochs,
-                                      range=(0., 360.), return_counts=True, fs=fs)
-    curves = curves.transpose("unit", *[dim for dim in curves.dims if dim != "unit"])
-    counts = np.asarray(curves.values, dtype=float)
-    occupancy = np.asarray(curves.attrs["occupancy"]).reshape(-1) / fs
-    rates = np.divide(counts, occupancy, out=np.full_like(counts, np.nan), where=occupancy > 0)
-    ids = curves.coords["unit"].values.astype(int)
-    profiles = pd.DataFrame(rates, index=ids, columns=np.arange(6., 360., 12.))
+    profiles, counts, occupancy = calculate_heading_profiles(
+        spikes, feature, epochs, feature_fs_hz=fs,
+    )
     provenance = dict(hd_heading_source=str(heading_path),
                       hd_heading_sha256=hashlib.sha256(Path(heading_path).read_bytes()).hexdigest(),
                       hd_profile_method="Pynapple tuning counts / occupancy from current JSON; 30 bins; no smoothing",
-                      classification_source="Cohort selected by existing update_hd_classification on saved TC; no new classification or shuffles",
+                      classification_source="Cohort selected from saved hd_class; no reclassification or shuffles",
                       dropped_unsynchronized_frames=int((~synced).sum()), camera_timing=timing,
                       heading_profile_sourcecache=str(cache_path) if cache_path is not None else None)
     if cache_path is not None:
-        cache = dict(metadata=provenance, unit_id=ids.tolist(),
-                     angle_bin_edges_deg=np.arange(0., 361., 12.).tolist(),
-                     spike_counts=counts.astype(int).tolist(), occupancy_time_s=occupancy.tolist(),
-                     firing_rate_hz=np.where(np.isfinite(rates), rates, None).tolist(),
-                     epoch_intervals_s=metadata["epoch_intervals_s"], feature_fs_hz=fs)
-        cache_path = Path(cache_path)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, indent=2, allow_nan=False) + "\n")
+        save_heading_profiles(
+            cache_path, profiles, counts, occupancy, metadata=provenance,
+            epoch_intervals_s=metadata["epoch_intervals_s"], feature_fs_hz=fs,
+        )
     return profiles, provenance
 
 
-def load_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
+def analyze_hd_rf_pairs(hd_path, rf_path, *, mouse="m19", date=260827, probe="A",
                      hd_heading_source=None, heading_profile_cache=None):
-    """Match the paired notebook's Class 3, detected-2D RF, and bin-quality selection."""
+    """Calculate paired preferences with explicit Class 3 and detected-RF selection.
+
+    This analysis pools RF responses and can regenerate heading profiles from
+    an explicitly supplied source. It is not a saved-result reader.
+    """
     recording = dict(mouse=mouse, date=date, probe=probe)
-    hd = load_hd_profiles(hd_path, probe=probe, bins=30, smoothing_deg=0)
+    hd = hd_profiles(load_hd_tc(hd_path), probe=probe, bins=30, smoothing_deg=0)
     hd = resample_profiles(hd, range=tcRange(False), bins=30)
     hd = recording_profiles(hd, mouse=mouse, date=date, label="HD")
     hd = hd_pick(hd, hd_class=3)
     heading_provenance = {}
     if hd_heading_source is not None:
-        profiles, heading_provenance = _json_hd_profiles(
+        profiles, heading_provenance = generate_heading_profiles(
             hd_path, hd_heading_source, hd.index.get_level_values("unit_id"), heading_profile_cache,
         )
         hd.loc[:, :] = profiles.loc[hd.index.get_level_values("unit_id")].to_numpy()
@@ -402,7 +431,7 @@ def main(argv=None):
     recording = args.root / "m19/260827"
     hd = args.hd_file or recording / "260827_9/data/tuning_curves/ProbeA/tuning_curves.tc"
     rf = args.rf_file or recording / "260827_2/data/rfmapping/good/-100_400_1ms/ProbeA/regular_unitsSpikeCounts_260827_2.rfmap"
-    pairs, provenance = load_hd_rf_pairs(
+    pairs, provenance = analyze_hd_rf_pairs(
         hd, rf, hd_heading_source=args.heading_json,
         heading_profile_cache=args.output / "json_hd_profiles.json" if args.heading_json else None,
     )

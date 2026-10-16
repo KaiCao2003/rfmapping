@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from scripts.export_comparison_tcs import main
-from Utils.rflocate import RFResult, save_rf
+from RF.rflocate import RFResult, save_rf
 
 
 @pytest.fixture
@@ -79,7 +79,8 @@ def test_hd_export_rebins_rates_and_pairs_explicit_ids(native_csv, tmp_path, hd_
         "occupancy_time_s": occupancy.tolist(),
         "firing_rate_hz": rates.tolist(),
         "spike_counts": counts.tolist(),
-        "unit_data": {"rayleigh_p": [.001, .001, .2], "shuffle_p": [.001, .001, .001]},
+        "unit_data": {"hd_class": [3, 2, 1], "rayleigh_p": [.001, .001, .2],
+                      "shuffle_p": [.001, .001, .001]},
     }))
     before = source.read_bytes()
     output = tmp_path / "hd.csv"
@@ -104,11 +105,12 @@ def test_hd_export_rebins_rates_and_pairs_explicit_ids(native_csv, tmp_path, hd_
     assert set(tmp_path.iterdir()) == {native_csv, source, output, rf_output}
 
 
-def test_existing_output_skips_until_explicit_overwrite(native_csv, tmp_path):
+def test_existing_output_requires_explicit_overwrite(native_csv, tmp_path):
     output = tmp_path / "selected.csv"
     output.write_text("existing result")
     arguments = ["rf", str(native_csv), str(output), "--unit-prefix", "paired"]
-    main(arguments)
+    with pytest.raises(FileExistsError):
+        main(arguments)
     assert output.read_text() == "existing result"
     main([*arguments, "--overwrite"])
     assert read_output(output).index.tolist() == ["paired:23", "paired:7", "paired:99", "paired:11"]

@@ -1,4 +1,5 @@
 """TC CSV loading and concatenation preserve supplied identity and native data."""
+import RF.profiles as rf_profiles_module
 
 import csv
 from pathlib import Path
@@ -9,7 +10,8 @@ import pytest
 from matplotlib import pyplot as plt
 
 from Utils import direction_comparison as comparison
-from Utils.rflocate import RFResult, detection, io
+from HD import tuning_curve_utils
+from RF.rflocate import RFResult, detection, io
 
 
 @pytest.fixture
@@ -40,15 +42,16 @@ def forbid_csv_analysis(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("CSV loading and concat must not read raw sources, analyze, or transform curves")
 
-    for name in ("load_rfmap", "load_rf_tc", "load_rf_profiles", "rf_profiles",
-                 "load_detected_rf", "load_hd_profiles", "load_ebc_profiles",
-                 "read_formatted_json", "update_hd_classification", "recording_profiles",
+    for name in ("recording_profiles",
                  "resample_profiles", "_resample_profiles", "_interpolate_angles",
-                 "normalize_tc", "zscore_tc", "smooth_profiles", "hd_pick", "rf_pick",
-                 "select_rf_profiles"):
+                 "normalize_tc", "zscore_tc", "smooth_profiles"):
         monkeypatch.setattr(comparison, name, unexpected)
     monkeypatch.setattr(detection, "detect_rf", unexpected)
+    monkeypatch.setattr(tuning_curve_utils, "classify_hd", unexpected)
     monkeypatch.setattr(io, "save_rf_tc", unexpected)
+    for name in ("load_rfmap", "load_rf_tc", "load_rf_profiles", "rf_profiles",
+                 "load_detected_rf", "rf_pick", "select_rf_profiles"):
+        monkeypatch.setattr(rf_profiles_module, name, unexpected)
 
 
 def _assert_native_csv(table):
@@ -239,12 +242,12 @@ def test_concat_merges_only_explicit_metadata():
 
 def test_rf_pick_uses_supplied_native_values_and_does_not_need_cached_qc(tc_csv):
     table = comparison.tc_loader(tc_csv)
-    selected = comparison.rf_pick(table, max_zero_bins=1)
+    selected = rf_profiles_module.rf_pick(table, max_zero_bins=1)
     assert selected.index.tolist() == ["m14:260609:B:23", "007"]
     assert selected.attrs == {}
-    assert len(comparison.rf_pick(table, max_zero_bins=None)) == 3
+    assert len(rf_profiles_module.rf_pick(table, max_zero_bins=None)) == 3
     table.attrs["unit_info"] = {key: {"zero_bins": 99} for key in table.index}
-    selected = comparison.rf_pick(table, max_zero_bins=1)
+    selected = rf_profiles_module.rf_pick(table, max_zero_bins=1)
     assert selected.index.tolist() == ["m14:260609:B:23", "007"]
     assert set(selected.attrs["unit_info"]) == set(selected.index)
 
@@ -287,8 +290,8 @@ def test_explicit_transforms_update_result_units_only(tc_csv, transform, respons
 
 @pytest.mark.parametrize("recording", [False, True])
 def test_existing_rf_readers_keep_explicit_recording_identity(rf_csv, recording):
-    table = (comparison.load_rf(rf_csv, mouse="m14", date=260609, probe="B") if recording else
-             comparison.load_rf_profiles(rf_csv, probe="B"))
+    table = (rf_profiles_module.load_rf(rf_csv, mouse="m14", date=260609, probe="B") if recording else
+             rf_profiles_module.load_rf_profiles(rf_csv, probe="B"))
     keys = [("B", unit_id) for unit_id in (23, 7, 99)]
     if recording:
         keys = [("m14", "260609", *key) for key in keys]
@@ -296,7 +299,8 @@ def test_existing_rf_readers_keep_explicit_recording_identity(rf_csv, recording)
     np.testing.assert_array_equal(table.columns, [-170., 210.125, -12.5])
     assert table.attrs["response_kind"] == "RF"
     assert table.attrs["response_units"] == "spike_count"
-    assert [info["zero_bins"] for info in table.attrs["unit_info"].values()] == [1, 0, 2]
+    assert all(info == {} for info in table.attrs["unit_info"].values())
+    assert table.eq(0).sum(axis=1).tolist() == [1, 0, 2]
 
 
 def _detected_rf():
@@ -305,8 +309,8 @@ def _detected_rf():
 
 
 def test_select_rf_profiles_accepts_one_full_recording_group(rf_csv):
-    profiles = comparison.load_rf(rf_csv, mouse="m14", date=260609, probe="B")
-    selected = comparison.select_rf_profiles(profiles, _detected_rf())
+    profiles = rf_profiles_module.load_rf(rf_csv, mouse="m14", date=260609, probe="B")
+    selected = rf_profiles_module.select_rf_profiles(profiles, _detected_rf())
     expected_keys = [("m14", "260609", "B", 23), ("m14", "260609", "B", 7)]
     pd.testing.assert_frame_equal(selected, profiles.loc[expected_keys])
     assert selected.attrs["unit_info"] == {
@@ -316,9 +320,9 @@ def test_select_rf_profiles_accepts_one_full_recording_group(rf_csv):
 
 @pytest.mark.parametrize("field, different", [("mouse", "m15"), ("date", "260610"), ("probe", "A")])
 def test_select_rf_profiles_rejects_multiple_recording_groups(rf_csv, field, different):
-    first = comparison.load_rf(rf_csv, mouse="m14", date=260609, probe="B")
+    first = rf_profiles_module.load_rf(rf_csv, mouse="m14", date=260609, probe="B")
     metadata = {"mouse": "m14", "date": 260609, "probe": "B", field: different}
-    second = comparison.load_rf(rf_csv, **metadata)
+    second = rf_profiles_module.load_rf(rf_csv, **metadata)
     pooled = comparison.concat(first, second)
     with pytest.raises(ValueError):
-        comparison.select_rf_profiles(pooled, _detected_rf())
+        rf_profiles_module.select_rf_profiles(pooled, _detected_rf())

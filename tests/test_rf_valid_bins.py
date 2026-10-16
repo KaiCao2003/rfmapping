@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from Utils import rf_detection
-from Utils.rf_analysis import rf_bin_qc
-from Utils.rfmap import RFMapList, asrfmap
+from RF import rf_detection
+from RF.rf_analysis import rf_bin_qc
+from RF.rfmap import RFMapList, asrfmap
 
 
 def _map(values, unit_id=0, *, occupancy=None, presentations=None):

@@ -4,9 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from Utils.ebc_geometry import (PositionInfo, compute_ebc_rays, cylinder_boundary,
-                                project_points, rectangle_boundary)
-from Utils.ebc_pose import load_basler_position, load_motive_position
+from EBB.ebc_geometry import (
+    BASLER_SIZE_CM, PositionInfo, compute_ebc_rays, cylinder_boundary,
+    pixel_heading_to_world_deg, project_points, rectangle_boundary,
+    rectangle_distances_cm,
+)
+from EBB.ebc_pose import load_basler_position, load_motive_position
 
 
 def position(xyz, headings, *, valid=None):
@@ -29,12 +32,12 @@ def test_rectangle_eight_rays_are_cm_and_project_to_calibrated_pixels():
     boundary = rectangle_boundary((100., 500., 200., 800.), 20.)
     data = position([[10., 10., 0.]], [90.])
     result = compute_ebc_rays(data, boundary)
-    np.testing.assert_array_equal(result.bearings_deg, np.arange(0., 360., 45.))
+    np.testing.assert_array_equal(result.bearings_deg, [0., 45., 90., 135., -180., -135., -90., -45.])
     np.testing.assert_allclose(result.distances_cm[0, ::2], 10.)
     np.testing.assert_allclose(result.distances_cm[0, 1::2], np.sqrt(200.))
     pixels = project_points(result.endpoints_cm, boundary.projection)
-    np.testing.assert_allclose(pixels[0, ::2], [[300., 200.], [100., 500.],
-                                             [300., 800.], [500., 500.]], atol=1e-10)
+    np.testing.assert_allclose(pixels[0, ::2], [[300., 200.], [500., 500.],
+                                             [300., 800.], [100., 500.]], atol=1e-10)
     assert result.valid.tolist() == [True]
 
 
@@ -43,7 +46,7 @@ def test_rectangle_at_wall_uses_opposite_wall_for_inward_rays():
     data = position([[0., 10., 0.], [0., 0., 0.]], [0., 0.])
     result = compute_ebc_rays(data, boundary)
     np.testing.assert_allclose(result.distances_cm[0, [0, 2, 4, 6]], [20., 10., 0., 10.])
-    np.testing.assert_allclose(result.distances_cm[1, [0, 1, 2, 4, 6]],
+    np.testing.assert_allclose(result.distances_cm[1, [0, 7, 6, 4, 2]],
                                [20., np.sqrt(800.), 20., 0., 0.], atol=1e-10)
 
 
@@ -118,7 +121,61 @@ def test_basler_loader_uses_requested_columns_and_frame_offset(tmp_path):
                                   heading_zero_deg=45., frame_offset=-1)
     np.testing.assert_array_equal(loaded.frame_ids, [0])
     np.testing.assert_allclose(loaded.xyz_cm, [[0., 20., 0.]])
-    np.testing.assert_allclose(loaded.hd_deg, [45.])
+    np.testing.assert_allclose(loaded.hd_deg, [np.rad2deg(np.arctan2(20. / 600., 20. / 400.))])
+
+
+@pytest.mark.parametrize("clockwise, zero_deg", [(True, 90.), (False, 90.), (False, 0.), (True, 45.)])
+def test_pixel_heading_matches_affine_front_back_vector(tmp_path, clockwise, zero_deg):
+    bounds = (100., 900., 200., 800.)
+    back = np.array([[400., 450.], [500., 450.], [500., 500.], [400., 500.]])
+    front = back + np.array([[80., -120.], [-120., -80.], [-80., 120.], [120., 80.]])
+    pixel_vector = front - back
+    pixel_world_angle = np.rad2deg(np.arctan2(-pixel_vector[:, 1], pixel_vector[:, 0]))
+    sign = -1. if clockwise else 1.
+    source_heading = (pixel_world_angle - zero_deg) / sign
+    # Independent oracle: affine-transform the measured front and back points.
+    affine = np.array([[40. / 800., 0.], [0., -40. / 600.]])
+    physical_vector = front @ affine.T - back @ affine.T
+    expected = np.rad2deg(np.arctan2(physical_vector[:, 1], physical_vector[:, 0])) % 360.
+    actual = pixel_heading_to_world_deg(source_heading, bounds_px=bounds, size_cm=BASLER_SIZE_CM,
+                                        heading_clockwise=clockwise, heading_zero_deg=zero_deg)
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+
+    center = (front + back) / 2.
+    path = tmp_path / "pose.csv"
+    pd.DataFrame(dict(frame=np.arange(len(center)), center_x=center[:, 0],
+                      center_y=center[:, 1], hd_deg=source_heading)).to_csv(path, index=False)
+    loaded = load_basler_position(path, np.arange(len(center)) / 30., bounds_px=bounds,
+                                  size_cm=BASLER_SIZE_CM, heading_clockwise=clockwise,
+                                  heading_zero_deg=zero_deg)
+    np.testing.assert_allclose(loaded.hd_deg, expected, atol=1e-12)
+    rays = compute_ebc_rays(loaded, rectangle_boundary(bounds, BASLER_SIZE_CM), bearings_deg=[0.])
+    forward = rays.endpoints_cm[:, 0, :2] - loaded.xyz_cm[:, :2]
+    unit_vector = physical_vector / np.linalg.norm(physical_vector, axis=1)[:, None]
+    np.testing.assert_allclose(forward / np.linalg.norm(forward, axis=1)[:, None], unit_vector, atol=1e-12)
+    pixel_north_cw = np.rad2deg(np.arctan2(pixel_vector[:, 0], -pixel_vector[:, 1]))
+    distances = rectangle_distances_cm(center[:, 0], center[:, 1], pixel_north_cw, [0.],
+                                       bounds_px=bounds, size_cm=BASLER_SIZE_CM)
+    np.testing.assert_allclose(distances, rays.distances_cm, atol=1e-12)
+    endpoint = rays.endpoints_cm[:, 0, :2]
+    assert np.all(np.any(np.isclose(endpoint, 0.) | np.isclose(endpoint, BASLER_SIZE_CM), axis=1))
+
+
+@pytest.mark.parametrize("clockwise, zero_deg", [(True, 90.), (False, 90.), (False, 0.), (True, 45.)])
+def test_square_pixel_calibration_preserves_heading(clockwise, zero_deg):
+    headings = np.arange(-720., 721., 13.)
+    actual = pixel_heading_to_world_deg(headings, bounds_px=(100., 600., 200., 700.),
+                                        size_cm=BASLER_SIZE_CM, heading_clockwise=clockwise,
+                                        heading_zero_deg=zero_deg)
+    sign = -1. if clockwise else 1.
+    expected = (zero_deg + sign * headings) % 360.
+    error = (actual - expected + 180.) % 360. - 180.
+    np.testing.assert_allclose(error, 0., atol=1e-12)
+
+
+def test_heading_calibration_preserves_missing_values():
+    actual = pixel_heading_to_world_deg([0., np.nan, 90.], bounds_px=(0., 600., 0., 400.), size_cm=40.)
+    np.testing.assert_allclose(actual, [90., np.nan, 0.], equal_nan=True)
 
 
 def test_motive_loader_uses_csv_frame_ids_and_keeps_full_video_gaps(tmp_path):

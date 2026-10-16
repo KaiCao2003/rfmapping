@@ -5,8 +5,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from Utils.rf_cache import read_rf_result, save_rf_result
-from Utils.rfmap import RFMap, RFMapList, asrfmap
+from RF.rf_cache import read_rf_result, save_rf_result
+from RF.rfmap import RFMap, RFMapList, asrfmap
 
 
 def _raw_map(tmp_path):
@@ -54,9 +54,9 @@ def test_rf_only_sum_selects_whole_rows_or_columns_and_preserves_time(
     def unexpected_analysis(*args, **kwargs):
         raise AssertionError("transform must use its loaded inputs without detection or loading")
 
-    monkeypatch.setattr("Utils.rflocate.detection._rf_output_arrays", unexpected_analysis)
-    monkeypatch.setattr("Utils.rflocate.io._read_rf_source", unexpected_analysis)
-    monkeypatch.setattr("Utils.rflocate._cache._read_rf_result", unexpected_analysis)
+    monkeypatch.setattr("RF.rflocate.detection._rf_output_arrays", unexpected_analysis)
+    monkeypatch.setattr("RF.rflocate.io._read_rf_source", unexpected_analysis)
+    monkeypatch.setattr("RF.rflocate._cache._read_rf_result", unexpected_analysis)
     collapsed = raw.sum_to_1d(axis=axis, rf_only=True, detected_rf=result)
     expected = np.asarray(expected)
     assert isinstance(collapsed, RFMap)
@@ -141,6 +141,33 @@ def test_nan_input_propagates_only_when_its_row_contributes(tmp_path):
         raw.sum_to_1d(rf_only=True, detected_rf=result).to_1d_array(), [10, 20],
     )
     np.testing.assert_allclose(raw.sum_to_1d().to_1d_array(), [np.nan, 24])
+
+
+@pytest.mark.parametrize("axis", ["x", "y"])
+def test_explicit_missing_as_zero_preserves_direct_detection_input(axis):
+    from RF.rflocate import detect_rf
+
+    values = np.full((3, 30), 4.)
+    values[:, 5:9] = 20
+    values[:, 19:23] = 0
+    values[0, 6] = np.nan
+    if axis == "y":
+        values = values.T
+    first = asrfmap(values)
+    maps = RFMapList([first, replace(first, unit_id=7, unit_index=1)], "<array>")
+    profile = maps.sum_to_1d(axis, missing_as_zero=True)
+    np.testing.assert_array_equal(
+        profile[0].to_1d_array(axis), np.nansum(values, axis=0 if axis == "x" else 1),
+    )
+    assert np.isnan(first.spike_counts).any()
+    assert profile[0].metadata["spatialAggregation"]["missing_as_zero"] is True
+    for sigma in (1.0, -0.75):
+        detected = detect_rf(profile, sigma=sigma, drop_bins=2)
+        legacy = maps.rf_1d(
+            axis=axis, rf_type="excitatory" if sigma > 0 else "inhibitory",
+            cluster_forming_z=abs(sigma), show_progress=False,
+        )
+        np.testing.assert_array_equal(detected.mask_2d.reshape(legacy.shape), legacy)
 
 
 def test_array_extraction_requires_explicit_spatial_and_time_aggregation(tmp_path):

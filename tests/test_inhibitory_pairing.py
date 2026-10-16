@@ -1,3 +1,4 @@
+import RF.profiles as rf_profiles_module
 from dataclasses import replace
 
 import numpy as np
@@ -6,8 +7,8 @@ import pytest
 from matplotlib import pyplot as plt
 
 from Utils import direction_comparison as comparison
-from Utils.rf_cache import read_rf_result, rf_result_path, save_rf_result
-from Utils.rfmap import RFMapList, asrfmap
+from RF.rf_cache import read_rf_result, rf_result_path, save_rf_result
+from RF.rfmap import RFMapList, asrfmap
 
 
 def test_minimum_bin_keeps_source_ties_and_missing_curves():
@@ -115,11 +116,11 @@ def test_explicit_selection_uses_inhibitory_files_and_preserves_raw_responses(tm
         save_rf_result(source.with_name(f"{source.stem}{suffix}.npz"),
                        mask_2d=mask, center_2d=center, unit_ids=[7, 11, 13],
                        manifest={}, cache_key=f"test{suffix}")
-    all_profiles = comparison.rf_profiles(maps)
+    all_profiles = rf_profiles_module.rf_profiles(maps)
     dimensions = ("2d", "1d") if rf_type == "either" else (rf_type,)
     results = [read_rf_result(rf_result_path(source, dimension=dimension, rf_type="inhibitory"))
                for dimension in dimensions]
-    inhibitory = comparison.select_rf_profiles(all_profiles, *results)
+    inhibitory = rf_profiles_module.select_rf_profiles(all_profiles, *results)
     expected_keys = [("A", unit_id) for unit_id in selected]
     pd.testing.assert_frame_equal(inhibitory, all_profiles.loc[expected_keys])
     assert set(inhibitory.attrs["unit_info"]) == set(expected_keys)

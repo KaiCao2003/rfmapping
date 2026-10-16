@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from Utils import ebc_geometry as geometry
-from Utils import ebc_overlay as drawing
-from Utils import ebc_video as video
-from Utils.ebc_workflow import prepare_video_data
+from EBB import ebc_geometry as geometry
+from EBB import ebc_overlay as drawing
+from EBB import ebc_video as video
+from EBB.ebc_workflow import export_prepared_video, prepare_video_data
 
 
 @pytest.fixture
@@ -46,6 +46,62 @@ def prepared_data(directory, shape):
     config = dict(session=directory, probe="A", phase="test", kilosort_dir=directory / "sorting")
     data = prepare_video_data(config, position, boundary, times, 100., dict(source="measured test clock"))
     return data
+
+
+def test_overlay_target_bearing_is_clockwise_without_reversing_world_heading():
+    boundary = geometry.rectangle_boundary((230., 740., 335., 835.), 41.)
+    position = geometry.PositionInfo(np.array([0]), np.array([1.]), np.array([[20., 20., 0.]]),
+                                     np.array([90.]), np.array([True]), {})
+    rays = geometry.compute_ebc_rays(position, boundary)
+    info = drawing.prepare_overlay_info(position, boundary, rays, target_xyz_cm=np.array([[30., 20., 0.]]))
+    np.testing.assert_allclose(info.target_bearing_deg, [90.])
+    np.testing.assert_allclose(info.hd_deg, [90.])
+    assert info.heading_tips_px[0, 1] < info.positions_px[0, 1]
+
+
+def test_rectangle_workflow_retains_avi_fps_and_saves_frame_audit(recording):
+    data = prepared_data(recording["directory"], "rectangle")
+    data["arena_type"] = "rectangle"
+    data["source_frame_ids"] = np.arange(5)
+    config = dict(video_path=recording["path"], output_dir=recording["directory"] / "output",
+                  video_workers=1, video_encoder="libx264")
+    result = export_prepared_video(data, config, silent=True)
+    # The source AVI is 31 fps, while the deliberately different ADC periods are 25 Hz.
+    assert result["fps"] == 31.
+    assert result["frames"] == 5
+    assert result["duration_s"] == pytest.approx(5 / 31)
+    assert len(Path(result["frame_geometry"]).read_text().splitlines()) == 6
+    assert json.loads((config["output_dir"] / "overlay.json").read_text())["frame_geometry"] == result["frame_geometry"]
+
+
+def test_basler_hd_display_is_north_clockwise_without_changing_geometry(tmp_path):
+    data = prepared_data(tmp_path, "rectangle")
+    data["arena_type"] = "rectangle"
+    overlay = drawing.EBCOverlay(data, 320, 240, 50.)
+    np.testing.assert_allclose(overlay.display_hd_deg, [0.] * 5)
+    np.testing.assert_allclose(overlay.info.hd_deg, [90.] * 5)
+    data["arena_type"] = "cylinder"
+    motive_overlay = drawing.EBCOverlay(data, 320, 240, 50.)
+    np.testing.assert_allclose(motive_overlay.display_hd_deg, [90.] * 5)
+
+
+def test_overlay_rays_are_signed_and_forward_ray_preserves_pixel_heading(tmp_path):
+    from EBB.ebc_pose import load_basler_position
+
+    path = tmp_path / "pose.csv"
+    path.write_text("frame,center_x,center_y,hd_deg\n0,200,100,45\n")
+    bounds = (0., 400., 0., 200.)
+    position = load_basler_position(path, np.array([0.]), bounds_px=bounds, size_cm=geometry.BASLER_SIZE_CM,
+                                    heading_clockwise=True, heading_zero_deg=90.)
+    boundary = geometry.rectangle_boundary(bounds, geometry.BASLER_SIZE_CM)
+    ebc = geometry.compute_ebc_rays(position, boundary)
+    info = drawing.prepare_overlay_info(position, boundary, ebc)
+    np.testing.assert_array_equal(info.bearings_deg, [0., 45., 90., 135., -180., -135., -90., -45.])
+    forward = info.endpoints_px[0, 0] - info.positions_px[0]
+    heading = info.heading_tips_px[0] - info.positions_px[0]
+    np.testing.assert_allclose(forward[0], -forward[1])
+    np.testing.assert_allclose(heading[0], -heading[1])
+    np.testing.assert_allclose(info.hd_deg, [np.rad2deg(np.arctan2(2., 1.))])
 
 
 def decoded_video(path):

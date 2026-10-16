@@ -6,11 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from Utils.rf_cache import (
-    RFResultCacheError, _rf_result_for_map, _rf_source_path,
-    load_rf_result, read_rf_result, rf_result_path, save_rf_result,
-)
-from Utils.rflocate.results import RFResult
+from RF.rf_cache import RFResultCacheError, _rf_result_for_map, _rf_source_path, load_rf_result, read_rf_result, rf_result_path, save_rf_result
+from RF.rflocate.results import RFResult
 
 
 @pytest.mark.parametrize("source_name", ["regular.rfmap", "regular.json", "regular"])

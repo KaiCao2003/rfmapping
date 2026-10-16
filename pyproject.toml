@@ -16,7 +16,6 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
 analysis = [
-  "ipython>=8,<10",
   "matplotlib>=3.9,<4",
   "numba>=0.61,<1",
   "pynapple>=0.9,<1",
@@ -39,7 +38,7 @@ video = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["Utils*"]
+include = ["Utils*", "RF*", "HD*", "EBB*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

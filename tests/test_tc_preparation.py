@@ -1,4 +1,8 @@
 """Prepare missing comparison CSVs without changing saved scientific inputs."""
+from HD.tc_generation import generate_hd_tc
+from RF.tc_generation import generate_rf_comparison
+from RF.tc_generation import generate_rf_projection
+from RF.tc_generation import generate_rf_tc
 
 import json
 import sys
@@ -11,9 +15,12 @@ import pytest
 import locate_rf
 from Utils import direction_comparison as comparison
 from Utils import tc_preparation as preparation
+from RF import tc_generation as rf_generation
+from HD import tc_generation as hd_generation
+from HD import tuning_curve_utils
 from Utils.direction_comparison import tc_loader
-from Utils.rflocate import RFResult, load_rf_tc, save_rf
-from Utils.rflocate import _detector
+from RF.rflocate import RFResult, load_rf_tc, save_rf
+from RF.rflocate import _detector
 
 
 @pytest.fixture
@@ -52,7 +59,7 @@ def test_missing_rf_comparison_generates_counts_then_selects_saved_units(
     monkeypatch.setattr(_detector, "detect_rf", _unexpected)
     projection = tmp_path / "native" / "x.csv"
     output = tmp_path / "comparison" / "rf.csv"
-    returned = preparation.prepare_rf_comparison(
+    returned = generate_rf_comparison(
         source, output, projection_path=projection, detected_rf_path=detected,
         time_range_s=(0., .2), rf_only=rf_only, unit_prefix="mouse:day:A",
     )
@@ -84,13 +91,10 @@ def test_existing_native_projection_is_reused_without_raw_map(tmp_path, monkeypa
         "23,2.345678901234567,0,0\n",
     )
     before = projection.read_bytes()
-    monkeypatch.setattr(preparation, "load_rfmap", _unexpected)
+    monkeypatch.setattr(rf_generation, "load_rfmap", _unexpected)
     monkeypatch.setattr(_detector, "detect_rf", _unexpected)
     output = tmp_path / "comparison" / "rf.csv"
-    preparation.prepare_rf_comparison(
-        source, output, projection_path=projection, detected_rf_path=detected,
-        time_range_s=(0., .2), rf_only=True, unit_prefix="paired",
-    )
+    generate_rf_tc(projection, output, select_results=[detected], unit_prefix="paired")
     expected = load_rf_tc(projection).loc[[7, 23]]
     expected.index = pd.Index(["paired:7", "paired:23"], name="unit_id")
     pd.testing.assert_frame_equal(tc_loader(output), expected)
@@ -99,28 +103,29 @@ def test_existing_native_projection_is_reused_without_raw_map(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("kind", ["hd", "rf", "projection", "comparison"])
-def test_existing_csv_returns_before_reading_any_source(tmp_path, monkeypatch, kind):
+def test_generator_requires_explicit_overwrite_before_reading_sources(tmp_path, monkeypatch, kind):
     output = tmp_path / "saved.csv"
     output.write_text("unit_id,0.0,12.0\nexisting:23,0,nan\n")
     before = output.read_bytes()
-    for function in ("load_hd_profiles", "load_rfmap", "load_rf", "load_rf_tc"):
-        monkeypatch.setattr(preparation, function, _unexpected)
-    monkeypatch.setattr(comparison, "update_hd_classification", _unexpected)
+    monkeypatch.setattr(hd_generation, "load_hd_tc", _unexpected)
+    for function in ("load_rfmap", "load_rf", "load_rf_tc"):
+        monkeypatch.setattr(rf_generation, function, _unexpected)
+    monkeypatch.setattr(tuning_curve_utils, "classify_hd", _unexpected)
     monkeypatch.setattr(_detector, "detect_rf", _unexpected)
     absent = tmp_path / "absent_source"
-    if kind == "hd":
-        returned = preparation.prepare_hd_tc(absent, output, bins=30, hd_class=3, unit_prefix="unused")
-    elif kind == "rf":
-        returned = preparation.prepare_rf_tc(absent, output, select_results=[absent], unit_prefix="unused")
-    else:
-        options = dict(detected_rf_path=absent, time_range_s=(0., .2), rf_only=True)
-        if kind == "projection":
-            returned = preparation.prepare_rf_projection(absent, output, **options)
+    with pytest.raises(FileExistsError, match="overwrite=True"):
+        if kind == "hd":
+            generate_hd_tc(absent, output, bins=30, hd_class=3, unit_prefix="unused")
+        elif kind == "rf":
+            generate_rf_tc(absent, output, select_results=[absent], unit_prefix="unused")
         else:
-            returned = preparation.prepare_rf_comparison(
-                absent, output, projection_path=absent, unit_prefix="unused", **options,
-            )
-    assert returned == output
+            options = dict(detected_rf_path=absent, time_range_s=(0., .2), rf_only=True)
+            if kind == "projection":
+                generate_rf_projection(absent, output, **options)
+            else:
+                generate_rf_comparison(
+                    absent, output, projection_path=tmp_path / "projection.csv", unit_prefix="unused", **options,
+                )
     assert output.read_bytes() == before
     assert set(tmp_path.iterdir()) == {output}
 
@@ -137,11 +142,12 @@ def test_missing_hd_csv_rebins_unsmoothed_counts_and_selects_class(tmp_path, hd_
         "metadata": {"classification": {}}, "unit_id": [23, 7, 99],
         "angle_bin_edges_deg": edges.tolist(), "occupancy_time_s": occupancy.tolist(),
         "firing_rate_hz": rates.tolist(), "spike_counts": counts.tolist(),
-        "unit_data": {"rayleigh_p": [.001, .001, .2], "shuffle_p": [.001, .001, .001]},
+        "unit_data": {"hd_class": [3, 2, 1], "rayleigh_p": [.001, .001, .2],
+                      "shuffle_p": [.001, .001, .001]},
     }))
     before = source.read_bytes()
     output = tmp_path / "comparison" / "hd.csv"
-    returned = preparation.prepare_hd_tc(
+    returned = generate_hd_tc(
         source, output, bins=6, hd_class=hd_class, unit_prefix="paired",
     )
     actual = tc_loader(output)
@@ -160,11 +166,12 @@ def test_rf_preparation_overwrite_is_explicit_and_retains_native_values(tmp_path
     source = tmp_path / "native.csv"
     source.write_text("unit_id,210.125,-60.0,0.0\n23,0,nan,1.2345678901234567\n7,8,9,10\n")
     output = tmp_path / "comparison" / "rf.csv"
-    preparation.prepare_rf_tc(source, output, unit_prefix="first")
+    generate_rf_tc(source, output, unit_prefix="first")
     first = output.read_bytes()
-    preparation.prepare_rf_tc(source, output, unit_prefix="second")
+    with pytest.raises(FileExistsError):
+        generate_rf_tc(source, output, unit_prefix="second")
     assert output.read_bytes() == first
-    preparation.prepare_rf_tc(source, output, unit_prefix="second", overwrite=True)
+    generate_rf_tc(source, output, unit_prefix="second", overwrite=True)
     expected = load_rf_tc(source).astype(float)
     expected.index = pd.Index(["second:23", "second:7"], name="unit_id")
     pd.testing.assert_frame_equal(tc_loader(output), expected)
@@ -178,7 +185,7 @@ def test_comparison_overwrite_cannot_replace_any_input(tmp_path, rf_inputs, outp
     inputs = dict(source=source, projection=projection, detected=detected)
     original = {path: path.read_bytes() for path in inputs.values()}
     with pytest.raises(ValueError, match="output must differ"):
-        preparation.prepare_rf_comparison(
+        generate_rf_comparison(
             source, inputs[output_input], projection_path=projection,
             detected_rf_path=detected, time_range_s=(0., .2),
             rf_only=True, unit_prefix="paired", overwrite=True,
@@ -191,7 +198,7 @@ def test_comparison_rejects_missing_output_that_is_its_projection(tmp_path, rf_i
     projection = tmp_path / "native" / "missing.csv"
     original = {path: path.read_bytes() for path in rf_inputs}
     with pytest.raises(ValueError, match="output must differ"):
-        preparation.prepare_rf_comparison(
+        generate_rf_comparison(
             source, projection, projection_path=projection,
             detected_rf_path=detected, time_range_s=(0., .2),
             rf_only=True, unit_prefix="paired",
@@ -225,6 +232,8 @@ def test_locate_rf_cli_prepares_both_comparisons_from_saved_detections(
         assert options["probe"] == "B"
         assert options["rf_type"] == "both"
         assert options["time_range_s"] == (0., .2)
+        assert options["drop_bins"] == 2
+        assert options["reference_2d"] == "global"
         return analyses
 
     monkeypatch.setattr(locate_rf, "analyze_rf_file", analyzed)
@@ -233,7 +242,8 @@ def test_locate_rf_cli_prepares_both_comparisons_from_saved_detections(
     arguments = [
         "locate_rf.py", str(source), "--probe", "B", "--rf-type", "both",
         "--time-range", "0", ".2", "--unit-prefix", "m21:261006:B",
-        "--comparison-output-dir", str(output_dir), "--no-plots",
+        "--comparison-output-dir", str(output_dir), "--no-plots", "--drop-bins", "2",
+        "--reference-2d", "global",
     ]
     if not rf_only:
         arguments.append("--all-rf-rows")
@@ -257,3 +267,43 @@ def test_locate_rf_cli_prepares_both_comparisons_from_saved_detections(
         np.testing.assert_array_equal(actual.to_numpy(), expected)
         np.testing.assert_array_equal(actual.to_numpy(), load_rf_tc(projection).loc[expected_ids].to_numpy())
     assert {path: path.read_bytes() for path in original} == original
+
+
+def test_rf_comparison_reads_each_input_once_without_csv_roundtrip(tmp_path, monkeypatch, rf_inputs):
+    source, detected = rf_inputs
+    reads = []
+    for name in ("load_rfmap", "load_rf"):
+        original = getattr(rf_generation, name)
+        def read(path, _original=original):
+            reads.append(path)
+            return _original(path)
+        monkeypatch.setattr(rf_generation, name, read)
+    monkeypatch.setattr(rf_generation, "load_rf_tc", _unexpected)
+    generate_rf_comparison(
+        source, tmp_path / "comparison.csv", projection_path=tmp_path / "native.csv",
+        detected_rf_path=detected, time_range_s=(0., .2), rf_only=True, unit_prefix="paired",
+    )
+    assert reads == [source, detected]
+
+
+def test_rf_calculations_use_loaded_values_without_io(monkeypatch, rf_inputs):
+    source, detected_path = rf_inputs
+    maps = rf_generation.load_rfmap(source)
+    detected = rf_generation.load_rf(detected_path)
+    for name in ("load_rfmap", "load_rf", "load_rf_tc", "save_rf_tc", "save_tc"):
+        monkeypatch.setattr(rf_generation, name, _unexpected)
+    from pathlib import Path
+    monkeypatch.setattr(Path, "open", _unexpected)
+    projection = rf_generation.calculate_rf_projection(maps, detected, time_range_s=(0., .2), rf_only=True)
+    table = rf_generation.calculate_rf_tc(projection, detected_results=[detected], unit_prefix="paired")
+    assert table.index.tolist() == ["paired:23", "paired:7"]
+    np.testing.assert_array_equal(table.to_numpy(), [[88, 132], [110, 220]])
+
+
+def test_missing_rf_reader_does_not_generate(tmp_path, monkeypatch):
+    from RF.profiles import load_rf_comparison
+    for name in ("generate_rf_tc", "generate_rf_projection", "generate_rf_comparison"):
+        monkeypatch.setattr(rf_generation, name, _unexpected)
+    with pytest.raises(FileNotFoundError):
+        load_rf_comparison("m14", tmp_path, "A", "260609", 3)
+    assert list(tmp_path.iterdir()) == []

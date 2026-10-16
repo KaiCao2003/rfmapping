@@ -17,13 +17,13 @@ from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import (
-    hd_pick, load_hd_profiles, recording_profiles, resample_profiles, rf_pick, rf_profiles,
-    select_rf_profiles, tcRange,
-)
+from HD.profiles import hd_pick
+from HD.profiles import load_hd_tc, hd_profiles
+from Utils.direction_comparison import recording_profiles, resample_profiles, tcRange
+from RF.profiles import rf_pick, rf_profiles, select_rf_profiles
 from Utils.plotting import LIGHT_PLOT_STYLE
-from Utils.rflocate import load_rf, load_rfmap, rf_result_path
-from Utils.tuning_curve_utils import von_mises_kappa
+from RF.rflocate import load_rf, load_rfmap, rf_result_path
+from HD.tuning_curve_utils import von_mises_kappa
 
 
 RECORDINGS = (
@@ -56,7 +56,7 @@ def collect_units(root):
             np.testing.assert_allclose(rates, np.asarray(data["spike_counts"]) / occupancy)
             angles = np.deg2rad((edges[:-1] + edges[1:]) / 2)
 
-            hd = load_hd_profiles(tc_path, probe=probe, bins=30, smoothing_deg=0)
+            hd = hd_profiles(load_hd_tc(tc_path), probe=probe, bins=30, smoothing_deg=0)
             hd = resample_profiles(hd, range=tcRange(False), bins=30)
             hd = recording_profiles(hd, mouse=mouse, date=date, label="HD")
             # This cutoff audit includes both classes that pass the significance tests.

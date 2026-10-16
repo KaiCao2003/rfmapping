@@ -9,10 +9,7 @@ from tqdm import tqdm
 from Utils.json_tools import read_formatted_json, write_formatted_json
 
 try:
-    from numba import njit, prange, get_num_threads, set_num_threads
-
-    print(get_num_threads())
-    set_num_threads(32)
+    from numba import njit, prange
 
 except Exception:  # pragma: no cover - fallback is exercised only without numba.
     njit = None

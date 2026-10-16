@@ -143,7 +143,7 @@ def plot_direction_comparison(
         # Retain the original density plot's ordered pairs, including its diagonal.
         reference_distances = circular_distance_matrix_deg(reference_deg).ravel()
         matched_distances = circular_distance_matrix_deg(matched_deg).ravel()
-        # Sixteen bins center on 0, 12, ..., 180 degrees, matching 30-bin tuning curves.
+        # Center the endpoint bins on 0 and 180 degrees.
         bin_width = 180.0 / (density_bin_count - 1)
         bin_edges = np.linspace(-bin_width / 2, 180.0 + bin_width / 2, density_bin_count + 1)
         density_figure, density_axis = plt.subplots(figsize=(8, 8))
@@ -554,6 +554,15 @@ def plot_head_turn_bar(summary, *, ylabel=None, **plot_options):
     return plot_phase_bar(summary, ylabel=ylabel, **plot_options)
 
 
+def _spatial_colorbar(axis, image, values, **options):
+    finite = np.asarray(values)[np.isfinite(values)]
+    if finite.size and not np.any(finite):
+        # Automatic limits around a constant zero would imply negative Hz/counts.
+        image.set_clim(0., 1.)
+        options["ticks"] = [0.]
+    return axis.figure.colorbar(image, ax=axis, **options)
+
+
 def _plot_heatmap(
     axis,
     horizontal_edges,
@@ -570,10 +579,23 @@ def _plot_heatmap(
         values,
         shading="auto",
         cmap=cmap,
+        edgecolors="none",
     )
     axis.set_title(title)
-    axis.figure.colorbar(image, ax=axis, label=colorbar_label)
+    _spatial_colorbar(axis, image, values, label=colorbar_label)
     return image
+
+
+def signed_egocentric_map(theta_edges, values):
+    """Reorder saved angular rows into -180..180 without changing bin values."""
+    theta_edges = np.asarray(theta_edges)
+    widths = np.diff(theta_edges)
+    centers = (theta_edges[:-1] + theta_edges[1:]) / 2
+    centers = (centers + 180) % 360 - 180
+    order = np.argsort(centers)
+    lower = centers[order] - widths[order] / 2
+    edges = np.r_[lower, centers[order[-1]] + widths[order[-1]] / 2]
+    return edges, np.asarray(values)[order]
 
 
 def plot_egocentric_heatmap(
@@ -586,6 +608,7 @@ def plot_egocentric_heatmap(
     *,
     cmap="viridis",
 ):
+    theta_edges, values = signed_egocentric_map(theta_edges, values)
     image = _plot_heatmap(
         axis,
         distance_edges,
@@ -596,11 +619,8 @@ def plot_egocentric_heatmap(
         cmap=cmap,
     )
     axis.set_xlabel("Distance to boundary (cm)")
-    axis.set_ylabel("Egocentric theta")
-    axis.set_yticks([0, 90, 180, 270, 360])
-    axis.set_yticklabels(
-        ["0°", "90°", "180°", "270°", "360°"]
-    )
+    axis.set_ylabel("Egocentric bearing (°)")
+    axis.set_yticks([-180, -90, 0, 90, 180])
     return image
 
 
@@ -630,6 +650,28 @@ def plot_allocentric_heatmap(
     return image
 
 
+def trajectory_breaks(x, y, *, frame_times=None, frame_ids=None,
+                      max_speed_cm_s=250, max_step_cm=5):
+    """Flag display-only discontinuities without removing tracked positions.
+
+    With timestamps, break speeds above 250 cm/s and intervals above 1.5 times
+    the median frame interval. Older arrays without times use a 5 cm step limit.
+    """
+    x, y = np.asarray(x), np.asarray(y)
+    step = np.hypot(np.diff(x), np.diff(y))
+    gaps = np.zeros(len(step), dtype=bool)
+    if frame_times is None:
+        jumps = step > max_step_cm
+    else:
+        dt = np.diff(frame_times)
+        gaps = (dt <= 0) | (dt > 1.5*np.median(dt[dt > 0]))
+        jumps = step > max_speed_cm_s*dt
+    if frame_ids is not None:
+        gaps |= np.diff(frame_ids) != 1
+    missing = ~np.isfinite(x) | ~np.isfinite(y)
+    return gaps | jumps | missing[:-1] | missing[1:], gaps, jumps
+
+
 def plot_trajectory_spikes(
     axis,
     trajectory_x_cm,
@@ -639,31 +681,40 @@ def plot_trajectory_spikes(
     *,
     x_limits,
     y_limits,
+    frame_times=None,
+    frame_ids=None,
 ):
+    x, y = np.asarray(trajectory_x_cm), np.asarray(trajectory_y_cm)
+    breaks, gaps, jumps = trajectory_breaks(x, y, frame_times=frame_times, frame_ids=frame_ids)
+    edges = np.flatnonzero(breaks)
     axis.plot(
-        trajectory_x_cm,
-        trajectory_y_cm,
+        np.insert(x, edges+1, np.nan),
+        np.insert(y, edges+1, np.nan),
         color="0.65",
         linewidth=0.35,
         label="Trajectory",
     )
-    axis.scatter(
-        spike_x_cm,
-        spike_y_cm,
-        s=2,
-        color="red",
-        alpha=0.3,
-        linewidths=0,
-        label="Spikes",
-    )
-    axis.set_xlim(x_limits)
-    axis.set_ylim(y_limits)
+    endpoints = np.unique(np.r_[edges, edges+1])
+    axis.scatter(x[endpoints], y[endpoints], s=7, color="#d97706",
+                 linewidths=0, label="Break endpoints", zorder=3)
+    if len(spike_x_cm):
+        axis.scatter(spike_x_cm, spike_y_cm, s=2, color="red", alpha=0.3,
+                     linewidths=0, label="Spikes")
+    axis.plot([x_limits[0],x_limits[1],x_limits[1],x_limits[0],x_limits[0]],
+              [y_limits[0],y_limits[0],y_limits[1],y_limits[1],y_limits[0]],
+              color="0.3",linestyle="--",linewidth=0.7,label="Arena")
+    axis.set_xlim(min(x_limits[0],np.nanmin(x))-1, max(x_limits[1],np.nanmax(x))+1)
+    axis.set_ylim(min(y_limits[0],np.nanmin(y))-1, max(y_limits[1],np.nanmax(y))+1)
     axis.set_xlabel("x (cm)")
     axis.set_ylabel("y (cm)")
     axis.set_aspect("equal")
     axis.invert_yaxis()
     axis.set_title("Trajectory and spike positions")
     axis.legend(loc="upper right")
+    rule = "250 cm/s" if frame_times is not None else "5 cm/step"
+    axis.text(0.01,0.01,f"Line breaks: {int(breaks.sum())} ({int(jumps.sum())} > {rule}; {int(gaps.sum())} gaps)\nAll tracked positions retained",
+              transform=axis.transAxes,fontsize=7,va="bottom",
+              bbox=dict(facecolor="white",edgecolor="none",alpha=0.95,pad=2))
 
 
 def plot_egocentric_polar(
@@ -675,7 +726,7 @@ def plot_egocentric_polar(
     hole_fraction=None,
     colorbar_label="Hz",
 ):
-    """Plot angle-by-distance rates with 0 degrees forward and 90 degrees left.
+    """Plot CW angle-by-distance rates with 0 degrees forward and 90 degrees right.
 
     ``hole_fraction`` sets the donut hole radius as a fraction of the outer
     radius. It changes only the radial origin; bin edges and cm labels keep
@@ -691,11 +742,12 @@ def plot_egocentric_polar(
         rate_map.T,
         shading="auto",
         cmap="viridis",
+        edgecolors="none",
     )
     axis.set_theta_zero_location("N")
-    axis.set_theta_direction(1)
+    axis.set_theta_direction(-1)
     axis.set_xticks(np.deg2rad([0, 90, 180, 270]))
-    axis.set_xticklabels(["0°", "90°", "180°", "270°"])
+    axis.set_xticklabels(["0°", "90°", "±180°", "−90°"])
     inner, outer = distance_edges[0], distance_edges[-1]
     axis.set_ylim(0, outer)
     axis.set_rorigin(0)
@@ -714,11 +766,11 @@ def plot_egocentric_polar(
     axis.grid(True, linewidth=0.5)
     axis.set_xlabel("Distance to boundary (cm)", labelpad=18)
     axis.set_title("Egocentric firing-rate map (polar)")
-    axis.figure.colorbar(image, ax=axis, label=colorbar_label, pad=0.12)
+    _spatial_colorbar(axis, image, rate_map, label=colorbar_label, pad=0.12)
     return image
 
 
-def plot_tuning_curve(axis, theta_edges, firing_rate, title):
+def plot_tuning_curve(axis, theta_edges, firing_rate, title, *, signed=False):
     theta_centers = np.deg2rad(
         (theta_edges[:-1] + theta_edges[1:]) / 2
     )
@@ -727,9 +779,9 @@ def plot_tuning_curve(axis, theta_edges, firing_rate, title):
 
     line = axis.plot(theta, rate, linewidth=2)[0]
     axis.set_theta_zero_location("N")
-    axis.set_theta_direction(1)
+    axis.set_theta_direction(-1)
     axis.set_xticks(np.deg2rad([0, 90, 180, 270]))
-    axis.set_xticklabels(["0", "90", "180", "270"])
+    axis.set_xticklabels(["0°", "90°", "±180°", "−90°"] if signed else ["0", "90", "180", "270"])
     axis.set_ylim(bottom=0)
     axis.set_title(title)
     return line

@@ -24,7 +24,7 @@ existing callers.
   The caller decides whether its cohort permits inference. The HD/RF fit disables
   inference for a cohort selected on its HD+RF outcome.
 
-The occupancy-adjusted Rayleigh test in `Utils.tuning_curve_utils` has a different
+The occupancy-adjusted Rayleigh test in `Utils.statistic_utils` has a different
 sampling model and remains separate.
 
 ## pycircstat2 evaluation, 2026-10-02

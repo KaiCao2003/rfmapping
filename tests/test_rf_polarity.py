@@ -4,8 +4,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from Utils import rf_detection
-from Utils.rfmap import RFMapList, asrfmap
+from RF import rf_detection
+from RF.rfmap import RFMapList, asrfmap
 
 
 def _source(values, is_batch=False):

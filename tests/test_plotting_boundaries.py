@@ -4,9 +4,7 @@ from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 
 from Utils.plotting import plot_hd_tuning_curve, plot_phase_bar, plot_head_turn_bar
-from Utils.statistic_utils import (
-    smooth_tuning_curve, summarize_phase_intervals, summarize_head_turns_from_intervals,
-)
+from Utils.statistic_utils import smooth_tuning_curve, summarize_phase_intervals, summarize_head_turns_from_intervals
 
 
 def test_hd_plot_preserves_missing_bins_and_smoothing_uses_the_intact_grid():

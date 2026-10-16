@@ -8,6 +8,57 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.stats import circmean, pearsonr, permutation_test, rankdata
 
 
+def mean_resultant_length(angles_deg: np.ndarray) -> float:
+    angles_deg = np.asarray(angles_deg, dtype=float)
+    angles_deg = angles_deg[np.isfinite(angles_deg)]
+    if not angles_deg.size:
+        return np.nan
+
+    mean_vector = np.mean(np.exp(1j * np.deg2rad(angles_deg)))
+    return float(np.clip(np.abs(mean_vector), 0.0, 1.0))
+
+
+def rayleigh_test(
+    spike_counts: np.ndarray,
+    occupancy_time_s: np.ndarray,
+    angle_centers_deg: np.ndarray,
+) -> tuple[float, float]:
+    spike_counts = np.asarray(spike_counts, dtype=float)
+    occupancy_time_s = np.asarray(occupancy_time_s, dtype=float)
+    angle_centers_deg = np.asarray(angle_centers_deg, dtype=float)
+    valid = (
+        np.isfinite(spike_counts)
+        & np.isfinite(occupancy_time_s)
+        & np.isfinite(angle_centers_deg)
+        & (occupancy_time_s > 0)
+    )
+    spike_counts = spike_counts[valid]
+    occupancy_time_s = occupancy_time_s[valid]
+    angle_centers_deg = angle_centers_deg[valid]
+    total_spikes = float(np.sum(spike_counts))
+    if total_spikes == 0 or len(spike_counts) < 3:
+        return np.nan, np.nan
+
+    angles_rad = np.deg2rad(angle_centers_deg)
+    design = np.column_stack((np.cos(angles_rad), np.sin(angles_rad)))
+    occupancy_weights = occupancy_time_s / np.sum(occupancy_time_s)
+    design_mean = occupancy_weights @ design
+    centered_design = design - design_mean
+
+    # Score test for cos/sin modulation in a Poisson model with log occupancy
+    # as offset. With uniform occupancy this reduces to the Rayleigh score test.
+    score = spike_counts @ centered_design
+    information = total_spikes * (
+        centered_design.T @ (centered_design * occupancy_weights[:, None])
+    )
+    if np.linalg.matrix_rank(information) < 2:
+        return np.nan, np.nan
+
+    rayleigh_score = float(score @ np.linalg.solve(information, score))
+    rayleigh_p = float(np.exp(-rayleigh_score / 2))
+    return rayleigh_score, rayleigh_p
+
+
 def rayleigh_uniformity(angles_deg):
     """Test circular uniformity using one unweighted angle per unit.
 

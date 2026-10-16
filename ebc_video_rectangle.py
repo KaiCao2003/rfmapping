@@ -1,6 +1,6 @@
-"""Rectangle recording entry: explicit config → shared eight-ray EBC overlay."""
+"""Basler entry: saved analysis → eight native samples → camera overlay."""
 
-from Utils.ebc_workflow import prepare_rectangle_video, video_main
+from EBB.ebc_workflow import prepare_rectangle_video, video_main
 
 
 def main(argv=None):

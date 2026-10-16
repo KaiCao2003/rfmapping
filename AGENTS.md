@@ -16,12 +16,15 @@
 - Follow `README.md` for the current raw-to-RF workflow and code layout.
   Root notebooks are active; keep `locate_rf.py` at its MATLAB bridge path.
   Maintenance scripts live in `scripts/`; optional video entries remain at the
-  root. Reusable Python code lives in `Utils/`.
+  root. Domain helpers live in `RF/`, `HD/`, and `EBB/`; shared code lives in `Utils/`.
 - `matlab_auto.ipynb` previews periodic-stimulus timing; `matlab.ipynb` applies
   stored timing edits. `freemoving.ipynb` prepares camera frame times. These
   are distinct workflows, not interchangeable viewers.
 - Separate loading, selection, statistics, and plotting as described in the
   README. GLM's copied `Utils/` can differ; reconcile semantics before sharing.
+- Readers only read saved data; missing files do not trigger generation.
+  Calculations consume loaded objects without file I/O. Use explicit `generate_*`
+  workflows for first-time outputs and explicit savers to persist results.
 - Preserve raw counts, occupancy, zero-versus-missing bins, and native angles.
   A `.rfmap` filename alone does not identify its JSON/NPZ/HDF5 contract.
 - For apparent pre-stimulus responses, inspect full `timeBinEdges` and raw trial

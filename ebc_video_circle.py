@@ -1,6 +1,6 @@
 """Cylinder recording entry: explicit config → shared eight-ray EBC overlay."""
 
-from Utils.ebc_workflow import prepare_cylinder_video, video_main
+from EBB.ebc_workflow import prepare_cylinder_video, video_main
 
 
 def main(argv=None):

@@ -8,12 +8,7 @@ import numpy as np
 import pytest
 
 from Utils.Sessions import Session
-from Utils.session_edits import (
-    SessionEditStore,
-    apply_session_edit,
-    check_session_edits,
-    open_session_edit_store,
-)
+from Utils.session_edits import SessionEditStore, apply_session_edit, check_session_edits, open_session_edit_store
 
 
 def test_session_rejects_non_adc_last_stream(tmp_path):

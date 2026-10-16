@@ -1,3 +1,4 @@
+import RF.profiles as rf_profiles_module
 from dataclasses import replace
 
 import numpy as np
@@ -7,7 +8,7 @@ from matplotlib import pyplot as plt
 
 from Utils import direction_comparison as comparison
 from Utils.plotting import plot_keyed_heatmap
-from Utils.rflocate import RFMapList, asrfmap
+from RF.rflocate import RFMapList, asrfmap
 
 
 def test_rf_profiles_consumes_explicit_time_and_spatial_transforms():
@@ -17,7 +18,7 @@ def test_rf_profiles_consumes_explicit_time_and_spatial_transforms():
     maps = RFMapList([source], "<array>")
 
     prepared = maps.sum(0., .2, show_progress=False).sum_to_1d(axis="x")
-    profiles = comparison.rf_profiles(prepared, probe="B")
+    profiles = rf_profiles_module.rf_profiles(prepared, probe="B")
 
     assert profiles.index.tolist() == [("B", 7)]
     np.testing.assert_array_equal(profiles.columns, source.x_positions)
@@ -33,13 +34,13 @@ def test_rf_profiles_wraps_loaded_csv_without_changing_native_values():
     )
     original = tc.copy(deep=True)
 
-    profiles = comparison.rf_profiles(tc, probe="B")
+    profiles = rf_profiles_module.rf_profiles(tc, probe="B")
 
     assert profiles.index.tolist() == [("B", 23), ("B", 7)]
     np.testing.assert_array_equal(profiles.columns, tc.columns)
     np.testing.assert_array_equal(profiles.to_numpy(), tc.to_numpy())
     assert profiles.attrs["unit_info"] == {
-        ("B", 23): {"zero_bins": 1}, ("B", 7): {"zero_bins": 0},
+        ("B", 23): {}, ("B", 7): {},
     }
     profiles.iloc[0, 0] = 999.
     pd.testing.assert_frame_equal(tc, original)
@@ -52,7 +53,7 @@ def test_saved_rf_selection_uses_unit_ids_and_preserves_native_responses():
     first = {"unit_ids": np.array([13, 7]), "mask_2d": np.array([[[0, 0]], [[1, 0]]])}
     second = {"unit_ids": np.array([11]), "mask_2d": np.array([[[0, 1]]])}
 
-    selected = comparison.select_rf_profiles(profiles, first, second)
+    selected = rf_profiles_module.select_rf_profiles(profiles, first, second)
 
     pd.testing.assert_frame_equal(selected, profiles.loc[[("A", 7), ("A", 11)]])
     assert list(selected.attrs["unit_info"]) == [("A", 7), ("A", 11)]
@@ -61,7 +62,7 @@ def test_saved_rf_selection_uses_unit_ids_and_preserves_native_responses():
     pooled = profiles.copy()
     pooled.index = pd.MultiIndex.from_tuples([("A", 7), ("B", 11), ("B", 13)], names=index.names)
     with pytest.raises(ValueError, match="one probe"):
-        comparison.select_rf_profiles(pooled, first)
+        rf_profiles_module.select_rf_profiles(pooled, first)
 
 
 def test_recording_profiles_only_adds_identity_and_label():

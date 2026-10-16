@@ -23,8 +23,9 @@ from Utils.Sessions import Session
 from Utils.json_tools import read_formatted_json, write_formatted_json
 from Utils.load_files import get_interval_pairs
 from Utils.recording import gen_recording_interval_table
-from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, tuning_curve
-from Utils.tc_preparation import prepare_hd_tc
+from Utils.camera_timing import get_exposure_timestamps, make_head_direction_tsd
+from HD.tuning_curve_utils import tuning_curve
+from HD.tc_generation import generate_hd_tc
 
 
 SESSIONS = {
@@ -174,11 +175,12 @@ def run_session(session_dir: Path, kilosort_dir: Path, file_names: dict) -> tupl
             "ttl_qc": ttl_qc,
         },
     )
-    prepare_hd_tc(
+    generate_hd_tc(
         data_dir / "tuning_curves" / f"Probe{PROBE}" / "tuning_curves.tc",
         data_dir / "tc_comparison" / f"hd_class3_Probe{PROBE}.csv",
         bins=30, hd_class=3,
         unit_prefix=f"{session_dir.parent.parent.name}:{session_dir.parent.name}:{PROBE}",
+        overwrite=True,
     )
     return len(result["unit_id"]), len(hd_frames)
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from Utils.rflocate.results import RFResult
+from RF.rflocate.results import RFResult
 
 
 def _inputs():

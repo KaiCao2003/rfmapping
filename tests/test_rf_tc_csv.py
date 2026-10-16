@@ -9,8 +9,8 @@ import sys
 import numpy as np
 import pytest
 
-from Utils.rflocate import RFMapList, asrfmap, load_rf_tc, save_rf_tc
-from Utils.rflocate import detection, io
+from RF.rflocate import RFMapList, asrfmap, load_rf_tc, rf_tc_table, save_rf_tc
+from RF.rflocate import detection, io
 
 
 def _prepared_maps(axis):
@@ -34,7 +34,7 @@ def _prepared_maps(axis):
 def test_rf_tc_round_trip_preserves_native_coordinates_values_and_unit_order(tmp_path, axis):
     maps, coordinates, values = _prepared_maps(axis)
     path = tmp_path / "chosen-profile.csv"
-    save_rf_tc(maps, path, axis=axis)
+    save_rf_tc(rf_tc_table(maps, axis=axis), path)
     loaded = load_rf_tc(path)
     np.testing.assert_array_equal(loaded.index, [23, 7, 99])
     assert loaded.index.name == "unit_id"
@@ -52,20 +52,20 @@ def test_rf_tc_round_trip_preserves_native_coordinates_values_and_unit_order(tmp
     (np.ones((2, 3)), "singleton spatial axis"),
     (np.ones((1, 3, 2)), "exactly one time bin"),
 ])
-def test_rf_tc_save_requires_prepared_data_without_implicit_summation(tmp_path, values, error):
+def test_rf_tc_conversion_requires_prepared_data_without_implicit_summation(tmp_path, values, error):
     path = tmp_path / "profile.csv"
     maps = RFMapList([asrfmap(values)], "<array>")
     with pytest.raises(ValueError, match=error):
-        save_rf_tc(maps, path)
+        rf_tc_table(maps)
     assert not path.exists()
 
 
-def test_rf_tc_save_rejects_different_native_coordinate_axes(tmp_path):
+def test_rf_tc_conversion_rejects_different_native_coordinate_axes(tmp_path):
     maps, _, _ = _prepared_maps("x")
     different = replace(maps[1], x_positions=np.array([-170., -11., 190.]))
     mismatched = RFMapList([maps[0], different], "<array>")
     with pytest.raises(ValueError, match="share one coordinate axis"):
-        save_rf_tc(mismatched, tmp_path / "profile.csv")
+        rf_tc_table(mismatched)
 
 
 def test_missing_rf_tc_only_attempts_the_requested_file(tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ def test_missing_rf_tc_only_attempts_the_requested_file(tmp_path, monkeypatch):
 
 def test_rf_tc_exports_do_not_import_pandas_with_core_package():
     completed = subprocess.run(
-        [sys.executable, "-c", "import sys; from Utils.rflocate import save_rf_tc, load_rf_tc; "
+        [sys.executable, "-c", "import sys; from RF.rflocate import save_rf_tc, load_rf_tc; "
          "assert 'pandas' not in sys.modules"],
         capture_output=True, text=True, check=False,
     )

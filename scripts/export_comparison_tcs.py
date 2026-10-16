@@ -15,7 +15,8 @@ Use the same explicit unit prefix for recordings of the same biological units.
 import argparse
 from pathlib import Path
 
-from Utils.tc_preparation import prepare_hd_tc, prepare_rf_tc
+from HD.tc_generation import generate_hd_tc
+from RF.tc_generation import generate_rf_tc
 
 
 def main(argv=None):
@@ -38,15 +39,13 @@ def main(argv=None):
     inputs = [args.source, *getattr(args, "select_results", ())]
     if args.output.resolve() in {path.resolve() for path in inputs}:
         parser.error("output must differ from every input path")
-    exists = args.output.exists()
     if args.kind == "hd":
-        prepare_hd_tc(args.source, args.output, bins=args.bins, hd_class=args.hd_class,
-                      unit_prefix=args.unit_prefix, overwrite=args.overwrite)
+        generate_hd_tc(args.source, args.output, bins=args.bins, hd_class=args.hd_class,
+                       unit_prefix=args.unit_prefix, overwrite=args.overwrite)
     else:
-        prepare_rf_tc(args.source, args.output, select_results=args.select_results,
-                      unit_prefix=args.unit_prefix, overwrite=args.overwrite)
-    action = "Skipped existing" if exists and not args.overwrite else "Wrote"
-    print(f"{action} {args.output}", flush=True)
+        generate_rf_tc(args.source, args.output, select_results=args.select_results,
+                       unit_prefix=args.unit_prefix, overwrite=args.overwrite)
+    print(f"Wrote {args.output}", flush=True)
 
 
 if __name__ == "__main__":

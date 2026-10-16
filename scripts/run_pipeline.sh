@@ -7,6 +7,8 @@ DATE="261006"
 SESSION_LIST=(1 2 3 4 5 6 7 8 9 10 11)
 # Sessions that also receive Motive and tuning-curve analysis.
 FREE_MOVING_SESSIONS=(1 5 6 8 9 10)
+# Front-align CSV frames and TTLs only for these sessions, retaining their common prefix.
+ignore_hd_ttl=()
 # Motive CSV rotation representation: true for Quaternion, false for Euler XYZ.
 MOTIVE_IS_QUATERNION=true
 # Sessions recorded with the Basler camera and analyzed from YOLO pose tracking.
@@ -32,8 +34,8 @@ PIPELINE_PYTHON="${PIPELINE_PYTHON:-$PIPELINE_DIR/.venv/bin/python}"
 SPIKEINTERFACE_PYTHON="${SPIKEINTERFACE_PYTHON:-$SPIKEINTERFACE_DIR/venv/bin/python}"
 ANALYZER_OUTPUT_DIR="${ANALYZER_OUTPUT_DIR:-$SPIKEINTERFACE_DIR/sorting_analyzer}"
 # Motive and YOLO are separate applications, not bundled copies of this repository.
-MOTIVE_ANALYSIS_DIR="${MOTIVE_ANALYSIS_DIR:-/mnt/ssd4.1/apps/motive_analysis}"
-MOTIVE_PYTHON="${MOTIVE_PYTHON:-/mnt/ssd4.1/apps/Analysis/.venv/bin/python}"
+MOTIVE_ANALYSIS_DIR="${MOTIVE_ANALYSIS_DIR:-$HOME/Developer/Analysis/pre_analysis}"
+MOTIVE_PYTHON="${MOTIVE_PYTHON:-$RFMAPPING_PYTHON}"
 YOLO_DIR="${YOLO_DIR:-$HOME/yolov26}"
 YOLO_PYTHON="${YOLO_PYTHON:-$HOME/.virtualenvs/yolov26/bin/python}"
 LOCAL_RAW_BASE="${LOCAL_RAW_BASE:-/mnt/ssd4.1}"
@@ -121,35 +123,49 @@ for SESSION_ID in "${FREE_MOVING_SESSIONS[@]}"; do
     SESSION_DIR="$RECORDING_BASE/$DATE/${DATE}_${SESSION_ID}"
     CSV_PATH="$SESSION_DIR/$DATE.csv"
     TAK_PATH="$SESSION_DIR/$DATE.tak"
+    HD_TTL_ARGS=()
+    for IGNORE_SESSION_ID in "${ignore_hd_ttl[@]}"; do
+        if [[ "$SESSION_ID" == "$IGNORE_SESSION_ID" ]]; then
+            HD_TTL_ARGS=(--ignore-hd-ttl)
+            break
+        fi
+    done
 
     if [[ ! -f "$CSV_PATH" || ! -f "$TAK_PATH" ]]; then
         echo "Skipping Motive session $SESSION_ID: CSV/TAK pair incomplete"
         continue
     fi
 
-    mkdir -p "$SESSION_DIR/data/config"
+    mkdir -p "$SESSION_DIR/data/config" "$SESSION_DIR/data/motive_analysis"
     MOTIVE_CONFIG="$SESSION_DIR/data/config/motive_analysis.yaml"
+    MOTIVE_OUTPUT_DIR="$SESSION_DIR/data/motive_analysis"
+    MOTIVE_LOG="$SESSION_DIR/data/config/motive_analysis.log"
     sed \
         -e "s|^  path: .*|  path: \"$CSV_PATH\"|" \
-        -e "s|^  base_dir: .*|  base_dir: input|" \
+        -e "s|^  rigid_body: .*|  rigid_body: hp4|" \
+        -e "s|^  base_dir: .*|  base_dir: \"$MOTIVE_OUTPUT_DIR\"|" \
         -e "s|^  is_quaternion: .*|  is_quaternion: $MOTIVE_IS_QUATERNION|" \
         "$MOTIVE_ANALYSIS_DIR/config/analysis.yaml" > "$MOTIVE_CONFIG"
 
     ANALYSIS_CONFIG="$MOTIVE_CONFIG" \
-        "$MOTIVE_PYTHON" "$MOTIVE_ANALYSIS_DIR/scripts/run_analysis.py"
-
-    HEAD_DIRECTION_PATH="$SESSION_DIR/data/processed/head_direction.json"
-    if [[ ! -f "$HEAD_DIRECTION_PATH" ]]; then
-        echo "Skipping tuning curves session $SESSION_ID: Motive head_direction.json missing"
-        continue
+        "$MOTIVE_PYTHON" "$MOTIVE_ANALYSIS_DIR/scripts/run_analysis.py" > "$MOTIVE_LOG" 2>&1
+    cat "$MOTIVE_LOG"
+    MOTIVE_RUN_DIR="$(sed -n 's/^Analysis completed. Results: //p' "$MOTIVE_LOG" | tail -n 1)"
+    if [[ -z "$MOTIVE_RUN_DIR" || ! -f "$MOTIVE_RUN_DIR/processed/head_direction.json" || ! -f "$MOTIVE_RUN_DIR/processed/filtered.csv" ]]; then
+        echo "Motive analysis did not produce processed/head_direction.json and filtered.csv for $SESSION_DIR" >&2
+        exit 1
     fi
+    mkdir -p "$SESSION_DIR/data/processed"
+    cp "$MOTIVE_RUN_DIR/processed/head_direction.json" "$MOTIVE_RUN_DIR/processed/filtered.csv" \
+        "$SESSION_DIR/data/processed/"
 
     cd "$RFMAPPING_DIR"
     "$RFMAPPING_PYTHON" -m scripts.run_tuning_curves \
         "$RECORDING_BASE" \
         "$DATE" \
         "$SESSION_ID" \
-        "$PROBE_LIST"
+        "$PROBE_LIST" \
+        "${HD_TTL_ARGS[@]}"
 
     "$RFMAPPING_PYTHON" -m scripts.plot_hd_cell_distribution \
         "$SESSION_DIR" "$PROBE_LIST"
@@ -160,13 +176,9 @@ for SESSION_ID in "${FREE_MOVING_SESSIONS[@]}"; do
         "$RFMAPPING_PYTHON" -m scripts.run_cylinder_spatial \
             "$SESSION_DIR" \
             --probe "$PROBE_NAME" \
-            --phase baseline
-
-        "$RFMAPPING_PYTHON" -m scripts.ebc_video \
-            "$SESSION_DIR" \
-            --probe "$PROBE_NAME" \
             --phase baseline \
-            --arena-type cylinder
+            "${HD_TTL_ARGS[@]}"
+
     done
 done
 
@@ -178,6 +190,15 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
         echo "Skipping Basler session $SESSION_ID: $VIDEO_PATH missing"
         continue
     fi
+
+    SESSION_KEY="${MOUSE_ID}_${DATE}_${SESSION_ID}"
+    BASLER_CONFIG=$(
+        cd "$RFMAPPING_DIR"
+        "$RFMAPPING_PYTHON" -c 'import sys; from EBB.spatial_cell_analysis import basler_session_defaults; bounds, channel = basler_session_defaults(sys.argv[1], sys.argv[2]); print(channel, *bounds)' "$SESSION_KEY" "new"
+    )
+    read -r -a BASLER_VALUES <<< "$BASLER_CONFIG"
+    CAMERA_INPUT_CHANNEL="${BASLER_VALUES[0]}"
+    BOUNDARY_ARGS=(--bounds-px "${BASLER_VALUES[@]:1}")
 
     cd "$YOLO_DIR"
     "$YOLO_PYTHON" "$YOLO_DIR/detect_stream.py" \
@@ -191,7 +212,8 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
         "$DATE" \
         "$SESSION_ID" \
         "$PROBE_LIST" \
-        --basler
+        --basler \
+        --camera-input-channel "$CAMERA_INPUT_CHANNEL"
 
     "$RFMAPPING_PYTHON" -m scripts.plot_hd_cell_distribution \
         "$SESSION_DIR" "$PROBE_LIST"
@@ -199,18 +221,25 @@ for SESSION_ID in "${BASLER_SESSIONS[@]}"; do
     for ((PROBE_INDEX = 0; PROBE_INDEX < ${#PROBE_LIST}; PROBE_INDEX++)); do
         PROBE_NAME="${PROBE_LIST:PROBE_INDEX:1}"
 
-        "$RFMAPPING_PYTHON" -m scripts.spatial_cell_analysis \
+        "$RFMAPPING_PYTHON" -m EBB.spatial_cell_analysis \
             --recording-root "$RECORDING_BASE" \
             --date "$DATE" \
             --recording-number "$SESSION_ID" \
             --probe "$PROBE_NAME" \
-            --phase baseline
+            --phase baseline \
+            --camera-input-channel "$CAMERA_INPUT_CHANNEL" \
+            "${BOUNDARY_ARGS[@]}"
+
+        "$RFMAPPING_PYTHON" -m scripts.plot_spatial_cells \
+            "$SESSION_DIR/data/spatial_cells/Probe$PROBE_NAME/baseline" \
+            --output "$SESSION_DIR/data/spatial_cells/Probe$PROBE_NAME/all_units"
 
         "$RFMAPPING_PYTHON" -m scripts.ebc_video \
             "$SESSION_DIR" \
             --probe "$PROBE_NAME" \
             --phase baseline \
-            --arena-type rectangle
+            --arena-type rectangle \
+            --analysis-dir "$SESSION_DIR/data/spatial_cells/Probe$PROBE_NAME/baseline"
     done
 done
 ) &

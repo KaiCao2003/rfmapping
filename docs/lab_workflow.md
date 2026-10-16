@@ -703,7 +703,7 @@ Run this in the remote RF notebook environment:
 ```python
 from pathlib import Path
 import numpy as np
-from Utils.rflocate import load_rfmap
+from RF.rflocate import load_rfmap
 
 rf_path = Path(
     "/mnt/senzailab/Kai/#Recording/m20/260918/260918_2"

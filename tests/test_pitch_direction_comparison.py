@@ -3,10 +3,7 @@ import pandas as pd
 import json
 
 from Utils.pitch_direction_comparison import circular_linear_association, preferred_angles
-from Utils.pitch_direction_comparison import (
-    rf_vertical_profiles, pitch_rf_regression, load_pitch_rf_pair, cache_name,
-    select_min_occupancy, select_pitch_rf_pair, resample_rf_profiles,
-)
+from Utils.pitch_direction_comparison import rf_vertical_profiles, pitch_rf_regression, load_pitch_rf_pair, cache_name, select_min_occupancy, select_pitch_rf_pair, resample_rf_profiles
 
 
 def test_pitch_peaks_remain_signed_and_missing_curves_have_no_peak():

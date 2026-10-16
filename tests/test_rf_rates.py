@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from scipy.io import savemat
 
-from Utils.rf_rates import aggregate_rate, counts_to_rates, resolve_presentation_counts
+from RF.rf_rates import aggregate_rate, counts_to_rates, resolve_presentation_counts
 
 
 def _recording(tmp_path, trials, edges, stem):

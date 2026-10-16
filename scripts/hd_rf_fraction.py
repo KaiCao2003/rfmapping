@@ -8,9 +8,11 @@ from pathlib import Path
 
 from matplotlib import pyplot as plt
 
-from Utils.direction_comparison import hd_pick, load_hd_profiles, recording_profiles
+from HD.profiles import hd_pick
+from HD.profiles import load_hd_tc, hd_profiles
+from Utils.direction_comparison import recording_profiles
 from Utils.plotting import LIGHT_PLOT_STYLE
-from Utils.rflocate import load_rf, rf_result_path
+from RF.rflocate import load_rf, rf_result_path
 
 
 ROOT = Path("/mnt/senzailab/Kai/#Recording")
@@ -49,9 +51,9 @@ def main():
             base = ROOT / mouse / str(date)
             hd_file = base / f"{date}_{hd_session}/data/tuning_curves/Probe{probe}/tuning_curves.tc"
             rf_file = base / f"{date}_{rf_session}/data/rfmapping/good/-100_400_1ms/Probe{probe}/regular_unitsSpikeCounts_{date}_{rf_session}.rfmap"
-            hd_profiles = load_hd_profiles(hd_file, probe=probe, bins=30, smoothing_deg=0)
-            hd_profiles = recording_profiles(hd_profiles, mouse=mouse, date=date, label="HD")
-            hd = set(hd_pick(hd_profiles, hd_class=HD_CLASS).index)
+            hd_table = hd_profiles(load_hd_tc(hd_file), probe=probe, bins=30, smoothing_deg=0)
+            hd_table = recording_profiles(hd_table, mouse=mouse, date=date, label="HD")
+            hd = set(hd_pick(hd_table, hd_class=HD_CLASS).index)
             ids_1d, ids_2d = rf_unit_ids(rf_file)
             with_1d = {key for key in hd if key[-1] in ids_1d}
             with_2d = {key for key in hd if key[-1] in ids_2d}

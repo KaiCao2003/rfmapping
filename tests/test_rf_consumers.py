@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from scripts import hd_rf_fraction
-from Utils import rflocate
-from Utils.rflocate import RFResult, rf_result_path, save_rf
+from RF import rflocate
+from RF.rflocate import RFResult, rf_result_path, save_rf
 
 
 @pytest.fixture

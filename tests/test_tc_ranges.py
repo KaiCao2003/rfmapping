@@ -1,4 +1,7 @@
 """Physical angular ranges must survive loading, display and explicit pooling."""
+from HD.profiles import hd_profiles
+from HD.profiles import load_hd_tc
+import RF.profiles as rf_profiles_module
 
 import json
 
@@ -35,7 +38,7 @@ def test_m14_loader_preserves_native_thirty_ten_degree_bins(tmp_path):
         "timeBinEdges": [0., .2], "occupancyTimeSec": [np.ones(30).tolist()],
     }))
 
-    result = comparison.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
+    result = rf_profiles_module.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
 
     np.testing.assert_array_equal(result.columns, angles)
     np.testing.assert_array_equal(result.iloc[0], values)
@@ -56,19 +59,20 @@ def test_rf_loader_preserves_missing_values_and_records_only_measured_zero_bins(
         "unitPool": [7, 11, 13], "xPositions": np.arange(-145., 150., 10.).tolist(),
         "yPositions": [0.], "timeBinEdges": [0., .2],
     }))
-    profiles = comparison.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
+    profiles = rf_profiles_module.load_rf(path, mouse="m14", date="260609", range=[-150, 150])
     np.testing.assert_array_equal(profiles.isna().sum(axis=1), [2, 3, 0])
-    assert [info["zero_bins"] for info in profiles.attrs["unit_info"].values()] == [0, 0, 2]
-    assert comparison.rf_pick(profiles, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
-    assert len(comparison.rf_pick(profiles, max_zero_bins=None)) == 3
+    assert all(info == {} for info in profiles.attrs["unit_info"].values())
+    assert profiles.eq(0).sum(axis=1).tolist() == [0, 0, 2]
+    assert rf_profiles_module.rf_pick(profiles, max_zero_bins=0).index.get_level_values("unit_id").tolist() == [7, 11]
+    assert len(rf_profiles_module.rf_pick(profiles, max_zero_bins=None)) == 3
 
-    selected = comparison.rf_pick(profiles, max_zero_bins=0)
+    selected = rf_profiles_module.rf_pick(profiles, max_zero_bins=0)
     pooled = comparison.resample_profiles(selected, range=comparison.tcRange(True), fill_value=0.)
     assert pooled.loc[profiles.index[0]].isna().any()
     assert pooled.iloc[:, np.abs(pooled.columns) > 150].eq(0).all().all()
     # Select on the native grid before interpolation introduces padding zeros.
     assert pooled.index.get_level_values("unit_id").tolist() == [7, 11]
-    assert comparison.rf_pick(pooled, max_zero_bins=0).empty
+    assert rf_profiles_module.rf_pick(pooled, max_zero_bins=0).empty
 
 
 def test_rf_loader_preserves_native_nonstandard_grid_and_single_time_bin(tmp_path, monkeypatch):
@@ -85,9 +89,11 @@ def test_rf_loader_preserves_native_nonstandard_grid_and_single_time_bin(tmp_pat
     def unexpected_transform(*args, **kwargs):
         raise AssertionError("RF loading must not run analysis or transformations")
 
-    for name in ("smooth_profiles", "rf_pick", "load_detected_rf", "resample_profiles"):
+    for name in ("smooth_profiles", "resample_profiles"):
         monkeypatch.setattr(comparison, name, unexpected_transform)
-    result = comparison.load_rf(path, mouse="m19", date="260827", range=[0, 360])
+    for name in ("rf_pick", "load_detected_rf"):
+        monkeypatch.setattr(rf_profiles_module, name, unexpected_transform)
+    result = rf_profiles_module.load_rf(path, mouse="m19", date="260827", range=[0, 360])
 
     assert result.index.tolist() == [("m19", "260827", "A", 7)]
     np.testing.assert_array_equal(result.columns, angles)
@@ -107,7 +113,7 @@ def test_rf_loader_rejects_sources_requiring_spatial_or_time_aggregation(tmp_pat
     }))
 
     with pytest.raises(ValueError, match="sum_to_1d|time bin"):
-        comparison.load_rf(path, mouse="m19", date="260827")
+        rf_profiles_module.load_rf(path, mouse="m19", date="260827")
 
 
 def test_explicit_resampling_wraps_angles_and_preserves_partial_support():
@@ -154,14 +160,12 @@ def test_comparison_padding_is_chosen_separately_for_each_panel():
     assert result["matched"].isna().any().any()
 
 
-def test_explicit_hd_preparation_preserves_source_order_for_tied_peaks(monkeypatch):
+def test_explicit_hd_preparation_preserves_source_order_for_tied_peaks():
     angles = np.arange(6., 360., 12.)
     values = np.ones(30)
     values[[0, 15]] = 9.  # 6 and -174 degrees tie; source order chooses 6.
     source = comparison.profile_table([values], [7], angles, probe="A")
-    monkeypatch.setattr(comparison, "load_hd_profiles", lambda *args, **kwargs: source)
-
-    profiles = comparison.load_hd_profiles("unused.tc", probe="A")
+    profiles = source
     profiles = comparison.resample_profiles(profiles, range=comparison.tcRange(False))
     result = comparison.recording_profiles(profiles, mouse="m19", date="260827")
 

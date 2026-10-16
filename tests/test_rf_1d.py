@@ -3,8 +3,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from Utils.rfmap import RFMap, RFMapList, asrfmap
-from Utils.rf_cache import read_rf_result
+from RF.rfmap import RFMap, RFMapList, asrfmap
+from RF.rf_cache import read_rf_result
 
 
 @pytest.mark.parametrize("axis", ["x", "y"])

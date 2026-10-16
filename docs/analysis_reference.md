@@ -21,7 +21,7 @@ covered by `.gitignore`; a fresh clone does not include those workflows.
 
 ## Python RFMap API
 
-`Utils.rflocate.load_rfmap()` loads one pooled RF source into an ordered `RFMapList`
+`RF.rflocate.load_rfmap()` loads one pooled RF source into an ordered `RFMapList`
 containing one `RFMap` per recorded unit. Array-index lookup and recorded
 unit-ID lookup are deliberately separate.
 
@@ -30,8 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
-from Utils.rflocate import asrfmap, load_rfmap, detect_rf
-from Utils.rflocate.trials import load_regular_rf_trials
+from RF.rflocate import asrfmap, load_rfmap, detect_rf
+from RF.rflocate.trials import load_regular_rf_trials
 
 session = Path("/mnt/senzailab/Kai/#Recording/m15/260630/260630_3")
 rf_source = (
@@ -54,7 +54,8 @@ result_path = rf_source.with_suffix(".npz")
 rf = detect_rf(
     summed, trials,
     is_shuffle=True,
-    cluster_forming_z=1.5,
+    drop_bins=0,  # Required argument; ignored by permutation detection.
+    sigma=1.5,
     alpha=0.05,
     n_permutations=10_000,
     random_seed=0,
@@ -87,16 +88,29 @@ metadata. Loaded null/NaN values stay missing, and missing contributing bins
 propagate through numeric sums. No-shuffle detection applies its own missing-bin
 policy only when detection is requested.
 
-`detect_rf()` returns an `RFResult` and defaults to
-`dimension="2d", is_shuffle=False, drop_bins=2`. Pass `is_shuffle=True`
-explicitly for trial-label permutation, as in the example above.
+`detect_rf(data, sigma=..., drop_bins=...)` returns an `RFResult`. Positive `sigma` selects
+increased responses and negative `sigma` selects decreased responses. The
+input's spatial shape determines 1-D or 2-D detection. Defaults are `sigma=1.5`
+and `is_shuffle=False`. `drop_bins` is required with no default: choose `0` to
+retain every candidate component or `2` to remove one- and two-bin components.
+Selecting a bottom-row reference does not choose this cutoff.
+Pass `is_shuffle=True` explicitly for
+trial-label permutation, as in the example above.
+
+The complete `analyze_rf_maps()` and `analyze_rf_file()` workflows require both
+`reference_2d` and `drop_bins`, with no defaults. Choose `reference_2d="global"`
+for whole-map mean/SD or `reference_2d="bottom_row"` for last-row mean with
+whole-map SD. The corresponding CLIs require `--reference-2d` and `--drop-bins`.
+Direct `detect_rf()` retains `reference="global"` by default, including for
+independent 1-D detection.
 
 `sum(earlier, later)` uses seconds and the half-open interval
 `[earlier, later)`. Both values must resolve to actual `timeBinEdges` entries
 within `1e-12` seconds. Equal edges produce a valid zero-valued singleton time
 axis; reversed intervals are invalid.
 
-`detect_rf()` operates on a single-bin prepared object. Shuffle detection
+`detect_rf()` accepts a numeric 1-D vector or 2-D map, or a single-bin prepared
+`RFMap` / `RFMapList`. Shuffle detection
 also requires matching trial data. A pooled source does not contain a trial
 axis and is insufficient for label permutation. The regular-data loader
 reconstructs per-trial responses from the authoritative MAT, onset, spike-time,
@@ -107,12 +121,20 @@ verified exchangeability blocks after polarity filtering. Repeat blocks are
 validated against the luminances actually present, including ON-only and
 OFF-only sessions.
 
-Candidate pixels use the configured cluster-forming z threshold. With shuffle
+Candidate pixels use the signed `sigma` threshold. With shuffle
 enabled, significance comes from the null distribution of the maximum
 4-connected cluster mass. `rf.project(axis="x")` projects the final 2-D mask
-without another test. Independent 1-D detection is an explicit
-`detect_rf(summed, dimension="1d", axis="x", ...)` call. Correction is within a unit and does not correct across
-units, polarities, or separately run analyses.
+without another test. Independent 1-D detection prepares its input explicitly:
+
+```python
+profile = summed.sum_to_1d(axis="x", missing_as_zero=True)
+rf_x = detect_rf(profile, sigma=1.0, drop_bins=2)  # Remove one- and two-bin components.
+```
+
+`missing_as_zero=True` preserves the established 1-D detector's treatment of
+missing bins before summation. Omit it to propagate missing contributing values.
+Permutation correction is within a unit and does not correct across units,
+polarities, or separately run analyses.
 
 Batch work can show `Sum`, `Detecting RF`, and `Center` progress bars.
 The result exposes its complete mask as `mask_2d` and one response-weighted RF
@@ -122,7 +144,7 @@ retain the unit and collapsed spatial axes. Detection is silent unless
 
 `result_path` is an optional, versioned `.npz` result sidecar. One
 successful run stores both the mask and center, together with enough input and
-parameter identity to reject a stale result. `Utils.rflocate.load_rf()` reads
+parameter identity to reject a stale result. `RF.rflocate.load_rf()` reads
 that saved result without running detection; accessing its center or projecting
 its mask does not rerun the permutation. Do not use `.rfmap` for this:
 `.rfmap` remains a raw-source extension. The current regular writer produces

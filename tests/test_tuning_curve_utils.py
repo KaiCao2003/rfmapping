@@ -1,4 +1,8 @@
 from __future__ import annotations
+from HD.profiles import hd_profiles
+from HD.profiles import load_hd_tc
+from Utils import camera_timing
+from Utils import statistic_utils
 
 import json
 from types import SimpleNamespace
@@ -9,7 +13,7 @@ import pytest
 import xarray as xr
 
 from Utils import kilosort_utils
-from Utils import tuning_curve_utils
+from HD import tuning_curve_utils
 
 
 class _FakeTs:
@@ -44,7 +48,7 @@ def test_von_mises_kappa_is_undefined_without_complete_finite_firing(rates):
 
 def _saved_hd_curves():
     angles = np.deg2rad(np.arange(0, 360, 2))
-    rates = [np.exp(kappa * (np.cos(angles) - 1)).tolist() for kappa in (.6, .09, .6, .6, .6)]
+    rates = [np.exp(kappa * (np.cos(angles) - 1)).tolist() for kappa in (.6, .24, .6, .6, .6)]
     return {
         "metadata": {"classification": {"rayleigh_alpha": .01, "shuffle_alpha": .01}},
         "unit_id": [21, 12, 7, 3, 8],
@@ -62,37 +66,55 @@ def _saved_hd_curves():
     }
 
 
-def test_update_hd_classification_preserves_source_tests_and_rates(tmp_path):
+def test_classify_hd_refreshes_stale_threshold_metadata_and_flags():
+    data = _saved_hd_curves()
+    data["metadata"]["classification"].update(rayleigh_alpha=.05, shuffle_alpha=.05)
+    data["unit_data"]["rayleigh_significant"] = [True] * 5
+    data["unit_data"]["shuffle_significant"] = [True] * 5
+    original = json.loads(json.dumps(data))
+
+    tuning_curve_utils.classify_hd(data)
+
+    assert data["metadata"]["classification"]["rayleigh_alpha"] == .01
+    assert data["metadata"]["classification"]["shuffle_alpha"] == .01
+    assert data["unit_data"]["rayleigh_significant"] == [True, True, True, False, None]
+    assert data["unit_data"]["shuffle_significant"] == [True, True, False, False, True]
+    for key in ("rayleigh_p", "shuffle_p"):
+        assert data["unit_data"][key] == original["unit_data"][key]
+    assert data["unit_data"]["hd_class"] == [3, 2, 1, 0, None]
+
+
+def test_classify_hd_preserves_source_tests_and_rates(tmp_path):
     data = _saved_hd_curves()
     before = json.loads(json.dumps(data))
 
-    assert tuning_curve_utils.update_hd_classification(data) is data
+    assert tuning_curve_utils.classify_hd(data) is data
 
     assert data["unit_data"]["hd_class"] == [3, 2, 1, 0, None]
     assert data["unit_data"]["kappa_pass"] == [True, False, True, True, True]
-    np.testing.assert_allclose(data["unit_data"]["von_mises_kappa"], [.6, .09, .6, .6, .6])
+    np.testing.assert_allclose(data["unit_data"]["von_mises_kappa"], [.6, .24, .6, .6, .6])
     for key in before["unit_data"]:
         if key != "hd_class":
             assert data["unit_data"][key] == before["unit_data"][key]
     for key in ("unit_id", "angle_bin_edges_deg", "occupancy_time_s", "firing_rate_hz", "spike_counts"):
         assert data[key] == before[key]
-    assert data["metadata"]["classification"]["kappa_cutoff"] == .1
+    assert data["metadata"]["classification"]["kappa_cutoff"] == .25
     tuning_curve_utils.save_hd_unit_lists(data, tmp_path)
     assert np.load(tmp_path / "hd_cells_1.npy").tolist() == [7]
     assert np.load(tmp_path / "hd_cells_2.npy").tolist() == [12]
     assert np.load(tmp_path / "hd_cells_3.npy").tolist() == [21]
     # The new columns remain valid JSON and repeated refreshes are stable.
     saved = json.loads(json.dumps(data, allow_nan=False))
-    tuning_curve_utils.update_hd_classification(data)
+    tuning_curve_utils.classify_hd(data)
     assert data == saved
 
 
-@pytest.mark.parametrize("kappa, passes", [(.1, True), (np.nextafter(.1, 0), False)])
-def test_update_hd_classification_uses_inclusive_kappa_cutoff(monkeypatch, kappa, passes):
+@pytest.mark.parametrize("kappa, passes", [(.25, True), (np.nextafter(.25, 0), False)])
+def test_classify_hd_uses_inclusive_kappa_cutoff(monkeypatch, kappa, passes):
     data = _saved_hd_curves()
     monkeypatch.setattr(tuning_curve_utils, "von_mises_kappa", lambda *_: kappa)
 
-    tuning_curve_utils.update_hd_classification(data, kappa_cutoff=.1)
+    tuning_curve_utils.classify_hd(data, kappa_cutoff=.25)
 
     assert data["unit_data"]["kappa_pass"] == [passes] * 5
     assert data["unit_data"]["hd_class"][:2] == [3 if passes else 2] * 2
@@ -100,7 +122,7 @@ def test_update_hd_classification_uses_inclusive_kappa_cutoff(monkeypatch, kappa
 
 
 @pytest.mark.parametrize("missing", ["occupancy", "rate", "zero_firing"])
-def test_update_hd_classification_cannot_promote_unavailable_kappa(missing):
+def test_classify_hd_cannot_promote_unavailable_kappa(missing):
     data = _saved_hd_curves()
     if missing == "occupancy":
         data["occupancy_time_s"][0] = 0
@@ -110,7 +132,7 @@ def test_update_hd_classification_cannot_promote_unavailable_kappa(missing):
     else:
         data["firing_rate_hz"] = np.zeros((5, 180)).tolist()
 
-    tuning_curve_utils.update_hd_classification(data)
+    tuning_curve_utils.classify_hd(data)
 
     assert data["unit_data"]["hd_class"] == [2, 2, 1, 0, None]
     assert data["unit_data"]["von_mises_kappa"] == [None] * 5
@@ -124,7 +146,7 @@ def test_unbounded_kappa_passes_without_serializing_infinity():
     data["firing_rate_hz"] = [rates.tolist()] * 5
 
     assert tuning_curve_utils.von_mises_kappa(rates, np.deg2rad(np.arange(0, 360, 2))) == np.inf
-    tuning_curve_utils.update_hd_classification(data)
+    tuning_curve_utils.classify_hd(data)
 
     assert data["unit_data"]["von_mises_kappa"] == [None] * 5
     assert data["unit_data"]["kappa_pass"] == [True] * 5
@@ -167,7 +189,7 @@ def test_exposure_reads_saved_times_without_scanning_adc(tmp_path, source):
             ).tolist()
         source_path.write_text(json.dumps(sync_data), encoding="utf-8")
 
-    timestamps, adc_origin, qc = tuning_curve_utils.get_exposure_timestamps(
+    timestamps, adc_origin, qc = camera_timing.get_exposure_timestamps(
         session_info=session_info,
         data_dir=data_dir,
     )
@@ -191,7 +213,7 @@ def test_saved_empty_camera_times_are_invalid(tmp_path):
         "exposure_sampling_number_list_mid": [],
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="No complete camera timing data"):
-        tuning_curve_utils.get_exposure_timestamps(session_info={}, data_dir=tmp_path)
+        camera_timing.get_exposure_timestamps(session_info={}, data_dir=tmp_path)
 
 
 @pytest.mark.parametrize("active_high", [True, False])
@@ -226,7 +248,7 @@ def test_missing_saved_times_read_raw_adc_pulses_across_chunks(
             "recording_interval": [[0, 1010]],
         }))
 
-    actual, adc_origin, qc = tuning_curve_utils.get_exposure_timestamps(
+    actual, adc_origin, qc = camera_timing.get_exposure_timestamps(
         session_info, tmp_path, camera_input_channel=1,
         camera_ttl_threshold=14000, camera_ttl_active_high=active_high,
     )
@@ -404,7 +426,7 @@ def test_tuning_curve_writes_exact_columnar_contract(
             / expected_rates[unit_index].sum()
         )
         assert result["unit_data"]["rate_mvl"][unit_index] == pytest.approx(expected_mvl)
-        expected_score, expected_p = tuning_curve_utils.rayleigh_test(
+        expected_score, expected_p = statistic_utils.rayleigh_test(
             expected_counts[unit_index], expected_occupancy / 100, expected_centers,
         )
         assert result["unit_data"]["rayleigh_score"][unit_index] == pytest.approx(expected_score)
@@ -524,7 +546,7 @@ def test_head_direction_support_excludes_missing_invalid_and_paused_frames():
     frames = np.asarray([0, 1, 3, 4, 5, 6, 7])
     angles = np.asarray([1.0, np.nan, 21.0, 181.0, 181.0, np.nan, 183.0])
 
-    feature, fs = tuning_curve_utils.make_head_direction_tsd(camera_times, frames, angles)
+    feature, fs = camera_timing.make_head_direction_tsd(camera_times, frames, angles)
 
     assert fs == pytest.approx(100.0)
     np.testing.assert_allclose(feature.index, camera_times[[0, 3, 4, 5, 7]])
@@ -532,6 +554,20 @@ def test_head_direction_support_excludes_missing_invalid_and_paused_frames():
     np.testing.assert_allclose(feature.time_support.values, [
         [-0.005, 0.005], [0.025, 0.035], [0.095, 0.115], [0.125, 0.135],
     ])
+
+
+def test_json_null_initial_heading_frames_are_not_future_filled():
+    camera_times = 3.0 + np.arange(15) / 50
+    saved = json.loads(json.dumps({"frames": list(range(15)),
+                                   "hd": [None] * 11 + [96.0, 94.0, 93.0, 92.0]}))
+    feature, fs = camera_timing.make_head_direction_tsd(
+        camera_times, np.asarray(saved["frames"]), np.asarray(saved["hd"], dtype=float),
+    )
+    assert fs == pytest.approx(50.0)
+    np.testing.assert_allclose(feature.index, camera_times[11:])
+    np.testing.assert_array_equal(feature.values, [96.0, 94.0, 93.0, 92.0])
+    np.testing.assert_allclose(feature.time_support.values,
+                               [[camera_times[11] - .01, camera_times[-1] + .01]])
 
 
 @pytest.mark.parametrize("shuffle_backend", ["numpy", "numba"])
@@ -559,7 +595,7 @@ def test_tracking_gap_spikes_do_not_change_counts_rates_or_shuffle(
         angles = np.insert(angles, 101, 91.0)
         clean_spikes.insert(1, 5.0)
         expected_support.insert(1, [4.995, 5.005])
-    feature, fs = tuning_curve_utils.make_head_direction_tsd(camera_times, frame_ids, angles)
+    feature, fs = camera_timing.make_head_direction_tsd(camera_times, frame_ids, angles)
 
     results = []
     for spikes in (clean_spikes, sorted(clean_spikes + [3.0, 7.0])):
@@ -592,7 +628,7 @@ def test_tuning_discards_epoch_fragments_without_a_pose_sample(tmp_path):
     np.save(probe_dir / "adc_spike_time.npy", [100.003, 100.5, 109.5])
     camera_times = np.arange(1001) / 100
     frame_ids = np.r_[0, np.arange(900, 1001)]
-    feature, fs = tuning_curve_utils.make_head_direction_tsd(
+    feature, fs = camera_timing.make_head_direction_tsd(
         camera_times, frame_ids, np.ones(len(frame_ids)),
     )
 
@@ -620,7 +656,7 @@ def test_tuning_classifies_rayleigh_at_inclusive_point_zero_one(
     probe_dir.mkdir(parents=True)
     np.save(probe_dir / "adc_spike_time.npy", [100.1, 100.5])
     frame_ids = np.arange(1001)
-    feature, fs = tuning_curve_utils.make_head_direction_tsd(
+    feature, fs = camera_timing.make_head_direction_tsd(
         frame_ids / 100, frame_ids, frame_ids * 360 / 1000 % 360,
     )
     monkeypatch.setattr(tuning_curve_utils, "rayleigh_test", lambda *_: (1., rayleigh_p))
@@ -645,10 +681,10 @@ def test_tuning_classifies_rayleigh_at_inclusive_point_zero_one(
 
 
 @pytest.mark.parametrize("hd_class, expected_ids", [
-    (2, [1]), (1, [2, 3, 4]), (0, [5]), ((1, 2), [1, 2, 3, 4]),
+    (2, [1, 2, 3]), (1, [4]), (0, [5]), ((1, 2), [1, 2, 3, 4]),
 ])
-def test_hd_loader_reclassifies_saved_point_zero_five_results(tmp_path, hd_class, expected_ids):
-    from Utils.direction_comparison import load_hd_profiles
+def test_hd_loader_preserves_saved_point_zero_five_classes(tmp_path, hd_class, expected_ids):
+    from HD.profiles import hd_profiles
 
     path = tmp_path / "tuning_curves.tc"
     data = {
@@ -666,12 +702,12 @@ def test_hd_loader_reclassifies_saved_point_zero_five_results(tmp_path, hd_class
     }
     path.write_text(json.dumps(data))
 
-    profiles = load_hd_profiles(path, hd_class=hd_class)
+    profiles = hd_profiles(load_hd_tc(path), hd_class=hd_class)
 
     assert profiles.index.tolist() == [("A", unit_id) for unit_id in expected_ids]
     assert set(tmp_path.iterdir()) == {path}
     assert profiles.attrs["unit_info"] == {
-        ("A", unit): {"hd_class": 2 if unit == 1 else 0 if unit == 5 else 1}
+        ("A", unit): {"hd_class": data["unit_data"]["hd_class"][unit - 1]}
         for unit in expected_ids
     }
     assert json.loads(path.read_text()) == data
@@ -679,18 +715,39 @@ def test_hd_loader_reclassifies_saved_point_zero_five_results(tmp_path, hd_class
 
 @pytest.mark.parametrize("smoothing_deg", [0, 90])
 def test_hd_loader_reuses_native_class_three_before_display_processing(tmp_path, smoothing_deg):
-    from Utils.direction_comparison import hd_pick, load_hd_profiles
+    from HD.profiles import hd_pick, hd_profiles
 
     path = tmp_path / "tuning_curves.tc"
     data = _saved_hd_curves()
+    # Keep a saved class 3 even when its stored p values would now fail.
+    data["unit_data"]["hd_class"][0] = 3
+    data["unit_data"]["rayleigh_p"][0] = .2
     path.write_text(json.dumps(data))
 
-    all_profiles = load_hd_profiles(path, smoothing_deg=smoothing_deg)
+    all_profiles = hd_profiles(load_hd_tc(path), smoothing_deg=smoothing_deg)
     selected = hd_pick(all_profiles)
 
     assert selected.index.tolist() == [("A", 21)]
     assert hd_pick(all_profiles, 2).index.tolist() == [("A", 12)]
     assert hd_pick(all_profiles, (2, 3)).index.tolist() == [("A", 21), ("A", 12)]
-    assert load_hd_profiles(path, hd_class=3).index.tolist() == selected.index.tolist()
+    assert hd_profiles(load_hd_tc(path), hd_class=3).index.tolist() == selected.index.tolist()
     assert json.loads(path.read_text()) == data
     assert set(tmp_path.iterdir()) == {path}
+
+
+def test_hd_reclassification_requires_explicit_call_and_save(tmp_path):
+    from HD.profiles import hd_profiles
+
+    path = tmp_path / "tuning_curves.tc"
+    data = _saved_hd_curves()
+    path.write_text(json.dumps(data))
+    original = path.read_bytes()
+
+    assert hd_profiles(load_hd_tc(path), hd_class=3).empty
+    tuning_curve_utils.classify_hd(data)
+    assert data["unit_data"]["hd_class"][0] == 3
+    assert path.read_bytes() == original
+    assert hd_profiles(load_hd_tc(path), hd_class=3).empty
+
+    path.write_text(json.dumps(data))
+    assert hd_profiles(load_hd_tc(path), hd_class=3).index.tolist() == [("A", 21)]

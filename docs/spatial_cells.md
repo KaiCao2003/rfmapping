@@ -1,207 +1,216 @@
-# Spatial-cell tuning matrices
+# Spatial-cell analysis and plotting
 
-Run `spatial_cell_analysis.ipynb` to save four `.rfmap` files: the full matrix
-and three 360° bearing curves split by distance to the boundary.
-Run `spatial_cell_plotting.ipynb` to display one selected unit and an angular
-heatmap containing saved units with nonzero responses.
+Run `spatial_cell_analysis.ipynb` to generate the four RFMaps and saved spatial
+plotting arrays. Run `spatial_cell_plotting.ipynb` to export every saved good unit
+as a ten-panel PNG and SVG, preview one unit, and display the population heatmap.
 Use the remote `~/.virtualenvs/rfmapping` kernel on `hhw9l84`.
 
-## Analysis
+## Analysis inputs and geometry
 
 Set the recording, probe, phase, arena bounds, angular/distance bins and
-smoothing in the analysis notebook. Select exactly one camera output:
+smoothing in the analysis notebook. `unit_ids = None` selects every Kilosort
+`good` unit, including units with no spikes in this recording; a list selects a
+subset.
+
+The shared analysis loader reads pose columns `frame`, `center_x`, `center_y`,
+`hd_deg`. Basler sessions containing a `.tak` file use `<date>_yolo.csv`, preserving
+the Motive `<date>.csv`; other sessions use `<date>.csv`. A missing selected CSV
+is an error, not permission to substitute another tracking source. Other inputs
+are the interval table, Kilosort labels/clusters and
+`data/probe<probe>/adc_spike_time.npy`. Raw Motive exports must first be processed
+into the pose columns.
+
+Select exactly one camera output:
 
 ```python
 basler_output = True
 optihub2_output = False
 ```
 
-These presets match this setup: Basler opto-coupled `ExposureActive` uses
-complete low pulses; OptiHub2 uses high pulses. The Basler preset assumes no
-additional `LineInverter` inversion. See [Basler output levels](https://docs.baslerweb.com/line-status#opto-coupled-output-line)
+Basler opto-coupled `ExposureActive` uses complete low pulses; OptiHub2 uses high
+pulses. The Basler preset assumes no additional `LineInverter` inversion. See
+[Basler output levels](https://docs.baslerweb.com/line-status#opto-coupled-output-line)
 and [Line Inverter](https://docs.baslerweb.com/line-inverter).
-Camera type and polarity are not inferred from the signal.
+Camera type and polarity are explicit. Saved camera times are read when
+available; otherwise the configured ADC channel is scanned in chunks for
+exposure midpoints, excluding ADC-boundary idle intervals. Channels are
+zero-based and thresholds use raw int16 ADC units. The CLI defaults to channel 6
+for Basler, except configured legacy channel-1 sessions; OptiHub2 uses channel 1.
+An explicit channel overrides this selection. Only OptiHub2 permits one trailing
+Motive frame without a TTL.
 
-Saved camera times are read when available. Otherwise the configured raw ADC
-channel is scanned in chunks for exposure midpoints. ADC-boundary idle
-intervals are excluded. `camera_input_channel` is zero-based and
-`camera_ttl_threshold` uses raw int16 ADC units.
+The CLI boundary order is explicit `--bounds-px LEFT RIGHT TOP BOTTOM`, then a
+session-specific configuration, then the selected `--boundary old|new` preset
+(default `new`). The current analysis notebook detects the Basler arena from
+video and passes its result as explicit bounds. Saved `audit.json` records the
+actual bounds used; plotting reads those saved results and does not detect or
+change the arena.
 
-Inputs still include processed `session/<date>.csv` columns `frame`,
-`center_x`, `center_y`, `hd_deg`, an interval table, Kilosort good-unit labels
-and clusters, and `data/probeA/adc_spike_time.npy` (or `probeB`). Raw Motive
-exports must be processed into the pose columns first. Only OptiHub2 permits
-one trailing Motive frame without a TTL, matching `tuning_curves.ipynb`.
+Rectangle geometry uses a 40 × 40 cm arena, scaling each pixel axis by its own
+calibrated span. Heading direction vectors use those same X/Y scales before
+converting back to an angle; the source pixel-plane HD is also retained. A
+finite point outside the inclusive boundary holds the last
+complete in-bound point until re-entry. This happens before phase selection.
+Leading outside points remain missing until the first valid point; missing
+points stay missing and do not erase the previous valid position. HD, frame IDs,
+timestamps and frame spike assignments are unchanged. The source CSV is never
+rewritten.
 
-`unit_ids = None` analyzes all good units. A list selects a subset.
-`result_path` defaults to:
+The analysis uses the first interval matching the phase, the nearest retained
+pose frame for each spike (ties go to the earlier frame), and the median frame
+interval for occupancy. HD is north-zero clockwise; egocentric bearing is
+clockwise relative to the head: 0° forward, 90° right, ±180° back, −90° left.
+Rays use saved bin centers (3°, 9°, …, 357° for the default 6° bins), with the
+configured Gaussian smoothing. Maximum distance remains
+`rig_size_cm / 2 * sqrt(2)`. Historical results predating the clockwise/bin-center
+correction need explicit regeneration; reversing old arrays is insufficient.
 
-```text
-session/data/spatial_cells/ProbeA/baseline/egocentric_rate_map.rfmap
-```
+The three named distance bands select bins by their centers. At 40 cm with
+20 distance bins, their actual bin supports are 0–8.485, 8.485–15.556, and
+15.556–28.284 cm. `distanceBinSupportCm` records these edges in each band
+file; `requestedDistanceBandCm` retains the nominal 8/16 cm thresholds.
+Band responses sum stored rates after smoothing; they do not pool occupancy.
 
-The four files share this directory and contain the same selected unit IDs:
+## Saved results
+
+Analysis and plotting share `EBB.spatial_cell_results.spatial_result_path`.
+The standard directory is `session/data/spatial_cells/ProbeA/baseline/`, with
+probe and phase taken from the selected configuration.
 
 | Filename | Content |
 | --- | --- |
-| `egocentric_rate_map.rfmap` | Current full angle × distance matrix |
+| `egocentric_rate_map.rfmap` | Full angle × distance rate matrix |
 | `egocentric_rate_map_0-8.rfmap` | 360° bearing curve, distance ≤8 cm |
 | `egocentric_rate_map_8-16.rfmap` | 360° bearing curve, 8 < distance ≤16 cm |
 | `egocentric_rate_map_16-.rfmap` | 360° bearing curve, distance >16 cm |
+| `restored_maps.npz` | Unit IDs, axes, trajectory, raw occupancy/spike maps and rates |
+| `frame_spike_counts.npz` | Sparse per-frame spike counts for all selected units |
+| `position_correction.npz` | Original/corrected positions, hold masks, frame IDs/times, raw `hd_deg`, calibrated `ebc_hd_deg`, native `theta_deg`/`theta_d_cm`, and full `exposure_times`; overlay reads eight saved angle columns |
+| `audit.json` | Source/timing provenance, actual geometry and completion status |
 
-Each file uses the version-2 indexed NPZ RFMap format, retaining the `.rfmap`
-suffix. It stores final rates in Hz, unit IDs, coordinates and bin edges,
-and one time bin spanning the analysis interval. The full map's
-array shape is `(unit, angle, distance, 1)`; each bearing map has shape
-`(unit, angle, 1, 1)` and retains the entire angular axis (60 bins at the
-default 6° spacing).
+RFMaps use version-2 indexed NPZ storage under the `.rfmap` suffix. The full
+array shape is `(unit, angle, distance, 1)`; each band is `(unit, angle, 1, 1)`.
+They retain unit order, float64 rates, physical coordinates/bin edges and one
+time bin spanning the analysis interval. `occupancyTimeSec` contains ones tagged
+`normalization_identity_for_precomputed_rates`; measured occupancy is saved in
+`restored_maps.npz`. Loading preserves finite rates and NaNs; missing bins are
+not converted into measured zero rates.
 
-Bearing curves sum the existing smoothed rates over distance bins selected
-by their **centers in cm**, matching the plotting notebook's angular projection.
-A center exactly at 8 or 16 cm belongs to the lower band. The three bands
-partition all current distance bins. No new occupancy normalization or
-smoothing is applied to these sums. For the default grid, the bands contain
-6, 5, and 9 bins respectively.
+Bearing curves sum saved smoothed rates over distance bins selected by their
+centers. Centers exactly at 8 or 16 cm belong to the lower band. The default
+20-bin grid gives 6, 5 and 9 bins in the three bands. These sums add no smoothing
+or occupancy normalization. A contributing NaN is ignored when other distances
+have data; an entirely missing or empty band remains NaN. The three band files
+record their physical cm edges, included centers and
+`responseAggregation = "sum_over_distance"`.
 
-All four files store physical distance coordinates in cm. The bearing maps'
-`xBinEdges` are `[0, 8]`, `[8, 16]`, and `[16, full_map_max_distance]`, with
-`xPositions` at the respective midpoints. The plotting notebook reads these
-existing RFMap edges directly, using the same plotting code for all four files.
-No separate `distanceRangeCm` field or band-specific label logic is needed.
-The bearing maps also record `distanceSelection = "bin_centers"`, the included
-`distanceBinCentersCm`, and `responseAggregation = "sum_over_distance"`.
-
-Each `unit_<ID>` entry stores a float64 `(angle, distance, 1)` array, preserving
-NaNs directly. `unitPool` defines unit order; shared axes are numeric arrays,
-and `metadata` is UTF-8 JSON stored as uint8, matching the regular RFMap schema.
-The metadata identifies `formatVersion = 2`, `storage = "indexed_npz"`, and
-`responseUnits = "Hz"`. The schema's required `occupancyTimeSec` array contains
-ones and is labeled `normalization_identity_for_precomputed_rates`; it is
-not measured occupancy. The reader preserves these already-normalized finite
-rates, including when `unit_firing_rate=False`, and fills NaNs with zero.
-
-On disk, an angular bin with no finite values in the selected distance band is
-NaN; an empty band produces an all-NaN curve. After RFMap loading both become
-ordinary zero bins. Visited bins with zero rates stay zero.
-No separate NPZ intermediates, metadata manifest, or figures are generated.
-Occupancy and spike counts are used in memory to calculate the final matrices.
-
-Rerunning replaces all four `.rfmap` files only after all units finish. Change
-`result_path` to retain another version; all band filenames use that same stem.
-`run_analysis()` returns the four paths in the table's order, stored as
-`result_paths` in the notebook. Existing result files remain intact
-if unit analysis fails. Previous NPZ files and figures are not needed by the
-new workflow; existing `egocentric_rate_map.rfmap` files can be plotted directly.
-
-The matrix calculation is preserved: the first interval matching the phase,
-nearest retained pose frame for each spike (ties go to the earlier frame),
-median retained frame interval for occupancy, angular left edges for rays,
-and the existing Gaussian smoothing. Maximum boundary distance remains
-`rig_size_cm / 2 * sqrt(2)`.
-
-`Utils/spatial_cell_analysis.py` holds the calculation functions used by the notebook
-and still supports the command line. `--output` specifies the full map's
-filename; the three band suffixes are added automatically:
-
-```sh
-ssh hhw9l84 'cd ~/Developer/rfmapping && \
-  ~/.virtualenvs/rfmapping/bin/python -m Utils.spatial_cell_analysis \
-  --date 260831 --recording-number 2 --probe A --phase baseline --workers 4'
-```
+`run_analysis()` returns the four RFMap paths, full map first. Rerunning explicitly
+replaces analysis outputs; use another `result_path` to retain a separate version.
+The four RFMaps are saved after all unit calculations finish, then the plot inputs
+and audit are saved. Plotting never generates missing analysis files.
 
 ## Plotting
 
-Set `result_path` to any of the four `.rfmap` files and choose `unit_id`.
-The single-unit cell has three display modes:
+Both the notebook and pipeline use `EBB.spatial_cell_plotting` to render all saved
+good units, including zero-spike units, to:
 
-```python
-plot_style = "donut"  # "heatmap", "polar", or "donut"
-donut_hole_fraction = 0.45  # Hole radius / outer radius, from 0 up to (but not including) 1.
+```text
+session/data/spatial_cells/ProbeA/all_units/unit_<id>.png
+session/data/spatial_cells/ProbeA/all_units/unit_<id>.svg
 ```
 
-`polar` and `donut` use `Utils.plotting.plot_egocentric_polar`: angle runs around
-the circle, distance runs along the radius, and color shows the saved firing
-rate. The angle convention is 0° forward (top), 90° left, 180° back, and 270° right.
-The full matrix retains every distance bin; each distance-band file forms one
-colored radial band. Missing bins remain missing; loading does not fill them
-with zeros. `polar` uses the physical origin
-at 0 cm, so bands starting above 0 cm naturally leave the center empty.
-`donut` sets the hole to `donut_hole_fraction` of the outer radius by moving the
-display origin; the saved distances and cm tick labels stay unchanged.
+The notebook's `unit_id` selects only its inline preview. The pipeline entry is:
 
-`heatmap` uses the existing API directly:
-
-```python
-from Utils.rflocate import load_rfmap
-from Utils.rflocate.plotting import plot_2d_rfmap
-
-rf_maps = load_rfmap(result_path)
-rfmap = rf_maps.by_unit_id(unit_id)
-figure, axis = plot_2d_rfmap(rfmap.to_2d_array())
+```sh
+ssh hhw9l84 'cd ~/Developer/rfmapping && \
+  ~/.virtualenvs/rfmapping/bin/python -m scripts.plot_spatial_cells RESULT_DIR --workers 4'
 ```
 
-The rectangular heatmap sets distance/angle labels with angle increasing upward.
-All modes use opaque white figure/axes backgrounds and dark labels.
-For bearing maps, the singleton distance axis spans the saved band's cm range.
-The colorbar reads `responseUnits` from the RFMap.
-`is_save = False` writes no single-unit image; set it to `True` to save that
-figure to `save_path`.
+`RESULT_DIR` is the standard `Probe<probe>/<phase>` directory. The CLI writes
+`spatial_plot_manifest.json` beside the exported images. For an explicitly selected
+historical/nonstandard result directory, pass `--output` and `--hd-tc` rather than
+relying on the standard directory layout.
 
-The final cell uses `Utils.plotting.plot_keyed_heatmap`, shared with
-`hd_rf_comparison.ipynb`. It first applies a `not_zero` filter to the saved matrices and
-their unit IDs, removing all-zero units before any
-projection, normalization, or peak sorting. It then sums each retained matrix
-over distance and normalizes each curve by its maximum.
-Unvisited angular bins are displayed as zero. All-zero
-profiles are excluded from the plot and listed in `excluded_unit_ids`;
-the cell prints displayed/excluded counts. If no unit has a nonzero response,
-the figure says so instead of drawing empty rows.
+The ten panels show egocentric occupancy, spikes, rate, polar rate and bearing
+curves; allocentric occupancy, spikes, rate, trajectory with spikes and HD tuning.
+The EBC bearing panel uses the same distance sum as the band files and population
+plot: the full saved distance range plus the three rings. The current saved maps end at 28.991 cm; the >16 cm curve therefore covers the saved 16–28.991 cm range. It does not select a single column at
+the peak distance.
 
-The sorting matches the RF heatmaps in `hd_rf_comparison.ipynb`: find the
-peak in the native angular bins first, transform that angle into the RF
-layout, then sort by that position and recorded unit ID. This also matches
-the reference's handling of tied peaks. The column layout is
-`180 → 90 → 0 → 270 → 180`.
+HD curves come from this recording's saved
+`data/tuning_curves/Probe<probe>/tuning_curves.tc`. `HD.profiles.load_hd_tc` only
+reads the file; `hd_profiles` rebins its loaded counts and occupancy to 30 angular
+bins without smoothing or reclassification. Every saved HD class is retained.
+Units absent from the HD file remain in the spatial export and their HD panel
+says no saved TC is available. No older spatial HD curve is substituted. An absent
+HD file is an error; generate it explicitly before plotting.
 
-The y-axis numbers are recorded Kilosort cluster IDs. A joint sorting label
-table can contain IDs with no spikes in the selected recording. For example,
-in `260827_12`, 98 of the 159 saved good IDs have no spikes in that recording,
-and unit 112 has no spike in the retained analysis window. The heatmap displays
-the remaining 60 units. Unit 267 has 30,143 spikes in that window and is included.
-For a bearing file, the distance axis is already summed, so this uses its saved
-curve directly. These are display projections of the saved rates. The notebook
-normalizes profiles explicitly, then passes profiles keyed by unit ID, the
-sorted unit IDs, and the angular column order to `plot_keyed_heatmap()` for rendering.
-The shared function also accepts `(probe, unit_id)` keys for HD/RF comparisons.
-Set `is_save_heatmap = True` to save the single population image to
-`all_units_angle_heatmap.png`; its default is `False`.
+The optional single-unit RFMap preview supports `heatmap`, `polar` and `donut`.
+EBC heatmaps and polar ticks display signed bearings from −180° to 180°: 0° forward, +90° right and −90° left. Stored angular bins stay unchanged. Polar views use saved cm edges and clockwise angles; `donut_hole_fraction` changes
+only the display origin, not distances or data. `is_save` controls only this
+extra single-panel PNG. The all-unit PNG/SVG export runs separately by default.
+Every figure, axes and export uses an opaque white background and dark text.
 
-The old batch exporter `spatial_cell_plotting.py` is removed. Plotting no longer
-loads per-unit NPZ intermediates, reconstructs trajectories, or exports all units in PNG/SVG.
-Source loading and response objects come from `Utils.rflocate`; the RF
-heatmap renderer comes from `Utils.rflocate.plotting`.
+The final population heatmap uses `Utils.plotting.plot_keyed_heatmap`, shared with
+`hd_rf_comparison.ipynb`. It excludes entirely missing/all-zero units from this
+summary only, records their IDs in `excluded_unit_ids`, collapses distance,
+normalizes each retained curve by its maximum, and sorts by the native-bin peak
+with unit ID as the tie-breaker. Its columns are `−180 → −90 → 0 → 90 → 180`,
+without a sign inversion. Missing angular bins stay missing. Up to 12 y-axis
+labels show recorded Kilosort IDs, while every retained row remains in the plot.
+An empty population gets an explanatory message. `is_save_heatmap = True` saves
+`Probe<probe>/all_units_angle_heatmap.png`; the default is `False`.
+
+Trajectory displays break connections above 250 cm/s, across nonconsecutive
+frame IDs, or at time gaps longer than 1.5 median frame intervals. They retain
+positions, mark break endpoints and show the calibrated arena. This display rule
+is separate from boundary hold and never changes saved arrays. Older arrays
+without timestamps use a 5 cm step limit.
+`scripts/export_spatial_trajectory_overviews.py` exports a recording-level
+trajectory without unit-specific spike dots.
+
+Historical batch/review directories are retained as evidence. They are not the
+standard analysis or figure destination.
+
+## Motive circular arenas
+
+Both repository and production pipelines run `python -m scripts.run_cylinder_spatial`
+from the repository checkout. The production standalone entry links to that same
+script. It calls `EBB.ebc_analysis.load_motive_session` and `compute_circle_ebc`;
+historical `Utils.ebc_*` imports forward to `EBB` rather than another calculation.
+
+Motive input yaw remains counterclockwise from world +X. An egocentric bearing
+turns clockwise from that heading: `world_ray = yaw - bearing`, with 0° forward,
++90° right and −90° left. Native saved bins retain their 3°, 9°, …, 357° center
+samples; plots reorder these samples to −180°…180° without changing values.
+The existing inner/outer model radii remain 15/30 cm; the Basler 40 cm square
+calibration does not apply to circular arenas.
+
+The loader preserves the original exposure timestamps. It accepts matching
+zero-based continuous frames and the established single extra trailing Motive
+frame. Larger count mismatches require the explicit `--ignore-hd-ttl` option,
+which keeps the common prefix and records that choice in `cameraTiming`.
+Pipelines copy `filtered.csv` and `head_direction.json` from the same completed
+Motive analysis run. Running this entry explicitly writes the four circular
+RFMaps under `data/spatial_cells/Probe<probe>/<phase>/inner/` and `outer/`.
+
+The pipelines retain Motive HD and circular EBC analysis but do not generate
+Motive overlay videos. Basler overlay generation remains enabled. Existing
+Motive videos are retained.
 
 ## Verification
+
+Run the relevant tests remotely:
 
 ```sh
 ssh hhw9l84 'cd ~/Developer/rfmapping && \
   PYTHONDONTWRITEBYTECODE=1 MPLBACKEND=Agg \
   ~/.virtualenvs/rfmapping/bin/python -m pytest -q \
-  tests/test_plotting.py tests/test_spatial_cell.py tests/test_tuning_curve_utils.py'
+  tests/test_plotting.py tests/test_spatial_cell.py tests/test_spatial_pipeline_outputs.py'
 ```
 
-Tests cover geometry and timing, exact matrix/coordinate/NaN round trips,
-the 8/16 cm boundaries, empty bands, four output files across reruns, and
-preserving all previous results on failure.
-Notebook execution checks the selected unit and population heatmap, projection
-values, distance-axis ranges for all three bands, row order and normalization,
-sorting against the HD/RF reference (including ties), rendered peak positions,
-exclusion of missing and silent units, the empty-plot message, no default
-image files, and explicitly requested PNGs with opaque white backgrounds.
-
-All 46 plotting, spatial-cell and tuning-curve tests pass on `hhw9l84`. Executing the
-analysis notebook on `m19/260827/260827_12` saved all four files for 159 units
-in 5.526 s including kernel startup. The full `(159, 60, 20, 1)` output matched
-the previous file exactly, including metadata and NaNs. Each bearing file
-has shape `(159, 60, 1, 1)` and matched the selected distance-bin sums exactly.
-The full file is 2,466,572 bytes; the three bearing files are about 142 KB each.
+Verification covers geometry/timing, RFMap values and missing bins, 8/16 cm
+selection, saved plot inputs, notebook displays, all-unit export and white
+backgrounds. Real-data review must also inspect rendered PNG/SVG figures and
+check their unit inventory against the saved analysis; a successful export alone
+does not establish visual correctness.

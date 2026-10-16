@@ -8,11 +8,8 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 
-from Utils.json_tools import read_formatted_json
 from Utils.plotting import LIGHT_PLOT_STYLE, angular_ticks, plot_keyed_heatmap
-from Utils.rflocate import load_rf as load_detected_rf, load_rfmap, load_rf_tc, rf_result_path
 from Utils.statistic_utils import rayleigh_uniformity
-from Utils.tuning_curve_utils import update_hd_classification
 
 
 def tcRange(is_ego: bool) -> list[int]:
@@ -76,6 +73,15 @@ def normalize_tc(tc):
     result.iloc[:, :] = values.div(row_max.mask(row_max == 0, 1.0), axis=0)
     if "response_units" in result.attrs:
         result.attrs["response_units"] = "normalized"
+    return result
+
+
+def minmax_profiles(table):
+    """Scale each displayed unit; missing bins stay missing, constants become 0."""
+    minimum = table.min(axis=1)
+    span = table.max(axis=1) - minimum
+    result = table.sub(minimum, axis=0).div(span.replace(0., 1.), axis=0)
+    result.attrs = table.attrs.copy()
     return result
 
 
@@ -222,12 +228,13 @@ def _resample_profiles(profiles, centers, *, fill_value=np.nan):
     return table
 
 
-def align_profiles(profiles, units, offset_deg, *, is_wrap=True, fill_value=np.nan):
+def align_profiles(profiles, units, offset_deg, *, bins=30, is_wrap=True, fill_value=np.nan):
     """Add each unit's offset; fill unmeasured angles only as explicitly requested.
 
-    Unwrapped sums use a wider 12° grid without repetition.
+    Unwrapped sums use twice the angular span at the same bin spacing.
     """
-    relative_deg = np.arange(-180., 180., 12.) if is_wrap else np.arange(-360., 361., 12.)
+    relative_deg = ((np.arange(bins) - bins // 2) * (360.0 / bins) if is_wrap
+                    else np.linspace(-360., 360., 2 * bins + 1))
     rows = profiles.reindex(units)
     angle_range = profiles.attrs.get("range", tcRange(True))
     shifted = np.array([
@@ -286,7 +293,7 @@ def plot_profiles(profiles, order=None, name=None, *, axis=None, sort_name=None,
     ticks = axis["ticks"] if "ticks" in axis else angular_ticks(axis["ticklabels"])
     columns = np.asarray(profiles.columns)
     values = profiles.to_numpy()
-    if aligned and is_wrap:
+    if aligned and is_wrap and columns[0] == -180:
         # The -180° bin straddles the plot boundary; display its other half at +180°.
         columns = np.r_[columns, 180.]
         values = np.c_[values, values[:, 0]]
@@ -314,7 +321,7 @@ def plot_profiles(profiles, order=None, name=None, *, axis=None, sort_name=None,
     )
 
 
-def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap=True,
+def prepare_comparison(reference, matched, *, mode="native", order=None, bins=30, is_wrap=True,
                        reference_min=False, matched_min=False,
                        reference_fill_value=np.nan, matched_fill_value=np.nan):
     """Calculate paired peaks, row order, and explicit angular transformations.
@@ -334,8 +341,9 @@ def prepare_comparison(reference, matched, *, mode="native", order=None, is_wrap
     reference_panel = reference.loc[order]
     matched_panel = matched.loc[order]
     if mode != "native":
-        reference_panel = align_profiles(reference, order, offsets, fill_value=reference_fill_value)
-        matched_panel = align_profiles(matched, order, matched_offsets,
+        reference_panel = align_profiles(reference, order, offsets, bins=bins,
+                                         fill_value=reference_fill_value)
+        matched_panel = align_profiles(matched, order, matched_offsets, bins=bins,
                                        is_wrap=is_wrap if mode == "sum" else True,
                                        fill_value=matched_fill_value)
     return {
@@ -391,140 +399,16 @@ def compare_both_orders(profiles, first, second, *, mode="native", previous=None
     }
 
 
-def hd_pick(table, hd_class=3):
-    """Copy units in one or more HD classes; None retains every class."""
-    info = table.attrs["unit_info"]
-    selected = (np.ones(len(table), dtype=bool) if hd_class is None else
-                np.isin([info[key]["hd_class"] for key in table.index], hd_class))
-    result = table.loc[selected].copy()
-    result.attrs["unit_info"] = {key: info[key].copy() for key in result.index}
+def rebin_profiles(profiles, *, bins):
+    """Sum adjacent bins, preserving source order, unit identity, and metadata."""
+    group_size = profiles.shape[1] // bins
+    values = profiles.to_numpy().reshape(len(profiles), bins, group_size).sum(axis=2)
+    # Unwrap before averaging centers across the +180/-180 degree boundary.
+    angles = np.unwrap(profiles.columns.to_numpy(dtype=float), period=360)
+    centers = angles.reshape(bins, group_size).mean(axis=1)
+    result = pd.DataFrame(values, index=profiles.index, columns=(centers + 180) % 360 - 180)
+    result.attrs = profiles.attrs.copy()
     return result
-
-
-def rf_pick(table, max_zero_bins=2):
-    """Select by measured zero bins; call on native curves before resampling."""
-    selected = (np.ones(len(table), dtype=bool) if max_zero_bins is None else
-                table.eq(0).sum(axis=1) <= max_zero_bins)
-    result = table.loc[selected].copy()
-    if "unit_info" in table.attrs:
-        info = table.attrs["unit_info"]
-        result.attrs["unit_info"] = {key: info[key].copy() for key in result.index}
-    return result
-
-
-def load_hd_profiles(path, *, probe="A", bins=30, smoothing_deg=0, hd_class=None):
-    """Read all HD units and rebin rates; optionally select classes with hd_pick."""
-    data = read_formatted_json(path)
-    # Classify native rates before display rebinning or smoothing; never save here.
-    update_hd_classification(data)
-    classes = data["unit_data"]["hd_class"]
-    ids = np.asarray(data["unit_id"], dtype=int)
-    counts = np.asarray(data["spike_counts"], dtype=float)
-    occupancy = np.asarray(data["occupancy_time_s"], dtype=float)
-    n_native = len(occupancy)
-    if smoothing_deg:
-        counts = gaussian_filter1d(counts, smoothing_deg / (360 / n_native), axis=1, mode="wrap")
-        occupancy = gaussian_filter1d(occupancy, smoothing_deg / (360 / n_native), mode="wrap")
-    counts = counts.reshape(len(ids), bins, n_native // bins).sum(axis=2)
-    occupancy = occupancy.reshape(bins, n_native // bins).sum(axis=1)
-    rates = np.divide(counts, occupancy, out=np.full_like(counts, np.nan), where=occupancy > 0)
-    edges = np.asarray(data.get("angle_bin_edges_deg", np.linspace(0, 360, n_native + 1)))
-    edges = edges[::n_native // bins]
-    angles = (edges[:-1] + edges[1:]) / 2
-    profiles = profile_table(rates, ids, angles, probe=probe)
-    profiles.attrs["response_units"] = "Hz"
-    profiles.attrs["unit_info"] = {
-        key: {"hd_class": value} for key, value in zip(profiles.index, classes, strict=True)
-    }
-    return profiles if hd_class is None else hd_pick(profiles, hd_class)
-
-
-def load_ebc_profiles(path, *, probe="A"):
-    """Read every EBC unit, retaining missing source responses as NaN."""
-    maps = load_rfmap(path)
-    angles = maps[0].y_positions
-    projected = maps.sum_to_1d(axis="y")
-    profiles = profile_table(projected.to_1d_array(axis="y"), maps.unit_ids, angles, probe=probe)
-    profiles.attrs["response_units"] = maps[0].metadata.get("responseUnits", "spike_count")
-    profiles.attrs["unit_info"] = {key: {} for key in profiles.index}
-    return profiles
-
-
-def rf_profiles(maps, *, axis="x", probe="A", range: list[int] | None = None):
-    """Wrap prepared 1-D RF maps or a loaded TC CSV in a probe-keyed table.
-
-    Select the time window and call ``sum_to_1d`` before this conversion when
-    either axis still needs aggregation. Native angles, missing values, and
-    unit order are retained; selection and smoothing are separate operations.
-    """
-    if isinstance(maps, pd.DataFrame):
-        responses = maps.to_numpy()
-        angles = maps.columns.to_numpy(dtype=float)
-        unit_ids = maps.index
-        response_units = maps.attrs.get("response_units", "spike_count")
-    else:
-        responses = maps.to_1d_array(axis=axis)
-        angles = maps[0].x_positions if axis.strip().lower() == "x" else maps[0].y_positions
-        unit_ids = maps.unit_ids
-        response_units = maps[0].metadata.get("responseUnits", "spike_count")
-    index = pd.MultiIndex.from_product([[probe], unit_ids], names=["probe", "unit_id"])
-    profiles = pd.DataFrame(responses, index=index, columns=angles, copy=True)
-    if range is not None:
-        profiles.attrs["range"] = list(range)
-    profiles.attrs["response_kind"] = "RF"
-    profiles.attrs["response_units"] = response_units
-    profiles.attrs["unit_info"] = {
-        key: {"zero_bins": int(zero)}
-        for key, zero in zip(profiles.index, profiles.eq(0).sum(axis=1), strict=True)
-    }
-    return profiles
-
-
-def load_rf_profiles(source, *, axis="x", probe="A", range: list[int] | None = None):
-    """Read a TC CSV or prepared 1-D RF map, preserving native values and angles.
-
-    Raw multi-bin or two-dimensional sources require explicit time aggregation
-    and ``sum_to_1d`` followed by ``rf_profiles``. This loader does no detection,
-    selection, smoothing, rate conversion, or angular resampling.
-    """
-    source = Path(source)
-    profiles = load_rf_tc(source) if source.suffix.lower() == ".csv" else load_rfmap(source)
-    return rf_profiles(profiles, axis=axis, probe=probe, range=range)
-
-
-def select_rf_profiles(profiles, *detected_results):
-    """Select one probe's native profiles by explicitly supplied saved results."""
-    if (profiles.index.names not in (["probe", "unit_id"], ["source", "probe", "unit_id"],
-                                    ["mouse", "date", "probe", "unit_id"])
-            or len(profiles.index.droplevel("unit_id").unique()) > 1):
-        raise ValueError("select RF units for one probe and recording before pooling")
-    detected_ids = set()
-    for result in detected_results:
-        detected = np.any(result["mask_2d"], axis=(1, 2))
-        detected_ids.update(result["unit_ids"][detected].tolist())
-    # Localization may contain a QC subset in a different unit order.
-    table = profiles.loc[profiles.index.get_level_values("unit_id").isin(detected_ids)].copy()
-    table.attrs["unit_info"] = {
-        key: profiles.attrs["unit_info"][key].copy() for key in table.index
-    }
-    return table
-
-
-def load_rf_centers(source, *, probe="A", detected_rf_path=None):
-    """Read every saved center, optionally from an explicitly selected sidecar.
-
-    Multi-sector RFs repeat their (probe, unit_id), including centers sharing x.
-    """
-    source = Path(source)
-    result = load_detected_rf(rf_result_path(source) if detected_rf_path is None else detected_rf_path)
-    centers = result.center_2d
-    unit_ids = result.unit_ids
-    maps = load_rfmap(source)
-    rows, y, x = np.nonzero(centers)
-    index = pd.MultiIndex.from_arrays(
-        [[probe] * len(rows), unit_ids[rows]], names=["probe", "unit_id"],
-    )
-    return pd.DataFrame({"rf_x_deg": maps[0].x_positions[x], "rf_y_deg": maps[0].y_positions[y]}, index=index)
 
 
 def resample_profiles(profiles, *, range: list[int], bins=30, fill_value=np.nan):
@@ -565,7 +449,7 @@ def recording_profiles(profiles, *, mouse, date, label=None):
 
 
 def _prepare_profiles(profiles, *, mouse, date, range: list[int]):
-    """Prepare the existing HD/EBC comparison grid and recording keys."""
+    """Resample a supplied table and add recording identity without file access."""
     return recording_profiles(resample_profiles(profiles, range=range), mouse=mouse, date=date)
 
 
@@ -602,21 +486,6 @@ def tc_loader(path, *, label=None, range: list[int] | None = None, response_unit
         table.attrs["range"] = list(range)
     if response_units is not None:
         table.attrs["response_units"] = response_units
-    return table
-
-
-def load_rf(path, *, mouse, date, probe="A", label="RF", axis="x", range: list[int] | None = None):
-    """Read prepared RF curves with recording keys, preserving the native grid."""
-    profiles = load_rf_profiles(path, axis=axis, probe=probe, range=range)
-    return recording_profiles(profiles, mouse=mouse, date=date, label=label)
-
-
-def load_ebc(path, *, mouse, date, probe="A", label="EBC", range: list[int] | None = None):
-    """Read an EBC angular rate map into the same curve structure."""
-    profiles = load_ebc_profiles(Path(path), probe=probe)
-    table = _prepare_profiles(profiles, mouse=mouse, date=date,
-                              range=tcRange(True) if range is None else range)
-    table.attrs["label"] = label
     return table
 
 

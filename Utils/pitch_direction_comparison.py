@@ -12,8 +12,8 @@ from scipy.stats import linregress
 from Utils.json_tools import read_formatted_json
 from Utils.kilosort_utils import _locate_spike_arrays
 from Utils.plotting import LIGHT_PLOT_STYLE, plot_keyed_heatmap
-from Utils.rflocate import load_rf, load_rfmap, rf_result_path
-from Utils.tuning_curve_utils import get_exposure_timestamps, make_head_direction_tsd, update_hd_classification
+from RF.rflocate import load_rf, load_rfmap, rf_result_path
+from Utils.camera_timing import get_exposure_timestamps, make_head_direction_tsd
 
 
 PAIRED_SESSIONS = (("m14", "260609", 1, "A"), ("m15", "260630", 1, "A"),
@@ -31,7 +31,6 @@ def build_paired_tuning(recording_root, output_dir, mouse, date, session, probe)
     data_dir = session_dir / "data"
     source_tc = data_dir / "tuning_curves" / f"Probe{probe}" / "tuning_curves.tc"
     saved = json.loads(source_tc.read_text())
-    update_hd_classification(saved)
     selected = np.asarray(saved["unit_data"]["hd_class"]) == 3
     unit_ids = np.asarray(saved["unit_id"])[selected]
     metadata = saved["metadata"]

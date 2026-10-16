@@ -1,14 +1,11 @@
-"""Render pipeline EBC overlays with synchronized electrode audio for good units.
-
-The Basler branch uses north-zero clockwise HD, (225, 720, 280, 785) pixel bounds,
-and channel-6 active-low timing. Motive uses XY position and raw Z yaw with active-
-high exposure timing. This direct recording workflow is separate from the root
-VS-config video entries; both retain their own input and calibration contracts.
-"""
+"""Render EBC overlays and export synchronized electrode-audio videos for good units."""
 
 import argparse
+import csv
 import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import wave
@@ -27,9 +24,12 @@ from PIL import Image, ImageDraw, ImageFont
 from scipy.signal import butter, sosfilt, sosfilt_zi
 from tqdm.auto import tqdm
 
+from EBB import spatial_cell_analysis as spatial
 from Utils.json_tools import read_formatted_json
-from Utils.motive_pose import motive_z_yaw_degrees
-from Utils.tuning_curve_utils import get_exposure_timestamps
+from Utils.motive_pose import matched_motive_frame_count, motive_z_yaw_degrees
+from EBB.ebc_pose import hold_last_in_bounds, hold_rectangle_positions
+from EBB.ebc_geometry import BASLER_SIZE_CM, pixel_heading_to_world_deg
+from Utils.camera_timing import get_exposure_timestamps
 
 
 # Edit these settings, then run this file in the IDE. No notebook state is used.
@@ -51,12 +51,12 @@ video_workers = 8
 audio_workers = 4
 video_encoder = "auto"  # Prefer NVENC; use 8 CPU encoding threads if unavailable.
 
-# Basler bounds in pixels: left, right, top, bottom.
-boundary_old = (370., 920., 210., 760.)
-boundary_new = (225., 720., 280., 785.)
+# Geometry and camera presets are shared with the analysis CLI.
+boundary_old = spatial.boundary_old
+boundary_new = spatial.boundary_new
+session_bounds_px = spatial.session_bounds_px
 BASLER_BOUNDS_PX = boundary_new
-BASLER_SIZE_CM = 41.
-RAY_DEG = np.arange(0., 360., 45.)
+RAY_DEG = np.array([0., 45., 90., 135., -180., -135., -90., -45.])
 RAY_COLORS = ("#00a6d6", "#f28e2b", "#29b765", "#ee5971",
               "#ac82e8", "#c4a238", "#4dc7c2", "#da6db5")
 HD_COLOR = "#f83ef1"
@@ -65,42 +65,57 @@ CYLINDER_RADII_CM = (15., 30.)  # Inner and outer boundaries in the same movie.
 CYLINDER_COLORS = ("#2463ad", "#c26b18")
 
 
-def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectangle", fps=30.):
+def load_video_data(session, *, probe="A", phase="baseline", arena_type="rectangle", fps=30.,
+                    ignore_hd_ttl=False, bounds_px=None, camera_input_channel=None):
     """Load pose and exposure timing without computing statistical controls."""
     if arena_type == "cylinder":
-        return _load_cylinder_data(session, probe=probe, phase=phase, fps=fps)
+        return _load_cylinder_data(session, probe=probe, phase=phase, fps=fps,
+                                   ignore_hd_ttl=ignore_hd_ttl)
     if arena_type != "rectangle":
         raise ValueError("arena_type must be 'rectangle' or 'cylinder'.")
     session = Path(session)
+    session_key = f"{session.parent.parent.name}_{session.name}"
+    default_bounds, default_channel = spatial.basler_session_defaults(session_key)
+    if bounds_px is None:
+        bounds_px = default_bounds
+    if camera_input_channel is None:
+        camera_input_channel = default_channel
     directory = session / "data"
     info = read_formatted_json(directory / "session_info.json")["session_info"]
     exposures, origin, timing = get_exposure_timestamps(
-        info, directory, camera_input_channel=6, camera_ttl_active_high=False,
+        info, directory, camera_input_channel=camera_input_channel, camera_ttl_active_high=False,
     )
     session_date = session.name.split("_")[0]
     pose_name = f"{session_date}_yolo.csv" if any(session.glob("*.tak")) else f"{session_date}.csv"
     pose = pd.read_csv(session / pose_name,
-                       usecols=["frame", "center_x", "center_y", "hd_deg"]).dropna()
+                       usecols=["frame", "center_x", "center_y", "hd_deg"])
+    pose = pose.dropna(subset=["frame", "center_x", "center_y"])
     frames = pose.frame.to_numpy(dtype=int)
     if np.any((frames < 0) | (frames >= len(exposures))):
         raise ValueError("Pose frame IDs exceed the camera exposure timestamps.")
     times = exposures[frames]
+    raw_xy_px = pose[["center_x", "center_y"]].to_numpy(float)
+    corrected_xy_px, held, initial = hold_rectangle_positions(raw_xy_px, bounds_px)
+    pose.loc[:, ["center_x", "center_y"]] = corrected_xy_px
     intervals = pd.read_csv(directory / "interval_table.csv")
     interval = intervals.loc[intervals.interval_type == phase, ["start", "end"]].iloc[0].to_numpy(float)
-    selected = (times >= interval[0]) & (times <= interval[1])
+    selected = (times >= interval[0]) & (times <= interval[1]) & pose.hd_deg.notna().to_numpy()
     pose = pose.loc[selected]
-    left, right, top, bottom = BASLER_BOUNDS_PX
+    left, right, top, bottom = bounds_px
     xy = np.c_[(pose.center_x - left) * BASLER_SIZE_CM / (right - left),
                (bottom - pose.center_y) * BASLER_SIZE_CM / (bottom - top)]
+    world_hd = pixel_heading_to_world_deg(pose.hd_deg.to_numpy(), bounds_px=bounds_px, size_cm=BASLER_SIZE_CM)
     kilosort = next((session / "kilosort" / f"Probe{probe}").glob("kilosort_*"))
-    return dict(session=session, probe=probe, phase=phase, arena_type="rectangle", xy=xy,
-                hd=pose.hd_deg.to_numpy() % 360, frame_ids=frames[selected], times=times[selected],
+    return dict(session=session, probe=probe, phase=phase, arena_type="rectangle", bounds_px=bounds_px, xy=xy,
+                position_held=held[selected], initial_outside=initial[selected],
+                raw_xy_px=raw_xy_px[selected], outside_boundary_policy="hold_last_in_bounds",
+                hd=(90. - world_hd) % 360., frame_ids=frames[selected], times=times[selected],
                 exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
                 source=dict(kilosort_dir=str(kilosort), selected_interval_s=interval,
                             spike_times_path=str(directory / f"probe{probe}/adc_spike_time.npy")))
 
 
-def _load_cylinder_data(session, *, probe="A", phase="baseline", fps=30.):
+def _load_cylinder_data(session, *, probe="A", phase="baseline", fps=30., ignore_hd_ttl=False):
     """Motive XY and world-Z yaw, calibrated exactly as the circular EBC analysis."""
     if not np.isfinite(fps) or fps <= 0:
         raise ValueError("Motive animation fps must be positive.")
@@ -112,11 +127,8 @@ def _load_cylinder_data(session, *, probe="A", phase="baseline", fps=30.):
     hd = motive_z_yaw_degrees(pose.xs("Rotation", level=2, axis=1).to_numpy(float))
     info = read_formatted_json(directory / "session_info.json")["session_info"]
     exposures, origin, timing = get_exposure_timestamps(info, directory, camera_ttl_active_high=True)
-    if len(frames) == len(exposures) + 1 and np.array_equal(frames, np.arange(len(frames))):
-        print(f"Dropping trailing Motive frame: {frames[-1]}")
-        frames, xy, hd = frames[:-1], xy[:-1], hd[:-1]
-    if np.any((frames < 0) | (frames >= len(exposures))) or np.any(np.diff(frames) <= 0):
-        raise ValueError("Motive frame IDs must increase within the exposure timestamp array.")
+    count = matched_motive_frame_count(frames, exposures, timing, ignore_hd_ttl=ignore_hd_ttl)
+    frames, xy, hd, exposures = frames[:count], xy[:count], hd[:count], exposures[:count]
     times = exposures[frames]
     intervals = pd.read_csv(directory / "interval_table.csv")
     interval = intervals.loc[intervals.interval_type == phase, ["start", "end"]].iloc[0].to_numpy(float)
@@ -128,13 +140,19 @@ def _load_cylinder_data(session, *, probe="A", phase="baseline", fps=30.):
     # rate or selecting a clip. Inner/outer geometry then shares one cm scale.
     center = (xy[valid].min(axis=0) + xy[valid].max(axis=0)) / 2
     scale = CYLINDER_RADII_CM[0] / np.linalg.norm(xy[valid] - center, axis=1).max()
+    raw_xy_cm = (xy - center) * scale
+    corrected_xy_cm, held, initial = hold_last_in_bounds(
+        raw_xy_cm, np.linalg.norm(raw_xy_cm, axis=1) <= CYLINDER_RADII_CM[0] + 1e-9)
+    valid &= np.isfinite(corrected_xy_cm).all(axis=1)
     frame_times = interval[0] + np.arange(int(np.ceil(np.diff(interval)[0] * fps))) / fps
     nearest = _nearest_pose_rows(times, frame_times)
     selected = valid[nearest] & (abs(times[nearest] - frame_times) <= 1.5 * np.median(np.diff(exposures)))
     rows = nearest[selected]
     kilosort = next((session / "kilosort" / f"Probe{probe}").glob("kilosort_*"))
     return dict(session=session, probe=probe, phase=phase, arena_type="cylinder",
-                xy=(xy[rows] - center) * scale, hd=hd[rows] % 360,
+                xy=corrected_xy_cm[rows], hd=hd[rows] % 360,
+                raw_xy_cm=raw_xy_cm[rows], position_held=held[rows], initial_outside=initial[rows],
+                outside_boundary_policy="hold_last_in_bounds",
                 frame_ids=np.flatnonzero(selected), times=frame_times[selected], pose_frame_ids=frames[rows],
                 exposure_times=exposures, adc_time_origin_s=origin, camera_timing=timing,
                 fps=float(fps), total_frames=len(frame_times), video_time_origin_s=float(interval[0]),
@@ -158,7 +176,7 @@ def cylinder_geometry(data):
     """
     xy, hd = np.asarray(data["xy"]), np.asarray(data["hd"])
     radii = np.asarray(data["boundary_radii_cm"])
-    angles = np.deg2rad(hd[:, None] + RAY_DEG)
+    angles = np.deg2rad(hd[:, None] - RAY_DEG)
     direction = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
     projection = np.sum(xy[:, None, :] * direction, axis=-1)
     norm2 = np.sum(xy * xy, axis=-1)
@@ -172,14 +190,14 @@ def cylinder_geometry(data):
 
 
 def overlay_geometry(data):
-    """Invert the analysis calibration; distances are untruncated cm, not bins."""
+    """Project physical north-CW headings; distances are untruncated cm."""
     xy, hd = np.asarray(data["xy"]), np.asarray(data["hd"])
-    left, right, top, bottom = BASLER_BOUNDS_PX
+    left, right, top, bottom = data["bounds_px"]
     pixels_per_cm = np.array([right - left, bottom - top]) / BASLER_SIZE_CM
     positions = xy * pixels_per_cm * [1, -1] + [left, bottom]
     valid = (np.isfinite(hd) & np.isfinite(xy).all(axis=1)
              & ((xy >= 0) & (xy <= BASLER_SIZE_CM)).all(axis=1))
-    angles = np.deg2rad(RAY_DEG - hd[:, None])
+    angles = np.deg2rad(-RAY_DEG - hd[:, None])
     directions = np.stack((-np.sin(angles), -np.cos(angles)), axis=-1)
     # Pixel displacement per cm along each ray; the nearest positive wall
     # intersection is its untruncated boundary distance in cm.
@@ -212,8 +230,8 @@ class _Overlay:
             (340, "HD: 0° up / north, positive CW", self.small),
             (410, "8 EBC boundary rays", self.font),
             (446, "Bearing from HD        Distance", self.small),
-            (882, "0° front · 90° left · 180° back", self.small),
-            (910, "270° right · distances in cm", self.small),
+            (882, "0° front · +90° right · −90° left", self.small),
+            (910, "EBC: −180° to +180°, clockwise", self.small),
             (958, "Aligned by zero-based CSV frame ID", self.small),
         ):
             draw.text((x, y), text, font=font, fill="#17212b")
@@ -242,7 +260,7 @@ class _Overlay:
             tile, offset = self._label(text)
             canvas.paste(tile, (round(point[0] + offset[0]), round(point[1] + offset[1])))
 
-        left, right, top, bottom = BASLER_BOUNDS_PX
+        left, right, top, bottom = self.data["bounds_px"]
         draw.rectangle((left, top, right, bottom), outline="#111111", width=6)
         draw.rectangle((left, top, right, bottom), outline=BOUNDARY_COLOR, width=3)
         label(((left + right) / 2, top - 55), f"Arena boundary: {BASLER_SIZE_CM:g} × {BASLER_SIZE_CM:g} cm")
@@ -269,6 +287,8 @@ class _Overlay:
                         offset[1] = 18
                     label(tuple(end + offset), f"{angle:g}°")
             direction = np.array([np.sin(np.deg2rad(hd)), -np.cos(np.deg2rad(hd))])
+            direction *= np.array([right - left, bottom - top]) / BASLER_SIZE_CM
+            direction /= np.linalg.norm(direction)
             tip = position + 70 * direction
             normal = np.array([-direction[1], direction[0]])
             draw.line((tuple(position), tuple(tip)), fill="white", width=9)
@@ -341,7 +361,7 @@ class _CylinderOverlay(_Overlay):
             (340, "HD: 0° = +X / right, positive CCW", self.small),
             (410, "8 rays × 2 boundaries", self.font),
             (884, "● inner hit   ○ outer hit", self.small),
-            (914, "0° front · 90° left · 180° back", self.small),
+            (914, "0° front · 90° right · 180° back", self.small),
             (958, "Motive pose · synchronized OE audio", self.small),
         ):
             draw.text((x, y), text, font=font, fill="#17212b")
@@ -453,7 +473,7 @@ class _SharedRenderer:
         self.memory = shared_memory.SharedMemory(create=True, size=self.slots * self.stride)
         # No spike-count matrices are copied to drawing workers.
         pose = {key: data[key] for key in ("session", "phase", "times", "xy", "hd", "arena_type",
-                                          "pose_frame_ids", "video_time_origin_s", "boundary_radii_cm")
+                                          "pose_frame_ids", "video_time_origin_s", "boundary_radii_cm", "bounds_px")
                 if key in data}
         try:
             self.pool = ProcessPoolExecutor(
@@ -688,9 +708,9 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
     available = selected >= 0
     geometry_info = (dict(boundary_radii_cm=list(data["boundary_radii_cm"]),
                           center_raw=np.asarray(data["center_raw"]).tolist(), cm_per_unit=data["cm_per_unit"],
-                          angle_convention="Motive XY: HD CCW from +X; ray bearing CCW relative to HD")
-                     if cylinder else dict(bounds_px=BASLER_BOUNDS_PX, arena_size_cm=BASLER_SIZE_CM,
-                                           angle_convention="HD: north-zero CW; ray bearing: CCW relative to HD"))
+                          angle_convention="Motive XY: HD CCW from +X; ray bearing clockwise relative to HD (90 right)")
+                     if cylinder else dict(bounds_px=data["bounds_px"], arena_size_cm=BASLER_SIZE_CM,
+                                           angle_convention="HD: north-zero CW; ray bearing: clockwise relative to HD (90 right)"))
     summary = dict(video=str(output_path), source_video=str(video_path) if video_path is not None else None,
                    preview=str(preview), arena_type="cylinder" if cylinder else "rectangle",
                    session=str(data["session"]), phase=data["phase"],
@@ -698,10 +718,15 @@ def export_ebc_overlay(data, video_path, output_path, *, start_s=0., duration_s=
                    ray_bearings_deg=RAY_DEG.tolist(),
                    frames=stop - first, fps=fps, container_frame_count=total,
                    drawing_workers=workers, video_encoder=video_encoder,
+                   camera_timing=data["camera_timing"],
                    duration_s=(stop - first) / fps, source_first_frame=first, source_last_frame=stop - 1,
                    missing_pose_frames=int((~available).sum()),
                    outside_arena_frames=int((~overlay.valid[selected[available]]).sum()),
                    render_seconds=round(time.monotonic() - started, 2))
+    if "position_held" in data:
+        summary.update(outside_boundary_policy="hold_last_in_bounds",
+                       held_position_frames=int(data["position_held"][selected[available]].sum()),
+                       initial_outside_frames=int(data["initial_outside"][selected[available]].sum()))
     output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
 
@@ -742,6 +767,12 @@ def export_good_unit_videos(data, video_path, save_path, *, start_s=0., duration
             data, video_path, temporary / "overlay.mp4", start_s=start_s, duration_s=duration_s,
             workers=workers, video_encoder=video_encoder,
         )
+        saved_video, saved_preview = save_path / "overlay.mp4", save_path / "overlay.png"
+        shutil.copyfile(overlay["video"], saved_video)
+        shutil.copyfile(overlay["preview"], saved_preview)
+        saved_overlay = dict(overlay, video=str(saved_video), preview=str(saved_preview))
+        (save_path / "overlay.json").write_text(json.dumps(saved_overlay, indent=2) + "\n")
+        save_legacy_geometry(data, saved_overlay, save_path / "frame_geometry.csv")
         duration = overlay["frames"] / overlay["fps"]
         if audio_source == "continuous":
             # Invert the same exposure clock used for sorted spikes. Do not zero
@@ -756,28 +787,62 @@ def export_good_unit_videos(data, video_path, save_path, *, start_s=0., duration
                 units_by_channel[channel].append(unit)
         else:
             good_units, spike_seconds, _ = _load_audio_spikes(data, overlay)
-        pool = ProcessPoolExecutor(max_workers=audio_workers, mp_context=get_context("spawn"))
-        try:
-            if audio_source == "continuous":
-                futures = {pool.submit(
-                    _export_channel_videos, overlay["video"], save_path,
-                    units, data["probe"], tracks[channel], duration, gain, audio_gate_sigma,
-                    audio_expander_ratio,
-                ): len(units) for channel, units in units_by_channel.items()}
+        if audio_source == "continuous":
+            jobs = [(_export_channel_videos, (
+                overlay["video"], save_path, units, data["probe"], tracks[channel],
+                duration, gain, audio_gate_sigma, audio_expander_ratio,
+            ), len(units)) for channel, units in units_by_channel.items()]
+        else:
+            jobs = [(_mux_spike_audio, (
+                overlay["video"], save_path / f"{unit}.mp4", int(unit), data["probe"],
+                spike_seconds[int(unit)], duration, gain,
+            ), 1) for unit in good_units]
+        with tqdm(total=len(good_units), desc="Good-unit videos", unit="unit") as progress:
+            if audio_workers == 1:
+                for function, arguments, count in jobs:
+                    function(*arguments)
+                    progress.update(count)
             else:
-                futures = {pool.submit(
-                    _mux_spike_audio, overlay["video"], save_path / f"{unit}.mp4",
-                    int(unit), data["probe"], spike_seconds[int(unit)], duration, gain,
-                ): 1 for unit in good_units}
-            with tqdm(total=len(good_units), desc="Good-unit videos", unit="unit") as progress:
-                for future in as_completed(futures):
-                    future.result()
-                    progress.update(futures[future])
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+                pool = ProcessPoolExecutor(max_workers=audio_workers, mp_context=get_context("spawn"))
+                try:
+                    futures = {pool.submit(function, *arguments): count
+                               for function, arguments, count in jobs}
+                    for future in as_completed(futures):
+                        future.result()
+                        progress.update(futures[future])
+                finally:
+                    pool.shutdown(wait=True, cancel_futures=True)
     videos = [save_path / f"{unit}.mp4" for unit in good_units]
     print(f"Saved {len(videos)} videos to {save_path.resolve()}")
-    return videos
+    manifest = dict(saved_overlay, probe=data["probe"], units=[int(unit) for unit in good_units],
+                    videos=[str(path) for path in videos],
+                    audio=dict(source=audio_source, gain=gain, band_hz=list(audio_band_hz),
+                               gate_sigma=audio_gate_sigma, expander_ratio=audio_expander_ratio))
+    (save_path / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return manifest
+
+
+def save_legacy_geometry(data, result, path):
+    """Persist the exact geometry used by the legacy top-view renderer."""
+    if data["arena_type"] == "cylinder":
+        endpoints, distances, valid = cylinder_geometry(data)
+        boundaries = [f"radius_{radius:g}cm" for radius in data["boundary_radii_cm"]]
+    else:
+        _, endpoints, distances, valid = overlay_geometry(data)
+        endpoints, distances, valid = endpoints[:, None], distances[:, None], valid[:, None]
+        boundaries = ["rectangle"]
+    lookup = dict(zip(data["frame_ids"], range(len(data["frame_ids"]))))
+    with Path(path).open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["video_frame", "adc_time_s", "pose_valid", "boundary", "bearing_cw_deg", "distance_cm"])
+        for frame in range(result["source_first_frame"], result["source_last_frame"] + 1):
+            row = lookup.get(frame)
+            for boundary, name in enumerate(boundaries):
+                for bearing, angle in enumerate(RAY_DEG):
+                    distance = np.nan if row is None else distances[row, boundary, bearing]
+                    writer.writerow([frame, "" if row is None else data["times"][row],
+                                     row is not None and bool(valid[row, boundary]), name, angle,
+                                     distance if np.isfinite(distance) else ""])
 
 
 def _video_audio_clock(data, video_result):
@@ -1159,42 +1224,69 @@ def _mux_pcm(video_path, output_path, title, duration, blocks, sample_rate):
             partial.unlink(missing_ok=True)
 
 
+def export_rectangle_with_shared_runner(args, selected_session, selected_save_path):
+    """Render saved analysis samples without another tracking/geometry config."""
+    code_dir = Path.home() / "Developer/rfmapping"
+    analysis_dir = args.analysis_dir or spatial.spatial_result_path(
+        selected_session, probe_name=args.probe, phase_key=args.phase,
+    ).parent
+    config = dict(
+        session=str(selected_session), video_path=str(selected_session / f"{selected_session.name.split('_')[0]}.avi"),
+        analysis_dir=str(analysis_dir.resolve()), output_dir=str(selected_save_path),
+        video_workers=args.workers, audio_workers=args.audio_workers, video_encoder=args.video_encoder,
+        audio=dict(gain=audio_gain, audio_source=audio_source, audio_band_hz=list(audio_band_hz),
+                   audio_gate_sigma=audio_gate_sigma, audio_expander_ratio=audio_expander_ratio),
+    )
+    selected_save_path.mkdir(parents=True, exist_ok=True)
+    config_path = selected_save_path / "config.json"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    command = [sys.executable, str(code_dir / "ebc_video_rectangle.py"), str(config_path), "--start", str(args.start)]
+    if args.duration is not None:
+        command.extend(["--duration", str(args.duration)])
+    if args.silent:
+        command.append("--silent")
+    subprocess.run(command, cwd=code_dir, check=True)
+    return json.loads((selected_save_path / ("overlay.json" if args.silent else "manifest.json")).read_text())
+
+
+def publish_video_location(selected_session, selected_save_path, probe, arena_type):
+    """Make completed CW exports discoverable without replacing earlier videos."""
+    path = selected_session / "data/spatial_cells/video_outputs.json"
+    index = json.loads(path.read_text()) if path.exists() else {"schema_version": 1, "outputs": {}}
+    index["outputs"][f"{arena_type}:Probe{probe}"] = dict(
+        directory=str(selected_save_path), manifest=str(selected_save_path / "manifest.json"),
+        ebc_bearing="clockwise from forward; 90 right", preserved_previous_directory=str(path.parent / "videos"),
+        outside_boundary_policy="hold_last_in_bounds",
+    )
+    path.write_text(json.dumps(index, indent=2) + "\n")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("session", type=Path, nargs="?")
+    parser.add_argument("session", type=Path)
     parser.add_argument("--probe", default=probe)
     parser.add_argument("--phase", default=phase)
+    parser.add_argument("--analysis-dir", type=Path,
+                        help="Saved spatial analysis directory; defaults to the session/probe/phase result.")
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--start", type=float, default=video_start_s)
+    parser.add_argument("--duration", type=float, default=video_duration_s)
+    parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--workers", type=int, default=video_workers)
+    parser.add_argument("--audio-workers", type=int, default=audio_workers)
+    parser.add_argument("--video-encoder", choices=("auto", "h264_nvenc", "libx264"),
+                        default=video_encoder)
     parser.add_argument(
-        "--arena-type", choices=("rectangle", "cylinder"), default=arena_type
+        "--arena-type", choices=("rectangle",), default="rectangle"
     )
     args = parser.parse_args(argv)
 
-    selected_session = session if args.session is None else args.session
-    selected_video = video_path if args.session is None else (
-        None
-        if args.arena_type == "cylinder"
-        else selected_session / f"{selected_session.name.split('_')[0]}.avi"
-    )
-    selected_save_path = (
-        save_path
-        if args.session is None
-        else selected_session / "data/spatial_cells/videos"
-    )
-    video_data = load_video_data(
-        selected_session,
-        probe=args.probe,
-        phase=args.phase,
-        arena_type=args.arena_type,
-        fps=video_fps,
-    )
-    unit_videos = export_good_unit_videos(
-        video_data, selected_video, selected_save_path,
-        start_s=video_start_s, duration_s=video_duration_s, gain=audio_gain,
-        workers=video_workers, audio_workers=audio_workers, video_encoder=video_encoder,
-        audio_source=audio_source, audio_band_hz=audio_band_hz,
-        audio_gate_sigma=audio_gate_sigma, audio_expander_ratio=audio_expander_ratio,
-    )
-    return unit_videos
+    selected_session = args.session.resolve()
+    selected_save_path = (args.output_dir or selected_session / "data/spatial_cells/videos_boundary_hold" / f"Probe{args.probe}").resolve()
+    result = export_rectangle_with_shared_runner(args, selected_session, selected_save_path)
+    if args.start == 0 and args.duration is None and not args.silent:
+        publish_video_location(selected_session, selected_save_path, args.probe, args.arena_type)
+    return result
 
 
 if __name__ == "__main__":

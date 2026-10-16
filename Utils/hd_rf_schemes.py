@@ -8,10 +8,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from Utils.direction_comparison import hd_pick, load_hd_profiles, recording_profiles, resample_profiles, tcRange
+from HD.profiles import hd_pick, hd_profiles, load_hd_tc
+from Utils.direction_comparison import recording_profiles, resample_profiles, tcRange
 from Utils.hd_rf_prediction import wrap_deg
 from Utils.json_tools import read_formatted_json
-from Utils.rflocate import load_rf, load_rfmap, rf_result_path
+from RF.rflocate import load_rf, load_rfmap, rf_result_path
 
 
 def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
@@ -26,16 +27,16 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
     """
     hd_path, rf_path = Path(hd_path), Path(rf_path)
     recording = dict(mouse=mouse, date=date, probe=probe)
-    cohort = load_hd_profiles(hd_path, probe=probe, bins=30, smoothing_deg=0)
+    cohort = hd_profiles(load_hd_tc(hd_path), probe=probe, bins=30, smoothing_deg=0)
     cohort = resample_profiles(cohort, range=tcRange(False), bins=30)
     cohort = recording_profiles(cohort, mouse=mouse, date=date, label="HD")
     cohort = hd_pick(cohort, hd_class=3)
     unit_ids = cohort.index.get_level_values("unit_id").to_numpy(dtype=int)
-    hd_profiles = cohort.copy()
-    hd_profiles.index = unit_ids
+    hd_curves = cohort.copy()
+    hd_curves.index = unit_ids
     heading_provenance = dict(
         hd_profile_method="Existing saved TC counts / occupancy; 30 bins; no smoothing",
-        classification_source="Cohort selected by existing update_hd_classification on saved TC; no new classification or shuffles",
+        classification_source="Cohort selected from saved hd_class; no reclassification or shuffles",
     )
     maps = load_rfmap(rf_path).to_firing_rate(reconstruct_presentations=True).mean_rate(0., .2, show_progress=False)
     maps_by_id = {int(item.unit_id): item for item in maps}
@@ -56,13 +57,13 @@ def load_peak_pairs(hd_path, rf_path, *, hd_is_clockwise=True,
                    rf_peak_in_saved_2d_mask=False, rf_finite_bins=0, rf_zero_bins=0,
                    hd_plus_rf_deg=np.nan, peak_valid=False)
         reasons = []
-        hd = hd_profiles.loc[unit].to_numpy(dtype=float)
+        hd = hd_curves.loc[unit].to_numpy(dtype=float)
         if not np.isfinite(hd).any() or np.nanmax(hd) <= 0:
             reasons.append("no_positive_finite_hd_response")
         else:
             maximum = np.nanmax(hd)
             peak = int(np.flatnonzero(hd == maximum)[0])
-            native_angle = float(hd_profiles.columns[peak] % 360.)
+            native_angle = float(hd_curves.columns[peak] % 360.)
             row.update(hd_native_preferred_deg=native_angle,
                        hd_preferred_deg=native_angle if hd_is_clockwise else (-native_angle) % 360.,
                        hd_peak_hz=float(maximum), hd_peak_ties=int(np.sum(hd == maximum)))

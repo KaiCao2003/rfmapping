@@ -9,11 +9,12 @@ function RFmapping
     params.rfPythonScript = '/home/kai/Developer/rfmapping/locate_rf.py';
     params.rfTimeRange = [0 0.2];
     params.maxZeroBins = 2;
-    params.clusterFormingZ2d = 1.8;
-    params.clusterFormingZ1d = 1;
+    params.rfSigma2d = [1.8 -1]; % Excitatory and inhibitory signed thresholds.
+    params.rfSigma1d = [1 -0.75];
+    params.rfReference2d = 'global'; % Choose 'global' or 'bottom_row' explicitly.
     params.dropBins = 2;
     params.rfWrapX = true;
-    params.rfCollapseFrom2d = false;
+    params.rfPlotWorkers = 8;
     
     % only ONE true
     params.isBackgroundMoving = false;

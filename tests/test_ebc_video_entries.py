@@ -5,7 +5,7 @@ import pytest
 
 import ebc_video_circle as circle
 import ebc_video_rectangle as rectangle
-from Utils import ebc_workflow as workflow
+from EBB import ebc_workflow as workflow
 
 
 @pytest.mark.parametrize("entry, adapter", [(rectangle, "prepare_rectangle_video"),
@@ -73,6 +73,7 @@ def test_shared_export_selects_frames_from_the_measured_clock(tmp_path, monkeypa
 
     def export(*args, **kwargs):
         calls.append((args, kwargs))
+        args[2].parent.mkdir(parents=True, exist_ok=True)
         return summary
 
     monkeypatch.setattr(workflow, "export_ebc_overlay", export)
@@ -84,3 +85,17 @@ def test_shared_export_selects_frames_from_the_measured_clock(tmp_path, monkeypa
     assert (settings["first_frame"], settings["stop_frame"]) == (1, 4)
     assert result == summary
     assert audits == [(data, summary, config["output_dir"] / "frame_geometry.csv")]
+
+
+def test_legacy_rectangle_projection_consumes_already_physical_heading():
+    from scripts import ebc_video as legacy
+    from EBB.ebc_geometry import BASLER_SIZE_CM, pixel_heading_to_world_deg
+
+    bounds = (0., 400., 0., 200.)
+    world_hd = pixel_heading_to_world_deg(np.array([45.]), bounds_px=bounds, size_cm=BASLER_SIZE_CM)
+    data = dict(xy=np.array([[20., 20.]]), hd=(90. - world_hd) % 360., bounds_px=bounds)
+    positions, endpoints, distances, valid = legacy.overlay_geometry(data)
+    np.testing.assert_allclose(positions, [[200., 100.]])
+    np.testing.assert_allclose(endpoints[0, 0], [300., 0.], atol=1e-12)
+    np.testing.assert_allclose(distances[0, 0], np.hypot(10., 20.))
+    assert valid.tolist() == [True]

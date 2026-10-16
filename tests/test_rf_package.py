@@ -18,8 +18,8 @@ import pytest
     ],
 )
 def test_compatibility_modules_share_the_canonical_implementation(legacy, canonical):
-    assert importlib.import_module(f"Utils.{legacy}") is importlib.import_module(
-        f"Utils.rflocate.{canonical}"
+    assert importlib.import_module(f"RF.{legacy}") is importlib.import_module(
+        f"RF.rflocate.{canonical}"
     )
 
 
@@ -29,11 +29,11 @@ def test_core_package_import_needs_neither_plotting_nor_legacy_modules():
             sys.executable,
             "-c",
             "import sys\n"
-            "from Utils.rflocate import RFMap, RFMapList, RFResult, load_rfmap, load_rf, detect_rf\n"
+            "from RF.rflocate import RFMap, RFMapList, RFResult, load_rfmap, load_rf, detect_rf\n"
             "assert 'matplotlib' not in sys.modules\n"
             "assert 'pandas' not in sys.modules\n"
-            "assert not {'Utils.rfmap', 'Utils.rf_detection', 'Utils.rf_cache', "
-            "'Utils.rf_analysis', 'Utils.rf_plotting', 'Utils.rf_rates', 'Utils.rf_trials'} "
+            "assert not {'RF.rfmap', 'RF.rf_detection', 'RF.rf_cache', "
+            "'RF.rf_analysis', 'RF.rf_plotting', 'RF.rf_rates', 'RF.rf_trials'} "
             ".intersection(sys.modules)\n",
         ],
         capture_output=True,
