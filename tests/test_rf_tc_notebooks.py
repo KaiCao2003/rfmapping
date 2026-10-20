@@ -49,7 +49,7 @@ def _paired_namespace(name, root, rf_only):
             key = next(iter(names))
             node.value = ast.parse(f"_config[{key!r}]", mode="eval").body
     namespace = dict(
-        _config=dict(root=root, rf_only=rf_only), Path=Path,
+        _config=dict(root=root, rf_only=rf_only), Path=Path, np=np,
         load_hd_comparison=hd_profiles.load_hd_comparison, prep_hd_tc=hd_profiles.prep_hd_tc,
         load_rf_comparison=rf_profiles.load_rf_comparison, prep_rf_tc=rf_profiles.prep_rf_tc,
         tc_loader=comparison.tc_loader, tcRange=comparison.tcRange,
@@ -103,6 +103,14 @@ def _fixture_csvs(path, prepared, namespace, monkeypatch):
         _saved_input(source)
         return comparison.tc_loader(source, **options)
 
+    if path.name == "tc_comparison_pairs.ipynb":
+        selection_path = namespace["root"] / "m23/261015/261015_2/data/adn_neuron.npy"
+        selection_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(selection_path, np.array(
+            [("ProbeA", 23), ("ProbeB", 7), ("ProbeA", 11)],
+            dtype=[("probe", "U16"), ("unit_id", "i8")],
+        ))
+
     with monkeypatch.context() as patch:
         patch.setattr(hd_profiles, "tc_loader", fixture_load)
         patch.setattr(rf_profiles, "tc_loader", fixture_load)
@@ -133,8 +141,8 @@ def _forbid_generation(namespace, monkeypatch):
 def test_paired_notebooks_read_saved_inputs_preserving_ids_and_values(tmp_path, monkeypatch, name, rf_only):
     path, namespace, prepared = _paired_namespace(name, tmp_path, rf_only)
     _fixture_csvs(path, prepared, namespace, monkeypatch)
-    saved = {file: file.read_bytes() for file in tmp_path.rglob("*.csv")}
-    assert len(saved) >= 10
+    saved = {file: file.read_bytes() for file in tmp_path.rglob("*") if file.is_file()}
+    assert len(list(tmp_path.rglob("*.csv"))) >= 10
     _forbid_generation(namespace, monkeypatch)
     _run(path, prepared, namespace)
     normalized = [key for key in namespace if key.startswith("hd_normalized_")]
@@ -146,7 +154,8 @@ def test_paired_notebooks_read_saved_inputs_preserving_ids_and_values(tmp_path, 
         unit_keys = raw_hd.index.intersection(raw_rf.index).tolist()
         assert hd.index.names == rf.index.names == ["unit_id"]
         assert hd.index.tolist() == rf.index.tolist() == unit_keys
-        assert {unit.rsplit(":", 1)[-1] for unit in unit_keys} == {"23", "7"}
+        expected_units = {"23"} if key == "m23" else {"23", "7"}
+        assert {unit.rsplit(":", 1)[-1] for unit in unit_keys} == expected_units
         assert hd.shape[1] == rf.shape[1] == 30
         for table, raw, kind in ((hd, raw_hd, "HD"), (rf, raw_rf, "RF")):
             expected = raw.loc[unit_keys].to_numpy().copy()
@@ -164,6 +173,9 @@ def test_paired_notebooks_read_saved_inputs_preserving_ids_and_values(tmp_path, 
 def test_paired_notebook_keeps_all_mice_distinct_and_pools_each_once(tmp_path, monkeypatch, rf_only):
     path, namespace, prepared = _paired_namespace("tc_comparison_pairs.ipynb", tmp_path, rf_only)
     _fixture_csvs(path, prepared, namespace, monkeypatch)
+    assert list((tmp_path / "m23").rglob("hd_*.csv")) == [
+        tmp_path / "m23/261015/261015_9/data/tc_comparison/hd_class3_ProbeA.csv",
+    ]
     _forbid_generation(namespace, monkeypatch)
     _run(path, prepared, namespace)
 
@@ -178,10 +190,17 @@ def test_paired_notebook_keeps_all_mice_distinct_and_pools_each_once(tmp_path, m
     }
     pooled_keys = []
     for mouse, (date, probes) in recordings.items():
-        expected = [f"{mouse}:{date}:{probe}:{unit}" for probe in probes for unit in (23, 7)]
+        units = (23,) if mouse == "m23" else (23, 7)
+        expected = [f"{mouse}:{date}:{probe}:{unit}" for probe in probes for unit in units]
         for prefix in ("hd_normalized_", "rf_normalized_"):
             assert namespace[f"{prefix}{mouse}"].index.tolist() == expected
         pooled_keys.extend(expected)
+
+    # ProbeB's unit 7 must not select ProbeA's unit 7; RF-only ADN unit 11 stays unpaired.
+    assert namespace["fm_m23"].index.tolist() == ["m23:261015:A:23"]
+    assert namespace["rf_m23"].index.tolist() == ["m23:261015:A:23", "m23:261015:A:11"]
+    assert namespace["fm_m23"].attrs["label"].endswith(" ADN")
+    assert namespace["rf_m23"].attrs["label"].endswith(" ADN")
 
     for prefix in ("hd_normalized_", "rf_normalized_"):
         pooled = namespace[f"{prefix}all"]
@@ -193,19 +212,20 @@ def test_paired_notebook_keeps_all_mice_distinct_and_pools_each_once(tmp_path, m
             ]
 
 
-@pytest.mark.parametrize("missing_kind", ["HD", "RF"])
-@pytest.mark.parametrize("name", PAIRED_NOTEBOOKS)
+@pytest.mark.parametrize("name,missing_kind", [
+    (name, kind) for name in PAIRED_NOTEBOOKS for kind in ("HD", "RF")
+] + [("tc_comparison_pairs.ipynb", "ADN")])
 def test_paired_notebooks_missing_input_raises_without_generation(tmp_path, monkeypatch, name, missing_kind):
     path, namespace, prepared = _paired_namespace(name, tmp_path, True)
     _fixture_csvs(path, prepared, namespace, monkeypatch)
-    pattern = "hd_*.csv" if missing_kind == "HD" else "rf_*.csv"
+    pattern = {"HD": "hd_*.csv", "RF": "rf_*.csv", "ADN": "adn_neuron.npy"}[missing_kind]
     for file in tmp_path.rglob(pattern):
         file.unlink()
-    saved = {file: file.read_bytes() for file in tmp_path.rglob("*.csv")}
+    saved = {file: file.read_bytes() for file in tmp_path.rglob("*") if file.is_file()}
     _forbid_generation(namespace, monkeypatch)
     with pytest.raises(FileNotFoundError):
         _run(path, prepared, namespace)
-    assert {file: file.read_bytes() for file in tmp_path.rglob("*.csv")} == saved
+    assert {file: file.read_bytes() for file in tmp_path.rglob("*") if file.is_file()} == saved
 
 
 @pytest.mark.parametrize("rf_only", [False, True])

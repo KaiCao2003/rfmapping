@@ -703,6 +703,67 @@ def test_pose_input_requires_processed_columns(recording_inputs):
         spatial.load_data()
 
 
+def test_single_worker_analysis_does_not_start_processes(recording_inputs, tmp_path, monkeypatch):
+    def unexpected_pool(**kwargs):
+        raise AssertionError("Single-worker analysis should run in the current process")
+
+    monkeypatch.setattr(spatial, "ProcessPoolExecutor", unexpected_pool)
+    paths = spatial.run_analysis(output=tmp_path / "serial/tuning.rfmap", workers=1)
+    assert len(paths) == 4
+    assert all(path.is_file() for path in paths)
+    assert spatial.worker_data is None
+
+
+def test_spawn_workers_match_serial_analysis_and_export_figures(recording_inputs, tmp_path, monkeypatch):
+    from EBB import spatial_cell_plotting as plotting
+    from scipy.sparse import load_npz
+
+    label_path = recording_inputs / "kilosort/ProbeA/kilosort_10/cluster_KSLabel.tsv"
+    pd.DataFrame({"cluster_id": [7, 9], "KSLabel": ["good", "good"]}).to_csv(
+        label_path, sep="\t", index=False,
+    )
+    serial_paths = spatial.run_analysis(
+        output=tmp_path / "serial/tuning.rfmap", units=[9, 7], workers=1,
+    )
+    # Exercise Windows' spawn-only environment even when tests run on Linux.
+    monkeypatch.setattr(spatial, "get_all_start_methods", lambda: ["spawn"])
+    monkeypatch.setattr(plotting, "get_all_start_methods", lambda: ["spawn"])
+    spawn_paths = spatial.run_analysis(
+        output=tmp_path / "spawn/tuning.rfmap", units=[9, 7], workers=2,
+    )
+    for serial_path, spawn_path in zip(serial_paths, spawn_paths, strict=True):
+        with np.load(serial_path) as serial, np.load(spawn_path) as spawned:
+            assert serial.files == spawned.files
+            for key in serial.files:
+                np.testing.assert_array_equal(serial[key], spawned[key])
+    for name in ("restored_maps.npz", "position_correction.npz"):
+        with np.load(serial_paths[0].parent / name) as serial, np.load(spawn_paths[0].parent / name) as spawned:
+            assert serial.files == spawned.files
+            for key in serial.files:
+                np.testing.assert_array_equal(serial[key], spawned[key])
+    np.testing.assert_array_equal(
+        load_npz(serial_paths[0].parent / "frame_spike_counts.npz").toarray(),
+        load_npz(spawn_paths[0].parent / "frame_spike_counts.npz").toarray(),
+    )
+    assert spatial.worker_data is None
+
+    hd_tc_path = tmp_path / "tuning_curves.tc"
+    hd_tc_path.write_text(json.dumps({
+        "unit_id": [7, 9], "spike_counts": np.ones((2, 180)).tolist(),
+        "occupancy_time_s": np.ones(180).tolist(),
+        "angle_bin_edges_deg": np.linspace(0, 360, 181).tolist(),
+        "unit_data": {"hd_class": [3, 3]},
+    }), encoding="utf-8")
+    report = plotting.plot_results(
+        spawn_paths[0].parent, output=tmp_path / "plots", workers=2, hd_tc_path=hd_tc_path,
+    )
+    assert report["unit_count"] == 2
+    assert [plot["unit"] for plot in report["plots"]] == [9, 7]
+    for plot in report["plots"]:
+        assert Path(plot["path"]).stat().st_size > 0
+        assert Path(plot["svg_path"]).stat().st_size > 0
+
+
 def test_failed_analysis_keeps_all_previous_results(recording_inputs, tmp_path, monkeypatch):
     class FailedExecutor:
         def __init__(self, **kwargs):
