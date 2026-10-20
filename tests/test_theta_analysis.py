@@ -2,10 +2,12 @@ import numpy as np
 import pytest
 
 from Utils.theta_analysis import (
+    analyze_theta_units,
     extract_theta_phase,
     phase_locking,
     phase_precession,
     sample_theta_phase,
+    summarize_lfp_reference,
     theta_rhythmicity,
 )
 
@@ -186,3 +188,73 @@ def test_invalid_intervals_and_irregular_lfp_clock_are_rejected():
         extract_theta_phase([0., .002, .0045, .006], [1., 2., 3., 4.], sample_rate_hz=500)
     with pytest.raises(ValueError, match="strictly increasing"):
         extract_theta_phase([0., .002, .002, .006], [1., 2., 3., 4.])
+
+
+def test_unit_analysis_is_independent_and_corrects_only_assessed_phase_tests():
+    times = np.arange(0., 28., .002)
+    theta = extract_theta_phase(times, np.cos(2 * np.pi * 8 * times), sample_rate_hz=500.)
+    spikes = {
+        "locked": np.arange(1.03125, 25., .125),
+        "dispersed": np.linspace(1., 25., 210),
+        "sparse": np.linspace(1., 25., 100),
+        "lfp_edge": np.full(101, .01),
+    }
+    result = analyze_theta_units(
+        spikes, theta, tracking_intervals_s=[[0., 28.]], moving_intervals_s=[[0., 28.]],
+    )
+    table = result["summary"]
+    assert table.loc["locked", "is_phase_locked"]
+    assert not table.loc["dispersed", "is_phase_locked"]
+    assert table.loc["sparse", "theta_status"] == "insufficient_spikes"
+    assert table.loc["lfp_edge", "phase_locking_status"] == "insufficient_phase_spikes"
+    assert table.loc[["sparse", "lfp_edge"], "rayleigh_q_bh"].isna().all()
+    p_locked = table.loc["locked", "rayleigh_p"]
+    p_dispersed = table.loc["dispersed", "rayleigh_p"]
+    np.testing.assert_allclose(
+        table.loc[["locked", "dispersed"], "rayleigh_q_bh"],
+        [min(2 * p_locked, p_dispersed), p_dispersed], rtol=1e-12, atol=0,
+    )
+
+    below_coverage = analyze_theta_units(
+        spikes, theta, tracking_intervals_s=[[0., 28.]], moving_intervals_s=[[0., 28.]],
+        spatial_coverage=.8,
+    )["summary"]
+    assert np.isfinite(below_coverage.loc["locked", "theta_index"])
+    assert below_coverage["is_theta_rhythmic"].isna().all()
+    assert below_coverage["is_phase_locked"].isna().all()
+    assert below_coverage["precession_candidate"].isna().all()
+    assert below_coverage["rayleigh_q_bh"].isna().all()
+
+
+def test_empty_unit_analysis_returns_complete_typed_summary():
+    result = analyze_theta_units(
+        {}, dict(parameters={}, phase_qc={}),
+        tracking_intervals_s=[], moving_intervals_s=[],
+    )
+    table = result["summary"]
+    assert table.empty
+    assert table.index.name == "unit_id"
+    assert result["units"] == {}
+    assert table["unit_id"].dtype == object
+    assert table["n_moving_spikes"].dtype == np.dtype("int64")
+    assert table["rayleigh_q_bh"].dtype == np.dtype("float64")
+    assert str(table["is_phase_locked"].dtype) == "boolean"
+    assert table["theta_status"].dtype == object
+
+
+def test_lfp_reference_without_movement_retains_spectrum_and_qc():
+    times = np.arange(0., 8., .002)
+    voltage = np.cos(2 * np.pi * 8 * times)
+    theta = extract_theta_phase(times, voltage, sample_rate_hz=500.)
+    reference = summarize_lfp_reference(
+        dict(times_s=times, voltage_uv=voltage, sample_rate_hz=500.), theta, [],
+    )
+    assert reference["summary"]["valid_lfp_seconds"] > 0
+    assert reference["summary"]["power_4_11_over_1_40"] > .99
+    assert len(reference["spectrum"]["frequency_hz"]) > 0
+    assert np.isfinite(reference["spectrum"]["psd_uv2_per_hz"]).all()
+    trace = reference["trace"]
+    assert trace["status"] == "no_movement"
+    assert np.isnan(trace["midpoint_s"])
+    for key in ("time_from_midpoint_s", "voltage_uv", "filtered_uv", "amplitude_uv"):
+        assert trace[key].shape == (0,)

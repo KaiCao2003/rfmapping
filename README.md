@@ -80,6 +80,51 @@ angles, and response units from the object. See
 receive statistics calculated by their corresponding analysis functions.
 `get_unit_info` remains a compatibility alias for external generation scripts.
 
+### CB/CD and theta workflows
+
+The former `cb_cd_theta_analysis.ipynb` is split into four root notebooks:
+
+| Notebook | Role | Saved output |
+| --- | --- | --- |
+| `cb_cd_analysis.ipynb` | Calculate center-bearing (CB), center-distance (CD), and reference HD tuning/classification | `data/center_cells/Probe<probe>/<phase>/` |
+| `cb_cd_plotting.ipynb` | Read that saved run; preview and export unit curves and population heatmaps | `figures/` inside the run |
+| `theta_analysis.ipynb` | Calculate movement-conditioned theta metrics independently of CB/CD results | `data/theta/Probe<probe>/<phase>/channel<channel>/` |
+| `theta_plotting.ipynb` | Read theta results and the saved LFP reference; preview and export figures | `figures/` inside the run |
+
+Analysis notebooks explicitly save results; replacing an existing run requires
+`overwrite=True`. Plotting follows the spatial-cell workflow: select the
+recording/probe/phase and preview unit, export PNG/SVG figures with `is_save`,
+and use saved classifications without repeating analysis. All backgrounds are
+opaque white. CB uses clockwise egocentric angles (0° forward, 90° right);
+CD keeps centimeters and is never wrapped as an angle.
+
+CB/CD native files `cb_tuning.tc` and `cd_tuning.tc` use the HD-style JSON
+structure: unit IDs, raw spike counts, occupancy seconds, bin edges and
+`unit_data`. They retain CB/CD's own nullable classifications, statistics,
+split-half curves and shuffle evidence; their labels are not HD classes.
+`center_cells.csv`, `center_tuning_and_nulls.npz`, and `manifest.json` retain
+the complete analysis. `EBB.center_cell_io.load_center_analysis()` reads a
+saved run without regenerating anything.
+
+`EBB.center_profiles` supplies pure `cb_profiles` / `cd_profiles`,
+`prepare_cb` / `prepare_cd`, and `prep_cb_tc` / `prep_cd_tc` helpers alongside
+the existing HD, RF and EBB preparation APIs. Native profiles pool counts and
+occupancy before calculating rates. Explicit `generate_center_tc()` exports
+numeric comparison CSVs with complete unit identities. CB columns are degrees;
+CD columns are centimeters. Saved CSVs can be read with `tc_loader`; supply
+response units explicitly. CSVs do not carry classification metadata, which
+remains in the `.tc` files and full saved run. CD defaults to its native grid;
+use its distance-aware helpers rather than angular alignment functions.
+
+Theta saves per-unit statistics, statuses, classifications and BH q values in
+`theta_cells.csv`. `theta_arrays.npz` and `manifest.json` preserve the full
+ACGs, spectra, phase counts/occupancy, scalar results, parameters and LFP
+reference excerpt. `Utils.theta_io.load_theta_analysis()` supplies everything
+needed by `Utils.theta_plotting`; raw LFP and CB/CD outputs are not needed to
+redraw a saved run. Shared tracking preparation retains the existing movement
+and coverage gates. Missing saved inputs raise errors; first-time LFP export
+is an explicit step documented in `theta_analysis.ipynb`.
+
 Waveform input uses SpikeInterface's Open Ephys and Kilosort readers, while
 ProbeInterface carries the Kilosort channel order, contact positions and shanks.
 `generate_unit_artifacts` takes acquisition dimensions, sampling rate and gains

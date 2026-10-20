@@ -1,4 +1,4 @@
-"""Pure spike rhythmicity and LFP phase calculations for the CB/CD notebook.
+"""Pure spike rhythmicity and LFP phase calculations.
 
 Inputs share one seconds clock. No function loads, generates, or saves files.
 Epochs are half-open, and pairs or interpolation never cross epoch/LFP gaps.
@@ -11,7 +11,108 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import numpy as np
+import pandas as pd
 from scipy import signal
+from scipy.stats import false_discovery_control
+
+
+_THETA_SUMMARY_DTYPES = {
+    "unit_id": "object", "n_moving_spikes": "int64", "paper_eligible": "bool",
+    "theta_index": "float64", "peak_frequency_hz": "float64",
+    "is_theta_rhythmic": "boolean", "mean_vector_length": "float64",
+    "preferred_phase_rad": "float64", "rayleigh_p": "float64", "rayleigh_q_bh": "float64",
+    "is_phase_locked": "boolean", "precession_candidate": "boolean",
+    "phase_precession_index": "float64", "peak_frequency_per_cycle": "float64",
+    "n_phase_spikes": "int64", "rhythmicity_status": "object",
+    "phase_locking_status": "object", "precession_status": "object", "theta_status": "object",
+}
+
+
+def analyze_theta_units(
+    spikes_by_unit, theta, *, tracking_intervals_s, moving_intervals_s,
+    min_spikes_exclusive=100, spatial_coverage=1.,
+    min_spatial_coverage_exclusive=.80,
+):
+    """Analyze already movement-selected spikes, independently of CB/CD tuning.
+
+    Tracking intervals bound time ACG pairs, while movement intervals condition
+    phase occupancy. The optional coverage gate retains the original paper
+    eligibility rule without needing center-cell results. Below-coverage units
+    retain descriptive measurements and nullable classification labels.
+    """
+    coverage_pass = spatial_coverage > min_spatial_coverage_exclusive
+    unit_results, rows = {}, []
+    for unit, moving in spikes_by_unit.items():
+        row = dict(
+            unit_id=unit, n_moving_spikes=len(moving),
+            paper_eligible=len(moving) > min_spikes_exclusive and coverage_pass,
+            theta_index=np.nan, peak_frequency_hz=np.nan,
+            is_theta_rhythmic=pd.NA,
+            mean_vector_length=np.nan, preferred_phase_rad=np.nan,
+            rayleigh_p=np.nan, rayleigh_q_bh=np.nan,
+            is_phase_locked=pd.NA, precession_candidate=pd.NA,
+            phase_precession_index=np.nan, peak_frequency_per_cycle=np.nan,
+            n_phase_spikes=0,
+            rhythmicity_status="not_assessed", phase_locking_status="not_assessed",
+            precession_status="not_assessed", theta_status="insufficient_spikes",
+        )
+        rows.append(row)
+        if len(moving) <= min_spikes_exclusive:
+            continue
+
+        rhythm = theta_rhythmicity(moving, tracking_intervals_s)
+        lock = phase_locking(moving, theta, exposure_intervals_s=moving_intervals_s)
+        precession = phase_precession(moving, theta)
+        unit_results[unit] = dict(
+            rhythmicity=rhythm, phase_locking=lock, phase_precession=precession,
+        )
+        row.update(
+            theta_index=rhythm["theta_index"], peak_frequency_hz=rhythm["peak_frequency_hz"],
+            mean_vector_length=lock["mean_vector_length"],
+            preferred_phase_rad=lock["preferred_phase_rad"], rayleigh_p=lock["rayleigh_p"],
+            phase_precession_index=precession["phase_precession_index"],
+            peak_frequency_per_cycle=precession["peak_frequency_per_cycle"],
+            n_phase_spikes=lock["n_spikes"],
+            rhythmicity_status="computed" if np.isfinite(rhythm["theta_index"]) else "no_acg_pairs",
+            phase_locking_status="computed" if lock["n_spikes"] > min_spikes_exclusive else "insufficient_phase_spikes",
+            precession_status="computed" if precession["eligible"] else "insufficient_phase_acg_support",
+            theta_status="computed" if coverage_pass else "descriptive_only_insufficient_spatial_coverage",
+        )
+        if row["paper_eligible"] and np.isfinite(rhythm["theta_index"]):
+            row["is_theta_rhythmic"] = rhythm["is_theta_rhythmic"]
+        if row["paper_eligible"] and lock["n_spikes"] > min_spikes_exclusive:
+            row["is_phase_locked"] = lock["is_phase_locked"]
+            if precession["eligible"]:
+                row["precession_candidate"] = precession["precession_candidate"]
+
+    # Keep a complete, typed table when no good units were supplied. Preserve
+    # native unit-ID types for populated tables instead of coercing IDs to text.
+    summary = pd.DataFrame(rows, columns=list(_THETA_SUMMARY_DTYPES)).astype({
+        name: dtype for name, dtype in _THETA_SUMMARY_DTYPES.items() if name != "unit_id"
+    }).set_index("unit_id", drop=False)
+    assessed = summary["is_phase_locked"].notna() & summary["rayleigh_p"].notna()
+    if assessed.any():
+        summary.loc[assessed, "rayleigh_q_bh"] = false_discovery_control(
+            summary.loc[assessed, "rayleigh_p"].to_numpy(), method="bh",
+        )
+    return dict(
+        summary=summary, units=unit_results,
+        metadata=dict(
+            filter_parameters=theta["parameters"], phase_qc=theta["phase_qc"],
+            movement_support="explicit movement-selected spikes and exposure intervals",
+            precession_support="moving spikes paired within continuous LFP runs",
+            acg_support="movement-filtered spikes paired across speed dips, within continuous tracked support",
+            classification_scope=(
+                f"NA if <={min_spikes_exclusive} movement spikes or spatial coverage "
+                f"<={min_spatial_coverage_exclusive:.0%}"
+            ),
+            min_spikes_exclusive=min_spikes_exclusive,
+            spatial_coverage=float(spatial_coverage),
+            min_spatial_coverage_exclusive=min_spatial_coverage_exclusive,
+            phase_alpha=.01, phase_multiple_testing="Benjamini-Hochberg across assessed units",
+            exact_published_numerical_replication=False,
+        ),
+    )
 
 
 def _spikes(values):
@@ -289,8 +390,9 @@ def summarize_lfp_reference(lfp, theta, moving_intervals_s):
     """Prepare full-baseline PSD/QC and a five-second movement trace for plotting.
 
     Welch uses finite, nonoverlapping four-second blocks. The excerpt is
-    centered on the longest moving interval. Returned traces are small copies,
-    so callers can release the full raw LFP after preparing each session.
+    centered on the longest moving interval. With no movement, PSD/QC remain
+    available and the trace is empty with status ``no_movement``. Returned
+    traces are small copies, so callers can release the full raw LFP afterward.
     """
     times = lfp["times_s"]
     voltage = lfp["voltage_uv"]
@@ -307,7 +409,8 @@ def summarize_lfp_reference(lfp, theta, moving_intervals_s):
     reference_band = (frequency >= 1) & (frequency <= 40)
     total_power = np.trapezoid(psd[reference_band], frequency[reference_band])
     fraction = np.trapezoid(psd[theta_band], frequency[theta_band]) / total_power
-    midpoint = np.mean(moving_intervals_s[np.argmax(np.diff(moving_intervals_s, axis=1))])
+    movement = _intervals(moving_intervals_s)
+    midpoint = np.mean(movement[np.argmax(np.diff(movement, axis=1))]) if len(movement) else np.nan
     selected = np.abs(times - midpoint) <= 2.5
     return dict(
         summary=dict(
@@ -321,6 +424,7 @@ def summarize_lfp_reference(lfp, theta, moving_intervals_s):
         ),
         spectrum=dict(frequency_hz=frequency, psd_uv2_per_hz=psd),
         trace=dict(
+            status="movement_excerpt" if len(movement) else "no_movement",
             midpoint_s=midpoint, time_from_midpoint_s=times[selected] - midpoint,
             voltage_uv=voltage[selected], filtered_uv=theta["filtered_signal"][selected],
             amplitude_uv=theta["amplitude"][selected],

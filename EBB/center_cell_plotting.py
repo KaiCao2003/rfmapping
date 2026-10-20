@@ -1,4 +1,4 @@
-"""Plot prepared center-cell, behavior, and theta results."""
+"""Plot prepared center-cell tuning, classification, and behavior results."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 
-from Utils.plotting import LIGHT_PLOT_STYLE
+from Utils.plotting import LIGHT_PLOT_STYLE, plot_egocentric_polar, plot_tuning_curve
 
 
 _COLORS = {
@@ -59,6 +59,153 @@ def _angular_axis(axis, feature):
 
 def _format(value):
     return f"{value:.3g}" if np.isfinite(value) else "NA"
+
+
+def _classification_state(row, feature):
+    if row[f"{feature}_status"] == "classified":
+        return "positive" if bool(row[f"{feature}_is_cell"]) else "negative"
+    return "unassessed"
+
+
+def _classification_label(row, feature):
+    strength = "cd_r2" if feature == "cd" else f"{feature}_mvl"
+    strength_name = "R²" if feature == "cd" else "MVL"
+    label = (
+        f"{feature.upper()}: {_classification_state(row, feature)}"
+        f" · {strength_name} = {_format(row[strength])}"
+        f" (threshold {_format(row[f'{feature}_strength_threshold'])})"
+        f"\nSplit-half r = {_format(row[f'{feature}_stability'])}"
+        f" (threshold {_format(row[f'{feature}_stability_threshold'])})"
+    )
+    if row[f"{feature}_status"] != "classified":
+        label += f" · {row[f'{feature}_status']}"
+    return label
+
+
+def _rate_cmap():
+    return plt.get_cmap("viridis").with_extremes(bad=_COLORS["missing"])
+
+
+def _rate_colorbar(fig, axis, image, values):
+    finite = np.asarray(values)[np.isfinite(values)]
+    options = {}
+    if finite.size and not np.any(finite):
+        image.set_clim(0., 1.)
+        options["ticks"] = [0.]
+    fig.colorbar(image, ax=axis, label="Firing rate (Hz); gray = unvisited", **options)
+
+
+@plt.rc_context(_PLOT_STYLE)
+def plot_center_tuning(result, unit_id, *, feature="cb", plot_style=None, title=None):
+    """Display one saved CB/CD curve and its saved classification thresholds.
+
+    CB supports line, polar, heatmap, and donut styles; CD supports line and
+    heatmap on its native centimetre axis. The donut's radius is decorative,
+    not a distance coordinate. Missing bins stay missing in every style.
+    """
+    if feature not in ("cb", "cd"):
+        raise ValueError("feature must be 'cb' or 'cd'.")
+    plot_style = plot_style or ("polar" if feature == "cb" else "line")
+    styles = ("line", "heatmap", "polar", "donut") if feature == "cb" else ("line", "heatmap")
+    if plot_style not in styles:
+        raise ValueError(f"{feature.upper()} plot_style must be one of {styles}.")
+    curve = result["tuning"][unit_id][feature]
+    row = result["summary"].loc[unit_id]
+    edges, centers = np.asarray(curve["edges"]), np.asarray(curve["centers"])
+    rates = np.asarray(curve["smoothed_rate_hz"])
+    polar = plot_style in ("polar", "donut")
+    fig, axis = plt.subplots(
+        figsize=(8, 7) if polar else (10, 4), layout="constrained",
+        subplot_kw={"projection": "polar"} if polar else {},
+    )
+    name = "Center bearing" if feature == "cb" else "Center distance"
+    if plot_style == "donut":
+        # Use the spatial angular renderer for a single decorative radial band.
+        image = plot_egocentric_polar(
+            axis, edges, np.array([0., 1.]), rates[:, None], hole_fraction=.5,
+            colorbar_label="Firing rate (Hz); gray = unvisited",
+        )
+        image.set_cmap(_rate_cmap())
+        axis.set_yticks([])
+        axis.set_xlabel("Center bearing (°; 0 = front, clockwise)")
+    elif plot_style == "heatmap":
+        image = axis.pcolormesh(
+            edges, [0., 1.], rates[None, :], shading="flat", cmap=_rate_cmap(), vmin=0.,
+        )
+        axis.set_yticks([])
+        _rate_colorbar(fig, axis, image, rates)
+    else:
+        for key, color, label, width in (
+            ("rate_hz", _COLORS["raw"], "Unsmoothed", .8),
+            ("smoothed_rate_hz", _COLORS["main"], "Smoothed", 1.8),
+        ):
+            if polar:
+                line = plot_tuning_curve(axis, edges, curve[key], name)
+                line.set(color=color, label=label, linewidth=width)
+            else:
+                axis.plot(centers, curve[key], color=color, lw=width, label=label)
+        if feature == "cd":
+            slope, intercept = row["cd_slope_hz_per_cm"], row["cd_intercept_hz"]
+            if np.isfinite([slope, intercept]).all():
+                fitted = slope * centers + intercept
+                fitted[np.asarray(curve["occupancy_s"]) <= 0] = np.nan
+                axis.plot(centers, fitted, color=_COLORS["fit"], ls="--", label="Linear fit")
+        if polar:
+            axis.set_xlabel("Radius: firing rate (Hz)", labelpad=24)
+        else:
+            axis.set_ylabel("Firing rate (Hz)")
+        axis.legend(fontsize=8)
+    if not polar:
+        if feature == "cd":
+            axis.set(xlabel="Center distance (cm)", xlim=edges[[0, -1]])
+        else:
+            _angular_axis(axis, feature)
+        if plot_style == "line":
+            axis.grid(axis="y", color="#E9EDF2", lw=.6)
+    else:
+        axis.set_xticks(np.deg2rad([0, 90, 180, 270]), ["0°\nfront", "90°\nright", "180°\nback", "270°\nleft"])
+    axis.set_title(_classification_label(row, feature), fontsize=10, pad=18)
+    return _finish(fig, title or f"Unit {unit_id} | {name} tuning")
+
+
+@plt.rc_context(_PLOT_STYLE)
+def plot_center_population(result, *, feature="cb", unit_ids=None,
+                           rate_key="smoothed_rate_hz", title=None):
+    """Display supplied unit order and rates on native CB degrees or CD cm.
+
+    No normalization, peak sorting, angle wrapping, or classification is run.
+    Units must share the same saved bin edges; absent bins remain gray.
+    """
+    if feature not in ("cb", "cd"):
+        raise ValueError("feature must be 'cb' or 'cd'.")
+    if rate_key not in ("rate_hz", "smoothed_rate_hz"):
+        raise ValueError("rate_key must be 'rate_hz' or 'smoothed_rate_hz'.")
+    units = list(result["summary"].index if unit_ids is None else unit_ids)
+    fig, axis = plt.subplots(figsize=(10, min(20, max(4, len(units) * .24))), layout="constrained")
+    name = "Center bearing" if feature == "cb" else "Center distance"
+    if units:
+        curves = [result["tuning"][unit][feature] for unit in units]
+        edges = np.asarray(curves[0]["edges"])
+        if any(not np.array_equal(curve["edges"], edges) for curve in curves[1:]):
+            raise ValueError("Population tuning curves must share the same saved bin edges.")
+        values = np.stack([curve[rate_key] for curve in curves])
+        image = axis.pcolormesh(
+            edges, np.arange(len(units) + 1) - .5, values,
+            shading="flat", cmap=_rate_cmap(), vmin=0.,
+        )
+        _rate_colorbar(fig, axis, image, values)
+        axis.set_ylim(len(units) - .5, -.5)
+        labels = [f"{unit}: {_classification_state(result['summary'].loc[unit], feature)}" for unit in units]
+        axis.set_yticks(np.arange(len(units)), labels)
+        axis.set_ylabel("Unit ID: classification")
+        if feature == "cb":
+            _angular_axis(axis, feature)
+        else:
+            axis.set(xlabel="Center distance (cm)", xlim=edges[[0, -1]])
+    else:
+        axis.text(.5, .5, "No units selected", ha="center", va="center", transform=axis.transAxes)
+        axis.set_axis_off()
+    return _finish(fig, title or f"{name} population tuning")
 
 
 def _feature_occupancy(behavior, feature):
@@ -218,125 +365,6 @@ def plot_center_unit(result, unit_id, title=None):
     return _finish(fig, f"{heading}\n{subtitle}")
 
 
-def _unavailable(axis, message):
-    axis.text(
-        .5, .5, message, ha="center", va="center", transform=axis.transAxes,
-        color="#667085", wrap=True,
-    )
-    axis.set_xticks([])
-    axis.set_yticks([])
-
-
-@plt.rc_context(_PLOT_STYLE)
-def plot_theta_unit(unit_results, title="Theta analysis"):
-    """Plot spike rhythmicity, phase counts, occupancy, and the precession test."""
-    fig, axes = plt.subplots(3, 2, figsize=(13, 11), layout="constrained")
-    rhythmicity = unit_results.get("rhythmicity")
-    if rhythmicity is not None:
-        axes[0, 0].plot(
-            rhythmicity["acg_lags_s"], rhythmicity["acg_counts"], color=_COLORS["main"], lw=1,
-        )
-        axes[0, 0].set(
-            xlabel="Time lag (s)", ylabel="Spike-pair count", title="Spike autocorrelogram",
-        )
-        axes[0, 1].plot(
-            rhythmicity["frequency_hz"], rhythmicity["spectrum"], color=_COLORS["main"], lw=1,
-        )
-        if np.any(np.asarray(rhythmicity["spectrum"]) > 0):
-            # Retain DC in the calculation/display without hiding theta detail.
-            axes[0, 1].set_yscale("log")
-        params = rhythmicity["parameters"]
-        axes[0, 1].axvspan(
-            *params["theta_band_hz"], color="#E4EFF3", zorder=0, label="Theta band",
-        )
-        peak = rhythmicity["peak_frequency_hz"]
-        if np.isfinite(peak):
-            axes[0, 1].axvline(
-                peak, color=_COLORS["fit"], ls="--", lw=1, label=f"Peak: {peak:.2f} Hz",
-            )
-        axes[0, 1].set(
-            xlim=(0, params["reference_band_hz"][1]), xlabel="Frequency (Hz)",
-            ylabel=f"ACG spectral {params['spectrum_convention']}",
-            title=f"Theta rhythmicity · TRI = {_format(rhythmicity['theta_index'])}",
-        )
-        axes[0, 1].legend(fontsize=8)
-    else:
-        for axis in axes[0]:
-            _unavailable(axis, "Rhythmicity not assessed")
-
-    locking = unit_results.get("phase_locking")
-    if locking is not None:
-        edges = np.degrees(locking["phase_bin_edges_rad"])
-        axes[1, 0].stairs(
-            locking["phase_counts"], edges, fill=True, color=_COLORS["main"], alpha=.8,
-        )
-        axes[1, 0].set(
-            xlabel="LFP phase (°; 0 = positive peak)", ylabel="Spike count",
-            title=(f"Phase locking · MVL = {_format(locking['mean_vector_length'])}"
-                   f" · p = {_format(locking['rayleigh_p'])}"),
-        )
-        preferred = locking["preferred_phase_rad"]
-        if np.isfinite(preferred):
-            axes[1, 0].axvline(
-                np.degrees(preferred), color=_COLORS["fit"], ls="--", label="Preferred phase",
-            )
-            axes[1, 0].legend(fontsize=8)
-        axes[1, 1].stairs(
-            locking["phase_occupancy_s"], edges, color=_COLORS["raw"], fill=True, alpha=.7,
-        )
-        axes[1, 1].set(
-            xlabel="LFP phase (°)", ylabel="Occupancy (s)",
-            title="Phase occupancy",
-        )
-        for axis in axes[1]:
-            axis.set_xlim(-180, 180)
-            axis.set_xticks([-180, -90, 0, 90, 180])
-    else:
-        for axis in axes[1]:
-            _unavailable(axis, "LFP phase locking not assessed")
-
-    precession = unit_results.get("phase_precession")
-    if precession is not None:
-        axes[2, 0].plot(
-            precession["acg_lags_cycles"], precession["acg_counts"], color=_COLORS["main"], lw=1,
-        )
-        axes[2, 0].set(
-            xlabel="LFP phase lag (cycles)", ylabel="Spike-pair count",
-            title="Phase autocorrelogram",
-        )
-        axes[2, 1].plot(
-            precession["frequency_per_cycle"], precession["spectrum"], color=_COLORS["main"], lw=1,
-        )
-        for index, band in enumerate(precession["parameters"]["reference_bands"]):
-            axes[2, 1].axvspan(
-                *band, color="#E9EDF2", zorder=0, label="Reference bands" if index == 0 else None,
-            )
-        axes[2, 1].axvline(1., color="#344054", ls=":", label="LFP frequency")
-        peak = precession["peak_frequency_per_cycle"]
-        if np.isfinite(peak):
-            axes[2, 1].axvline(peak, color=_COLORS["fit"], ls="--", label=f"Peak {peak:.3f}")
-        candidate = "candidate" if precession["precession_candidate"] else "not a candidate"
-        if not precession["eligible"]:
-            candidate = "unassessed"
-        axes[2, 1].set(
-            xlim=(.4, 1.9), xlabel="Frequency / LFP frequency",
-            ylabel=f"ACG spectral {precession['parameters']['spectrum_convention']}",
-            title=(f"Precession test · {candidate}"
-                   f"\nSpectral ratio = {_format(precession['phase_precession_index'])}"),
-        )
-        frequency = np.asarray(precession["frequency_per_cycle"])
-        visible = (frequency >= .4) & (frequency <= 1.9)
-        visible_peak = np.max(np.asarray(precession["spectrum"])[visible], initial=0.)
-        if visible_peak > 0:
-            # Autoscaling on the entire spectrum includes out-of-view DC.
-            axes[2, 1].set_ylim(0, visible_peak * 1.12)
-        axes[2, 1].legend(fontsize=8)
-    else:
-        for axis in axes[2]:
-            _unavailable(axis, "Phase precession not assessed")
-    return _finish(fig, title)
-
-
 @plt.rc_context(_PLOT_STYLE)
 def plot_center_classification(counts):
     """Show supplied positive, negative, and unassessed unit counts by session."""
@@ -355,31 +383,5 @@ def plot_center_classification(counts):
     return _finish(fig, "Center-cell classification")
 
 
-@plt.rc_context(_PLOT_STYLE)
-def plot_lfp_reference(references, *, channel):
-    """Plot prepared LFP spectra and movement excerpts for each recording."""
-    fig, axes = plt.subplots(
-        len(references), 2, figsize=(14, 3.5 * len(references)),
-        layout="constrained", squeeze=False,
-    )
-    for (key, reference), (left, right) in zip(references.items(), axes):
-        spectrum, trace = reference["spectrum"], reference["trace"]
-        frequency = spectrum["frequency_hz"]
-        selected = (frequency >= 1) & (frequency <= 40)
-        fraction = reference["summary"]["power_4_11_over_1_40"]
-        left.semilogy(frequency[selected], spectrum["psd_uv2_per_hz"][selected])
-        left.axvspan(4, 11, alpha=.15)
-        left.set(
-            xlabel="Frequency (Hz)", ylabel="Power spectral density (µV²/Hz)",
-            title=f"{key} | 4–11 Hz / 1–40 Hz power = {fraction:.1%}",
-        )
-        times = trace["time_from_midpoint_s"]
-        right.plot(times, trace["voltage_uv"], label="LFP")
-        right.plot(times, trace["filtered_uv"], label="5–10 Hz")
-        right.plot(times, trace["amplitude_uv"], label="Amplitude envelope")
-        right.set(
-            xlabel="Time from movement midpoint (s)", ylabel="Voltage (µV)",
-            title=f"Channel {channel} | Midpoint: {trace['midpoint_s']:.1f} s",
-        )
-        right.legend()
-    return _finish(fig, "LFP reference")
+# Preserve existing imports while theta notebooks use their own plotting module.
+from Utils.theta_plotting import plot_lfp_reference, plot_theta_unit

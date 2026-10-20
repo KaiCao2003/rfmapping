@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from EBB.center_cell_io import load_center_session, load_motive_center_session, load_lfp, save_lfp
+from EBB.center_cell_io import (
+    load_center_analysis, load_center_session, load_center_tc, load_motive_center_session,
+    load_lfp, make_center_tc, save_center_analysis, save_lfp,
+)
+from EBB.center_cells import CenterCellConfig, analyze_center_cells, prepare_center_behavior
 
 
 @pytest.fixture
@@ -205,3 +209,109 @@ def test_motive_reader_requires_saved_geometry_without_generating_it(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_motive_center_session(session)
     assert not session.exists()
+
+
+@pytest.fixture
+def center_result():
+    times = np.arange(0., 60.05, .05)
+    phase = times * .7
+    radius = 8 + 6 * np.sin(times * 1.37)
+    xy = 20 + radius[:, None] * np.c_[np.cos(phase), np.sin(phase)]
+    config = CenterCellConfig(position_smoothing_s=0., angle_bin_deg=90., angle_smoothing_deg=90.,
+                              min_spatial_coverage_exclusive=0., min_spikes_exclusive=5)
+    behavior = prepare_center_behavior(times, xy, times * 51 % 360, 40., config=config)
+    result = analyze_center_cells(behavior, {0: times[::3], "001": times[::5], "silent": []},
+                                  n_shuffles=3, seed=17)
+    result["summary"]["cb_is_cell"] = pd.array([True, False, pd.NA], dtype="boolean")
+    return result
+
+
+def test_center_save_load_preserves_identity_nullable_classes_and_complete_evidence(tmp_path, center_result):
+    directory = tmp_path / "center"
+    provenance = [{"path": "/saved/input.npz", "sha256": "unchanged"}]
+    save_center_analysis(directory, center_result, provenance=provenance)
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    loaded = load_center_analysis(directory)
+    pd.testing.assert_frame_equal(loaded["summary"], center_result["summary"])
+    assert loaded["unit_ids"] == [0, "001", "silent"]
+    assert loaded["config"] == center_result["config"]
+    assert loaded["metadata"] == center_result["metadata"]
+    assert loaded["provenance"] == provenance
+    for unit, curves in center_result["tuning"].items():
+        for feature, fields in curves.items():
+            assert loaded["tuning"][unit][feature].keys() == fields.keys()
+            for name, values in fields.items():
+                np.testing.assert_array_equal(loaded["tuning"][unit][feature][name], values)
+    for statistic, values in center_result["nulls"].items():
+        np.testing.assert_array_equal(loaded["nulls"][statistic], values)
+        np.testing.assert_allclose(loaded["thresholds"][statistic], center_result["thresholds"][statistic])
+    np.testing.assert_array_equal(loaded["shuffle_offsets_s"], center_result["shuffle_offsets_s"])
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+    assert set(before) == {"center_cells.csv", "center_tuning_and_nulls.npz", "manifest.json",
+                           "cb_tuning.tc", "cd_tuning.tc"}
+
+
+@pytest.mark.parametrize("feature,edges_name", [("cb", "angle_bin_edges_deg"),
+                                               ("cd", "distance_bin_edges_cm")])
+def test_center_tuning_uses_hd_fields_with_native_coordinates_and_shuffle_evidence(
+    tmp_path, center_result, feature, edges_name,
+):
+    save_center_analysis(tmp_path, center_result, provenance=[])
+    path = tmp_path / f"{feature}_tuning.tc"
+    data = load_center_tc(path)
+    json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(f"Nonstandard JSON constant: {value}"))
+    assert data == make_center_tc(center_result, feature)
+    assert data["unit_id"] == [0, "001", "silent"]
+    reference = center_result["tuning"][0][feature]
+    np.testing.assert_array_equal(data[edges_name], reference["edges"])
+    np.testing.assert_array_equal(data["occupancy_time_s"], reference["occupancy_s"])
+    np.testing.assert_array_equal(data["spike_counts"][0], reference["spike_counts"])
+    np.testing.assert_allclose(np.asarray(data["firing_rate_hz"][0], float), reference["rate_hz"], equal_nan=True)
+    assert set(data["shuffle_statistics"]) == {key for key in center_result["nulls"] if key.startswith(feature + "_")}
+    assert data["unit_data"][f"{feature}_is_cell"][-1] is None
+    assert "hd_class" not in data["unit_data"]
+    if feature == "cb":
+        assert data["unit_data"]["cb_is_cell"] == [True, False, None]
+        assert reference["edges"][-1] == 360.
+    else:
+        assert data["metadata"]["coordinate_units"] == "cm"
+
+
+def test_center_exports_require_explicit_overwrite_and_reject_mixed_theta_directory(tmp_path, center_result):
+    save_center_analysis(tmp_path, center_result, provenance=[])
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    with pytest.raises(FileExistsError):
+        save_center_analysis(tmp_path, center_result, provenance=[])
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+    save_center_analysis(tmp_path, center_result, provenance=[], overwrite=True)
+    (tmp_path / "theta_cells.csv").write_text("old theta results\n")
+    with pytest.raises(ValueError, match="center-only"):
+        save_center_analysis(tmp_path, center_result, provenance=[], overwrite=True)
+
+
+def test_center_reader_does_not_create_missing_exports(tmp_path):
+    missing = tmp_path / "not_generated"
+    with pytest.raises(FileNotFoundError):
+        load_center_analysis(missing)
+    with pytest.raises(FileNotFoundError):
+        load_center_tc(missing / "cb_tuning.tc")
+    assert not missing.exists()
+
+
+def test_previous_center_exports_load_without_writing_new_tuning_files(tmp_path, center_result):
+    result = {**center_result, "summary": center_result["summary"].iloc[:1].copy(), "unit_ids": [0],
+              "tuning": {0: center_result["tuning"][0]},
+              "nulls": {key: value[:1] for key, value in center_result["nulls"].items()},
+              "shuffle_offsets_s": center_result["shuffle_offsets_s"][:1]}
+    result["summary"]["unit_id"] = result["summary"]["unit_id"].astype(int)
+    result["summary"] = result["summary"].set_index("unit_id", drop=False)
+    save_center_analysis(tmp_path, result, provenance=[])
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["schema_version"], manifest["unit_ids"]
+    manifest_path.write_text(json.dumps(manifest))
+    (tmp_path / "cb_tuning.tc").unlink()
+    (tmp_path / "cd_tuning.tc").unlink()
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    pd.testing.assert_frame_equal(load_center_analysis(tmp_path)["summary"], result["summary"])
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before

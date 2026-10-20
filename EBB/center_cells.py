@@ -15,9 +15,6 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import convolve1d
 
-from Utils.theta_analysis import phase_locking, phase_precession, theta_rhythmicity
-
-
 @dataclass(frozen=True)
 class CenterCellConfig:
     """Paper parameters, plus explicit handling of incomplete camera tracking."""
@@ -248,77 +245,24 @@ def behavior_intervals(behavior, selected_mask):
 
 
 def analyze_center_theta(behavior, spikes_by_unit, theta):
-    """Calculate movement-conditioned theta results for all supplied units.
+    """Compatibility adapter from prepared center behavior to theta analysis."""
+    from Utils.theta_analysis import analyze_theta_units
 
-    Classification uses the prepared behavior's spike/coverage thresholds.
-    Below-coverage sessions retain descriptive measurements and NA labels.
-    Spike ACG pairs can span speed dips within continuous tracked support;
-    phase occupancy uses only the selected movement intervals.
-    """
     config = behavior["config"]
-    min_spikes = config["min_spikes_exclusive"]
-    coverage_pass = behavior["spatial_coverage"] > config["min_spatial_coverage_exclusive"]
-    moving_intervals = behavior_intervals(behavior, behavior["moving_mask"])
-    tracking_intervals = behavior_intervals(behavior, behavior["valid_position_mask"])
-    unit_results, rows = {}, []
-    for unit, raw_spikes in spikes_by_unit.items():
-        moving = select_moving_spikes(behavior, raw_spikes)
-        row = dict(
-            unit_id=unit, n_moving_spikes=len(moving),
-            paper_eligible=len(moving) > min_spikes and coverage_pass,
-            theta_index=np.nan, is_theta_rhythmic=pd.NA,
-            mean_vector_length=np.nan, preferred_phase_rad=np.nan, rayleigh_p=np.nan,
-            is_phase_locked=pd.NA, precession_candidate=pd.NA,
-            phase_precession_index=np.nan, peak_frequency_per_cycle=np.nan,
-            rhythmicity_status="not_assessed", phase_locking_status="not_assessed",
-            precession_status="not_assessed", theta_status="insufficient_spikes",
-        )
-        rows.append(row)
-        if len(moving) <= min_spikes:
-            continue
-
-        rhythm = theta_rhythmicity(moving, tracking_intervals)
-        lock = phase_locking(moving, theta, exposure_intervals_s=moving_intervals)
-        precession = phase_precession(moving, theta)
-        unit_results[unit] = dict(
-            rhythmicity=rhythm, phase_locking=lock, phase_precession=precession,
-        )
-        row.update(
-            theta_index=rhythm["theta_index"], peak_frequency_hz=rhythm["peak_frequency_hz"],
-            mean_vector_length=lock["mean_vector_length"],
-            preferred_phase_rad=lock["preferred_phase_rad"], rayleigh_p=lock["rayleigh_p"],
-            phase_precession_index=precession["phase_precession_index"],
-            peak_frequency_per_cycle=precession["peak_frequency_per_cycle"],
-            n_phase_spikes=lock["n_spikes"],
-            rhythmicity_status="computed" if np.isfinite(rhythm["theta_index"]) else "no_acg_pairs",
-            phase_locking_status="computed" if lock["n_spikes"] > min_spikes else "insufficient_phase_spikes",
-            precession_status="computed" if precession["eligible"] else "insufficient_phase_acg_support",
-            theta_status="computed" if coverage_pass else "descriptive_only_insufficient_spatial_coverage",
-        )
-        if row["paper_eligible"] and np.isfinite(rhythm["theta_index"]):
-            row["is_theta_rhythmic"] = rhythm["is_theta_rhythmic"]
-        if row["paper_eligible"] and lock["n_spikes"] > min_spikes:
-            row["is_phase_locked"] = lock["is_phase_locked"]
-            if precession["eligible"]:
-                row["precession_candidate"] = precession["precession_candidate"]
-
-    summary = pd.DataFrame(rows).set_index("unit_id", drop=False)
-    for name in ("is_theta_rhythmic", "is_phase_locked", "precession_candidate"):
-        summary[name] = pd.array(summary[name], dtype="boolean")
-    return dict(
-        summary=summary, units=unit_results,
-        metadata=dict(
-            filter_parameters=theta["parameters"], phase_qc=theta["phase_qc"],
-            movement_support=f"same gap-aware speed >{config['speed_threshold_cm_s']:g}cm/s exposure as center tuning",
-            precession_support="moving spikes paired within continuous LFP runs",
-            acg_support="movement-filtered spikes paired across speed dips, within continuous tracked support",
-            classification_scope=(
-                f"NA if <={min_spikes} movement spikes or spatial coverage "
-                f"<={config['min_spatial_coverage_exclusive']:.0%}"
-            ),
-            phase_alpha=.01, exact_published_numerical_replication=False,
-        ),
+    result = analyze_theta_units(
+        {unit: select_moving_spikes(behavior, spikes)
+         for unit, spikes in spikes_by_unit.items()},
+        theta,
+        tracking_intervals_s=behavior_intervals(behavior, behavior["valid_position_mask"]),
+        moving_intervals_s=behavior_intervals(behavior, behavior["moving_mask"]),
+        min_spikes_exclusive=config["min_spikes_exclusive"],
+        spatial_coverage=behavior["spatial_coverage"],
+        min_spatial_coverage_exclusive=config["min_spatial_coverage_exclusive"],
     )
+    result["metadata"]["movement_support"] = (
+        f"same gap-aware speed >{config['speed_threshold_cm_s']:g}cm/s exposure as center tuning"
+    )
+    return result
 
 
 def circular_shift_spikes(spike_times, trial_interval_s, shift_s):

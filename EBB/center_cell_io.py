@@ -6,6 +6,7 @@ regenerates tracking, spike times, or spatial maps.
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -242,16 +243,87 @@ def load_lfp(path):
                     sample_rate_hz=float(arrays["sample_rate_hz"]), metadata=json.loads(str(arrays["metadata"])))
 
 
-def save_center_analysis(directory, result, *, provenance, theta_results=None, overwrite=False):
-    """Persist tables, raw tuning evidence, shuffled statistics, and provenance."""
+def _json_values(value):
+    """Represent missing scientific values as JSON null, as in saved HD curves."""
+    if value is pd.NA:
+        return None
+    if hasattr(value, "__dataclass_fields__"):
+        from dataclasses import asdict
+        value = asdict(value)
+    if isinstance(value, Mapping):
+        return {key: _json_values(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [_json_values(item) for item in value]
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def make_center_tc(result, feature):
+    """Prepare HD-shaped CB/CD tuning with native coordinates and saved classes.
+
+    No classification is rerun. The boolean center-cell classes retain their
+    own methods and must not be interpreted as the HD pipeline's 0–3 classes.
+    """
+    if feature not in ("cb", "cd"):
+        raise ValueError("feature must be cb or cd")
+    summary = result["summary"]
+    units = summary["unit_id"].tolist()
+    curves = [result["tuning"][unit][feature] for unit in units]
+    angular = feature == "cb"
+    shared = curves[0] if curves else {"edges": [], "occupancy_s": [], "half_occupancy_s": []}
+    columns = [column for column in summary if not column.startswith(("hd_", "cb_", "cd_"))
+               or column.startswith(feature + "_")]
+    fields = {
+        "metadata": {
+            "schema_version": 1, "feature": feature, "response_units": "Hz",
+            "coordinate_units": "degrees" if angular else "cm",
+            "coordinate_convention": ("clockwise from head: 0 front, +90 right, 180 back, 270 left"
+                                      if angular else "physical distance from arena center in cm; noncircular"),
+            "config": result["config"], **result["metadata"],
+        },
+        "angle_bin_edges_deg" if angular else "distance_bin_edges_cm": shared["edges"],
+        "occupancy_time_s": shared["occupancy_s"],
+        "half_occupancy_time_s": shared["half_occupancy_s"],
+        "unit_id": units,
+        "unit_data": {column: summary[column].tolist() for column in columns if column != "unit_id"},
+        "shuffle_statistics": {key: value for key, value in result["nulls"].items()
+                               if key.startswith(feature + "_")},
+        "shuffle_offsets_s": result["shuffle_offsets_s"],
+        "thresholds": {key: value for key, value in result["thresholds"].items()
+                       if key.startswith(feature + "_")},
+    }
+    for source, target in (("spike_counts", "spike_counts"), ("rate_hz", "firing_rate_hz"),
+                           ("smoothed_rate_hz", "smoothed_firing_rate_hz"),
+                           ("half_spike_counts", "half_spike_counts"),
+                           ("half_rate_hz", "half_firing_rate_hz"),
+                           ("half_smoothed_rate_hz", "half_smoothed_firing_rate_hz")):
+        fields[target] = [curve[source] for curve in curves]
+    if angular:
+        fields["smoothed_spike_counts"] = [curve["smoothed_spike_counts"] for curve in curves]
+        fields["smoothed_occupancy_time_s"] = curves[0]["smoothed_occupancy_s"] if curves else []
+    return _json_values(fields)
+
+
+def load_center_tc(path):
+    """Read a saved CB or CD tuning JSON without generating or selecting data."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def save_center_analysis(directory, result, *, provenance, overwrite=False):
+    """Save center tables, HD-shaped CB/CD curves, full evidence, and provenance."""
     directory = Path(directory)
     if directory.exists() and any(directory.iterdir()) and not overwrite:
         raise FileExistsError(directory)
-    if overwrite and theta_results is None and any((directory / name).exists() for name in ("theta_cells.csv", "theta_arrays.npz")):
-        raise ValueError("Choose a fresh run directory to avoid mixing old theta outputs with a center-only run.")
+    if any((directory / name).exists() for name in ("theta_cells.csv", "theta_arrays.npz")):
+        raise ValueError("Choose a center-only directory; theta outputs are saved separately.")
     directory.mkdir(parents=True, exist_ok=True)
     result["summary"].to_csv(directory / "center_cells.csv", index=False)
-    arrays = dict(unit_ids=result["summary"]["unit_id"].to_numpy())
+    arrays = dict(unit_ids=np.asarray(result["summary"]["unit_id"].tolist()))
     for name, values in result["nulls"].items():
         arrays["shuffle_" + name] = values
     arrays["shuffle_offsets_s"] = result["shuffle_offsets_s"]
@@ -261,34 +333,46 @@ def save_center_analysis(directory, result, *, provenance, theta_results=None, o
                 if isinstance(value, np.ndarray):
                     arrays[f"unit_{unit}_{feature}_{key}"] = value
     np.savez_compressed(directory / "center_tuning_and_nulls.npz", **arrays)
-    if theta_results is not None:
-        theta_results["summary"].to_csv(directory / "theta_cells.csv", index=False)
-        theta_arrays = {}
-        for unit, features in theta_results["units"].items():
-            for feature, values in features.items():
-                for key, value in values.items():
-                    if isinstance(value, np.ndarray):
-                        theta_arrays[f"unit_{unit}_{feature}_{key}"] = value
-        np.savez_compressed(directory / "theta_arrays.npz", **theta_arrays)
-    manifest = dict(paper="https://doi.org/10.1038/s41467-024-54699-9",
+    for feature in ("cb", "cd"):
+        (directory / f"{feature}_tuning.tc").write_text(
+            json.dumps(make_center_tc(result, feature), indent=2, allow_nan=False) + "\n", encoding="utf-8",
+        )
+    manifest = dict(schema_version=1, paper="https://doi.org/10.1038/s41467-024-54699-9",
+                    unit_ids=result["summary"]["unit_id"].tolist(),
                     config=result["config"], metadata=result["metadata"],
-                    thresholds=result["thresholds"], provenance=provenance,
-                    theta_metadata=None if theta_results is None else theta_results.get("metadata"))
-    if theta_results is not None:
-        manifest["theta_parameters"] = {
-            str(unit): {feature: values.get("parameters", {}) for feature, values in features.items()}
-            for unit, features in theta_results["units"].items()
-        }
-    def encode(value):
-        if hasattr(value, "__dataclass_fields__"):
-            from dataclasses import asdict
-            return asdict(value)
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, np.generic):
-            return value.item()
-        if isinstance(value, Path):
-            return str(value)
-        raise TypeError(type(value).__name__)
-    (directory / "manifest.json").write_text(json.dumps(manifest, default=encode, indent=2) + "\n")
+                    thresholds=result["thresholds"], provenance=provenance)
+    (directory / "manifest.json").write_text(
+        json.dumps(_json_values(manifest), indent=2, allow_nan=False) + "\n", encoding="utf-8",
+    )
     return directory
+
+
+def load_center_analysis(directory):
+    """Read saved center results, retaining nullable classes and full raw evidence.
+
+    Existing exports predating the separate CB/CD tuning files remain readable;
+    this reader never generates those files or recalculates classifications.
+    """
+    directory = Path(directory)
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    summary = pd.read_csv(directory / "center_cells.csv", float_precision="round_trip")
+    for feature in ("hd", "cb", "cd"):
+        summary[f"{feature}_is_cell"] = pd.array(summary[f"{feature}_is_cell"], dtype="boolean")
+    with np.load(directory / "center_tuning_and_nulls.npz", allow_pickle=False) as arrays:
+        units = manifest["unit_ids"] if "unit_ids" in manifest else arrays["unit_ids"].tolist()
+        summary["unit_id"] = units
+        tuning = {}
+        for unit in units:
+            tuning[unit] = {}
+            for feature in ("hd", "cb", "cd"):
+                prefix = f"unit_{unit}_{feature}_"
+                tuning[unit][feature] = {key[len(prefix):]: arrays[key].copy()
+                                         for key in arrays.files if key.startswith(prefix)}
+        nulls = {key[len("shuffle_"):]: arrays[key].copy() for key in arrays.files
+                 if key.startswith("shuffle_") and key != "shuffle_offsets_s"}
+        offsets = arrays["shuffle_offsets_s"].copy()
+    return dict(summary=summary.set_index("unit_id", drop=False), tuning=tuning,
+                nulls=nulls, thresholds={key: np.nan if value is None else value
+                                         for key, value in manifest["thresholds"].items()},
+                unit_ids=units, shuffle_offsets_s=offsets, config=manifest["config"],
+                metadata=manifest["metadata"], provenance=manifest["provenance"])
