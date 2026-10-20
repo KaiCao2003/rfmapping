@@ -116,6 +116,13 @@ response units explicitly. CSVs do not carry classification metadata, which
 remains in the `.tc` files and full saved run. CD defaults to its native grid;
 use its distance-aware helpers rather than angular alignment functions.
 
+`cb_hd_rf_comparison.ipynb` compares saved CB-positive and HD-class-3 curves,
+with m22 261019 FM session 3 and RF session 1 as its defaults. It keeps
+sessions separate, reports unassessed CB labels and saved HD thresholds,
+and exports native/aligned/sum figures, paired statistics, and source provenance
+under `output/cb_hd_rf_comparison/`. It reads canonical saved CB runs; generate
+missing inputs explicitly with `cb_cd_analysis.ipynb` first.
+
 Theta saves per-unit statistics, statuses, classifications and BH q values in
 `theta_cells.csv`. `theta_arrays.npz` and `manifest.json` preserve the full
 ACGs, spectra, phase counts/occupancy, scalar results, parameters and LFP
