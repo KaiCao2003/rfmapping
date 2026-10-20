@@ -1,0 +1,450 @@
+{
+  "mouse": "m19",
+  "date": "260831",
+  "probe": "A",
+  "phase": "baseline",
+  "fm_sessions": [
+    2
+  ],
+  "rf_session": 1,
+  "hd_class": 3,
+  "cb_cells_only": true,
+  "rf_max_zero_bins": 2,
+  "comparison_bins": 30,
+  "pairs": [
+    [
+      "HD2",
+      "CB2"
+    ],
+    [
+      "HD2",
+      "RF1"
+    ],
+    [
+      "RF1",
+      "CB2"
+    ]
+  ],
+  "sort_by": "HD",
+  "comparison_modes": [
+    "native",
+    "aligned",
+    "sum"
+  ],
+  "is_wrap": true,
+  "statistics_permutations": 10000,
+  "statistics_seed": 1,
+  "peak_statistics_grid": "prepared display curves; source-native peaks exported separately",
+  "coordinate_policy": "preserve native signs; sums are native-angle arithmetic",
+  "sources": [
+    {
+      "profile": "HD2",
+      "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/tuning_curves/ProbeA/tuning_curves.tc",
+      "bytes": 553554,
+      "sha256": "eaea009b4bf878c574d3b9d4a104a6d5568a5284ac3b7f1e31a7a03829ef3955"
+    },
+    {
+      "profile": "CB2",
+      "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/center_cells/ProbeA/baseline/cb_tuning.tc",
+      "bytes": 2790565,
+      "sha256": "cb74cd9474827c15874a5bfde912e3428b993ff49086af329181415590fe4f49"
+    },
+    {
+      "profile": "CB2",
+      "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/center_cells/ProbeA/baseline/manifest.json",
+      "bytes": 6571,
+      "sha256": "0b5e4fcab9fa1ab8fe536d29f51ab873002854d1c75ecf7600195fa5e80d688b"
+    },
+    {
+      "profile": "RF1",
+      "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_1/data/regular_unitsSpikeCounts_260831_1_ProbeA_1d_rfonly.csv",
+      "bytes": 9302,
+      "sha256": "0703d9880bce65e6f91c0a5e89462cb6531ea25d23a173e0a9971ce48c1585aa"
+    }
+  ],
+  "source_metadata": {
+    "HD2": {
+      "saved_metadata": {
+        "session": "260831_2",
+        "probe": "A",
+        "kilosort_dir": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/kilosort/ProbeA/kilosort_2",
+        "timebase": "open_ephys_adc_t0_relative_seconds",
+        "adc_time_origin_raw_s": 14.309517433917435,
+        "timestamp_reference": "adc_exposure_midpoint",
+        "angle_convention_note": "head_direction_deg follows the input JSON angle convention; tuning-curve generation only applies modulo 360.",
+        "num_angle_bins": 180,
+        "feature_fs_hz": 25.002552054242816,
+        "epoch_intervals_s": [
+          [
+            2.8621918621918248,
+            3660.766259941724
+          ]
+        ],
+        "valid_pose_intervals_s": [
+          [
+            2.881975443408372,
+            3660.7584554502914
+          ]
+        ],
+        "classification": {
+          "method": "occupancy_adjusted_rayleigh_circular_shift_von_mises_v2",
+          "num_angle_bins": 30,
+          "class_0": "neither significance test passed",
+          "class_1": "exactly one significance test passed",
+          "class_2": "rayleigh and shuffle significant; kappa cutoff not passed or unavailable",
+          "class_null": "one or both significance tests unavailable",
+          "rayleigh_alpha": 0.01,
+          "rayleigh_test": "Poisson cos/sin score test with log occupancy-time offset; chi-square with 2 degrees of freedom",
+          "shuffle_alpha": 0.01,
+          "num_shuffle": 1000,
+          "shuffle_seed": 0,
+          "class_3": "rayleigh and shuffle significant; von Mises kappa >= cutoff",
+          "kappa_cutoff": 0.1,
+          "kappa_method": "I1(kappa)/I0(kappa) = abs(sum(rate * exp(1j * theta))) / sum(rate)",
+          "kappa_num_angle_bins": 180,
+          "kappa_rate_processing": "occupancy corrected; no smoothing or baseline subtraction",
+          "kappa_null": "unavailable when kappa_pass is null; unbounded concentration when kappa_pass is true"
+        },
+        "epoch": "baseline",
+        "head_direction_is_clockwise": true,
+        "head_direction_zero": "north",
+        "head_direction_source": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/260831.csv",
+        "head_direction_convention": "north-zero clockwise; 90 degrees right",
+        "source_provenance": {
+          "source_files": {
+            "pose": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/260831.csv",
+              "sha256": "be470e50ecd66ec48f6c2df8719da11d600ac7fc87e2b7f5dc4e96a5e5a9cfe5"
+            },
+            "spike_times": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/probeA/adc_spike_time.npy",
+              "sha256": "0695a3a6e3dd2859d934906207568a4653772534461f9b757d30aa17d3287223"
+            },
+            "spike_clusters": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/kilosort/ProbeA/kilosort_2/spike_clusters.npy",
+              "sha256": "3d8b026d625861e88713becd14775d2f94f26d2ced5019568a22da7e92407299"
+            },
+            "unit_labels": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/kilosort/ProbeA/kilosort_2/cluster_KSLabel.tsv",
+              "sha256": "9a911cc48aa7b6bfd338f78d87f74ae5a379a76fe55ffe2141ade4bde916a9a5"
+            },
+            "session_info": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/session_info.json",
+              "sha256": "28facd80e5155aabde44baecf37b78afdc570a718190f8ecd380efcbd66defc9"
+            },
+            "interval_table": {
+              "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/interval_table.csv",
+              "sha256": "88e685e2cbf3e617b0cd919a318ad81121fcd90c6a5e1cf1d3d9a69ed477f872"
+            }
+          },
+          "heading_sha256": "c95b5e718df993483404ad68bea287c87495b2977a7f647100e466e1c950a6bc",
+          "frame_ids_sha256": "2e8ab67fc843165fb289bac5266d54eef3153d58b47b82b4b4f7afadfbdd556a",
+          "exposure_times_sha256": "93a2c987508a5ac7f5a4219539a060fca20acc676a2bc51c2b02cc4c1001cf2d",
+          "timing_source": {
+            "ttl_pulse_count": 91447,
+            "first_exposure_s": 2.901973401973372,
+            "last_exposure_s": 3660.7384574917264,
+            "median_period_s": 0.039995917129999725,
+            "measured_rate_hz": 25.000024029985088,
+            "source_path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/260831/Record Node 118/experiment1/recording1/continuous/OneBox-126.OneBox-ADC/continuous.dat",
+            "timestamp_reference": "adc_exposure_midpoint",
+            "camera_input_channel": 1,
+            "camera_ttl_threshold": 14000.0,
+            "camera_ttl_active_high": false
+          },
+          "camera_input_channel": 1,
+          "trailing_frame_without_ttl_removed": 0,
+          "generator_sha256": "00365fc749c7e01975ddeff3ff233849788ee1ab83cc2754a1861fd3bba394cf",
+          "script_sha256": "ead9706271b9ceba2444d7cb96b058712efca22c456c7ff3ed185e6ea4e94488"
+        },
+        "classification_recomputed": true,
+        "analysis_run": "session_comparisons_20261012_final_definition_fix"
+      },
+      "angle_convention": "Basler native CW"
+    },
+    "CB2": {
+      "schema_version": 1,
+      "paper": "https://doi.org/10.1038/s41467-024-54699-9",
+      "unit_ids": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        15,
+        18,
+        20,
+        21,
+        22,
+        25,
+        26,
+        27,
+        35,
+        39,
+        57,
+        58,
+        64,
+        85,
+        87,
+        90,
+        93,
+        97,
+        100,
+        101,
+        108,
+        111,
+        112,
+        115,
+        117,
+        118,
+        124,
+        125,
+        127,
+        129,
+        130,
+        133,
+        137,
+        139,
+        147,
+        154,
+        155,
+        157,
+        158,
+        164,
+        172,
+        173,
+        175,
+        185,
+        186,
+        192,
+        195,
+        196,
+        199,
+        201,
+        203,
+        210,
+        212,
+        217,
+        218,
+        219,
+        222,
+        223,
+        237,
+        239,
+        244,
+        249,
+        254,
+        261,
+        263,
+        265,
+        266,
+        267,
+        275,
+        278,
+        280,
+        281,
+        284,
+        288,
+        322
+      ],
+      "config": {
+        "speed_threshold_cm_s": 2.5,
+        "min_spikes_exclusive": 100,
+        "min_spatial_coverage_exclusive": 0.8,
+        "position_smoothing_s": 0.4,
+        "spatial_bin_cm": 2.5,
+        "angle_bin_deg": 3.0,
+        "angle_smoothing_deg": 15.0,
+        "distance_bin_cm": 2.0,
+        "distance_stability_smoothing_cm": 6.0,
+        "shuffle_min_shift_s": 20.0,
+        "percentile": 99.0,
+        "max_gap_factor": 1.5,
+        "center_tolerance_cm": 1e-09,
+        "min_correlation_bins": 3
+      },
+      "metadata": {
+        "paper_doi": "10.1038/s41467-024-54699-9",
+        "n_shuffles": 100,
+        "seed": 20261019,
+        "null_scope": "session_local_pooled_eligible_units",
+        "null_scope_adaptation": "The paper pools all recorded eligible cohort units; this run pools only supplied eligible session units.",
+        "pooled_eligible_unit_ids": [
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          15,
+          18,
+          20,
+          21,
+          22,
+          25,
+          26,
+          27,
+          35,
+          39,
+          57,
+          58,
+          64,
+          85,
+          87,
+          90,
+          93,
+          97,
+          100,
+          101,
+          108,
+          111,
+          112,
+          115,
+          117,
+          118,
+          124,
+          125,
+          127,
+          129,
+          130,
+          133,
+          137,
+          139,
+          147,
+          154,
+          155,
+          157,
+          158,
+          164,
+          172,
+          173,
+          175,
+          185,
+          186,
+          192,
+          195,
+          196,
+          199,
+          201,
+          203,
+          210,
+          212,
+          217,
+          218,
+          219,
+          222,
+          223,
+          237,
+          239,
+          244,
+          249,
+          254,
+          261,
+          263,
+          265,
+          266,
+          267,
+          275,
+          278,
+          280,
+          281,
+          284,
+          288,
+          322
+        ],
+        "null_sample_counts": {
+          "hd_mvl": 8100,
+          "hd_stability": 8100,
+          "cb_mvl": 8100,
+          "cb_stability": 8100,
+          "cd_r2": 8100,
+          "cd_stability": 8100
+        },
+        "shuffle_method": "continuous raw spike-time circular shift, then reapply tracking and speed selection",
+        "split_half_boundary_s": 1831.82021544685,
+        "split_half_missing_bins": "correlation on bins occupied in both halves; no filled missing bins",
+        "boxcar_missing_bins": "normalize finite neighbours, preserve original unvisited bins as NaN",
+        "angular_smoothing": "author hdstat.m: circular 15 degree boxcar on counts and occupancy separately, then divide; no duplicated closing angular bin",
+        "cd_fit": "unweighted ordinary least squares on visited unsmoothed 2 cm rate bins",
+        "classification": "strictly greater than pooled percentile for both tuning strength and split-half stability",
+        "spike_quality_adaptation": "Caller supplies good units; paper L-ratio <1 criterion is not inferred from Kilosort labels."
+      },
+      "thresholds": {
+        "hd_mvl": 0.2760451276909968,
+        "hd_stability": 0.4930472629914172,
+        "cb_mvl": 0.3325268786927948,
+        "cb_stability": 0.514151480946401,
+        "cd_r2": 0.864072247854729,
+        "cd_stability": 0.9133336049254442
+      },
+      "provenance": {
+        "session_id": "m19_260831_2",
+        "probe": "A",
+        "phase": "baseline",
+        "is_motive": false,
+        "input_files": [
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/spatial_cells/ProbeA/baseline/audit.json",
+            "bytes": 1911,
+            "sha256": "04100855953b2564f4c71999b48105607344b63eb258a3a59049e18f18f9f215"
+          },
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/spatial_cells/ProbeA/baseline/restored_maps.npz",
+            "bytes": 3500245,
+            "sha256": "5ac05f4c5b163429f4aa85ab4f30b44b6a1fcd3d3a38e5415387bfc945c6579a"
+          },
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/spatial_cells/ProbeA/baseline/position_correction.npz",
+            "bytes": 43473194,
+            "sha256": "67d8c62c769b37024ce8c846066eb837f64d7cd3c72f396a682b51c627dd36a7"
+          },
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/kilosort/ProbeA/kilosort_2/cluster_KSLabel.tsv",
+            "bytes": 2630,
+            "sha256": "9a911cc48aa7b6bfd338f78d87f74ae5a379a76fe55ffe2141ade4bde916a9a5"
+          },
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/kilosort/ProbeA/kilosort_2/spike_clusters.npy",
+            "bytes": 39386148,
+            "sha256": "3d8b026d625861e88713becd14775d2f94f26d2ced5019568a22da7e92407299"
+          },
+          {
+            "path": "/mnt/senzailab/Kai/#Recording/m19/260831/260831_2/data/probeA/adc_spike_time.npy",
+            "bytes": 78772168,
+            "sha256": "0695a3a6e3dd2859d934906207568a4653772534461f9b757d30aa17d3287223"
+          }
+        ],
+        "geometry": {
+          "arena_shape": "rectangle",
+          "arena_size_cm": [
+            40.0,
+            40.0
+          ]
+        },
+        "tracking_selection": {
+          "policy": "exclude held and initial-outside frames",
+          "held_frames": 617,
+          "initial_outside_frames": 0,
+          "excluded_fraction": 0.006747077542182903,
+          "adaptation": "Slides retain held positions; this analysis excludes them for speed estimation."
+        },
+        "behavior_metadata": {
+          "coordinate_system": "physical cm from arena top-left; y increases downward",
+          "heading_convention": "north-zero clockwise; raw input retained",
+          "cb_convention": "clockwise from head: 0 front, +90 right, 180 back, 270 left",
+          "cb_paper_sign_conversion": "paper CCW CB = (-cb_deg) % 360",
+          "speed_estimator": "finite difference of segment-wise 400 ms boxcar positions (configurable)",
+          "position_boxcar_edges": "truncated and renormalized within contiguous valid segments",
+          "occupancy_selection": "same strictly speed-thresholded support used for spikes",
+          "spatial_coverage_bins": "all rectangular bins",
+          "gap_policy": "no smoothing or spike assignment across missing support; exposure capped at gaps"
+        }
+      }
+    },
+    "RF1": {
+      "projection": "saved native RF-only x projection; no detection rerun",
+      "angle_convention": "native RF x angles"
+    }
+  }
+}

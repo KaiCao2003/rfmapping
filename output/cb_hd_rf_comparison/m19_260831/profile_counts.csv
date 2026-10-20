@@ -1,0 +1,4 @@
+profile,loaded_units,measured_units,selected_units,assessed_units,unassessed_units,positive_units,selection,hd_kappa_cutoff,native_bins,display_bins,spatial_coverage,angle_convention
+HD2,81,81,37,81.0,0.0,37.0,saved HD class 3,0.1,180,30,,Basler native CW
+CB2,81,81,0,81.0,0.0,0.0,saved CB-positive,,120,30,1.0,"CW egocentric; 0 front, +90 right"
+RF1,68,14,14,,,,measured RF-only curves; <= 2 native zero bins,,30,30,,native RF x angles

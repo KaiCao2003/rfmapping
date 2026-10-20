@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "mouse": "m22",
+  "date": "261008",
+  "fm_session": 9,
+  "rf_session": 2,
+  "selected_units": {
+    "HD9": 65,
+    "CB9": 12,
+    "RF2": 21
+  },
+  "finite_direction_pairs": {
+    "HD9_CB9": 11,
+    "HD9_RF2": 17,
+    "RF2_CB9": 8
+  },
+  "source_hashes_unchanged": true,
+  "opaque_white_pngs_verified": 27,
+  "executed_code_cells": 6,
+  "kernel": "/home/kai/.virtualenvs/rfmapping/bin/python"
+}

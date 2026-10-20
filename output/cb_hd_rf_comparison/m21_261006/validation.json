@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "kernel": "/home/kai/.virtualenvs/rfmapping/bin/python",
+  "executed_code_cells": 6,
+  "selected_units": {
+    "HD9": 48,
+    "HD11": 30,
+    "CB9": 0,
+    "CB11": 12,
+    "RF2": 18
+  },
+  "finite_direction_pairs": {
+    "HD9_CB9": 0,
+    "HD11_CB11": 11,
+    "HD9_RF2": 12,
+    "HD11_RF2": 12,
+    "HD9_CB11": 12,
+    "RF2_CB11": 9
+  },
+  "opaque_white_pngs_verified": 45,
+  "source_hashes_unchanged": true,
+  "notebook_sha256": "ad2753404096d4e9f13cb470391b4ae3ecfc201488b15388261adc5b21dab4dc",
+  "classification": "saved HD classes and session-local CB classification; CB9 unassessed",
+  "statistics": "30-bin peaks, 10000 pairing permutations, seed1; p values unadjusted"
+}

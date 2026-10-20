@@ -1,0 +1,5 @@
+dataset,FM_session,RF_session,CB_positive,CB_assessed,CB_unassessed,spatial_coverage,HD_class3,RF_selected,CB_HD_pairs,CB_HD_circular_rho,CB_HD_circular_p,CB_HD_Mantel_rho,CB_HD_Mantel_p,CB_RF_pairs,RF_HD_pairs,result_notebook
+m22_261019,3,1,1,151,70,1.0,25,10,0,,,,,0,6,m22_261019/cb_hd_rf_comparison.executed.ipynb
+m22_261008,9,2,12,304,566,1.0,65,21,11,-0.1076761566287447,0.7462253774622538,0.5260791286883393,0.004999500049995,8,17,m22_261008/cb_hd_rf_comparison.executed.ipynb
+m19_260827,9,2,12,140,19,0.9642857142857144,38,16,12,-0.2003303357152044,0.5253474652534746,0.8182780856839054,9.999000099990002e-05,11,14,m19_260827/cb_hd_rf_comparison.executed.ipynb
+m19_260831,2,1,0,81,0,1.0,37,14,0,,,,,0,12,m19_260831/cb_hd_rf_comparison.executed.ipynb

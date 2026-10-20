@@ -1,0 +1,4 @@
+profile,loaded_units,measured_units,selected_units,assessed_units,unassessed_units,positive_units,selection,hd_kappa_cutoff,native_bins,display_bins,spatial_coverage,angle_convention
+HD9,606,606,65,602.0,4.0,65.0,saved HD class 3,0.25,180,30,,Motive native CCW
+CB9,870,870,12,304.0,566.0,12.0,saved CB-positive,,120,30,1.0,"CW egocentric; 0 front, +90 right"
+RF2,197,21,21,,,,measured RF-only curves; <= 2 native zero bins,,30,30,,native RF x angles

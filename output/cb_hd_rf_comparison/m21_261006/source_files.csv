@@ -1,0 +1,8 @@
+profile,path,bytes,sha256
+HD9,/mnt/senzailab/Kai/#Recording/m21/261006/261006_9/data/tuning_curves/ProbeA/tuning_curves.tc,1309351,e758ce171a74b7ebd5c5f4a21df47646807a9e3fb6c7985449490dd6a2e282f8
+CB9,/mnt/senzailab/Kai/#Recording/m21/261006/261006_9/data/center_cells/ProbeA/baseline/cb_tuning.tc,5769230,e2380e6bb89657360d490766321795eabaf462e262740e6f0844a2ddc1cf29bf
+CB9,/mnt/senzailab/Kai/#Recording/m21/261006/261006_9/data/center_cells/ProbeA/baseline/manifest.json,8382,ae3e27eedab573ccad2886c763170d7eef524f2f382cf2e529759ec678110325
+HD11,/mnt/senzailab/Kai/#Recording/m21/261006/261006_11/data/tuning_curves/ProbeA/tuning_curves.tc,1311734,9dc23448a5bb4bcc422152f6d76fef755f17cf6d83dff25b80a8020c4391eb03
+CB11,/mnt/senzailab/Kai/#Recording/m21/261006/261006_11/data/center_cells/ProbeA/baseline/cb_tuning.tc,6240706,377411f09c5ad7871444b6074c5de0ed4257b0bcbca5de5e84c77e4f886bb80f
+CB11,/mnt/senzailab/Kai/#Recording/m21/261006/261006_11/data/center_cells/ProbeA/baseline/manifest.json,8361,50e86c32eb6b3ce57ea6adae0471fde8bd423fe1b00c51e9e08b8a3fdedeadea
+RF2,/mnt/senzailab/Kai/#Recording/m21/261006/261006_2/data/regular_unitsSpikeCounts_261006_2_ProbeA_1d_rfonly.csv,15565,225c468a5f0ff577bb11810735e82ef4bb011d96b021851524660fd8271e2db0

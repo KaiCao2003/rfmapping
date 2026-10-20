@@ -1,0 +1,4 @@
+pair,reference,matched,reference_selected_units,matched_selected_units,shared_selected_units,shared_with_selected_RF,finite_direction_pairs,display_bins,cb_selection,status,circular_rho,circular_permutation_p,mantel_rho,mantel_permutation_p,peak_sum_r,peak_sum_rayleigh_p
+HD9_CB9,HD9,CB9,65,12,11,8,11,30,saved CB-positive,computed,-0.10767615662874472,0.7462253774622538,0.5260791286883393,0.004999500049995001,0.7925130193477403,0.0003355832721818704
+HD9_RF2,HD9,RF2,65,21,17,17,17,30,saved CB-positive,computed,-0.6187217194271819,0.010798920107989201,0.3905089895146035,0.0016998300169983002,0.6655839971421948,0.0002485150670979602
+RF2_CB9,RF2,CB9,21,12,8,8,8,30,saved CB-positive,computed,0.1512890022047129,0.7366263373662634,0.2618152674383041,0.11768823117688232,0.09288053056213247,0.9369932090931564
