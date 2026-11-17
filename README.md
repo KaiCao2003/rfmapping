@@ -53,7 +53,8 @@ sources, call pure calculations, and save the results. RF generation reads the
 response map and detection once and passes the projection in memory to selection.
 Replacing a saved TC requires `overwrite=True`.
 
-Normal comparison notebooks only read existing files in `data/tc_comparison/`.
+Comparison notebooks read saved CSVs in `data/tc_comparison/`. To combine HD
+angle bins, they also use exposure from the matching `tuning_curves.tc`.
 Readers never generate missing data; a missing file raises `FileNotFoundError`.
 First-time generation is a separate explicit step. `HD.profiles.prep_hd_tc(table)`
 and `RF.profiles.prep_rf_tc(table)` take already loaded tables and apply selection,
