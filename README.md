@@ -614,6 +614,25 @@ sample offset. Cluster IDs remain unchanged. Outputs are copied to:
 <session directory>/kilosort/ProbeA/kilosort_<session>/
 ```
 
+Phy opens the individual session's `continuous.dat` with `offset = 0` because
+the split spike samples already start at that session's first sample. The
+published split uses a path relative to its `params.py` when the raw session
+copy from section 4.1 is present. The original Kilosort `dat_path` is retained
+as `joint_dat_path` for workflows that compare units across sessions.
+For an existing split that still points to the concatenation, update only its
+`params.py` from the repository root using the matching probe's raw file:
+
+```python
+from pathlib import Path
+from preprocessing.spikeinterface.split_kilosort_by_recording import update_split_phy_params
+
+session_dir = Path("/path/to/260918/260918_2")
+raw_file, = (session_dir / "260918").glob(
+    "Record Node */experiment1/recording1/continuous/OneBox-*.ProbeA/continuous.dat"
+)
+update_split_phy_params(session_dir / "kilosort/ProbeA/kilosort_2", raw_file, relative=True)
+```
+
 The argument `remote_output` can be a local path; its name does not require
 network storage. Destination copies can replace existing files.
 `overwrite_outputs=False` protects the local split directory, not all
