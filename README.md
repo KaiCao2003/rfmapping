@@ -31,10 +31,9 @@ regular square-stimulus ON map; OFF and vertical-bar variants follow.
   `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
   are `hd_kappa_distribution`, `probe_position`,
   `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
-- Git tracks the raw-to-RF workflow, RF detection, and RF/tuning comparisons.
-  Independent EBC/spatial experiments, decoder/video workflows, recording-specific
-  calibration, generated results, and their tests stay on disk under `.gitignore`.
-  They are not included in a fresh clone.
+- Git includes the raw-to-RF workflow, RF/tuning comparisons, and the shared
+  EBB modules used by the spatial and video entrypoints. Recording-specific
+  calibration, generated results, and local experiments stay on disk.
 
 Analysis follows explicit stages: load native data, select units/bins,
 transform for display, calculate statistics, then plot. Pitch/RF selection
