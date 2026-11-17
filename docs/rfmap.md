@@ -210,14 +210,19 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 The RF comparison notebooks use `rf_only: bool = True`. Set it to `False` to
 use all rows. Generate a missing CSV through an explicit generation step;
 readers never create it automatically. `locate_rf.ipynb` prepares its current response curves explicitly and
-writes them in its save step. The two
-`tc_comparison_pairs` notebooks read only prepared HD/RF CSVs with `load_tc`.
+writes them in its save step. The two `tc_comparison_pairs` notebooks read
+the prepared HD/RF CSVs. Combining HD angle bins uses the matching
+session's saved exposure.
 `scripts/export_comparison_tcs.py` writes one explicitly requested comparison
 CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
 use these outputs under `data/tc_comparison/`; see
 [comparison preparation](hd_rf_ebc_comparison.md).
 
-Files live directly under the RF session's `data/` directory:
+For an organized source such as `ProbeA/regular/regular_260630_3.rfmap`,
+native projections live beside the source in `tc_x_all.csv`,
+`tc_x_rfonly_ext.csv`, and `tc_x_rfonly_inh.csv`. ON and OFF therefore
+keep separate projections. Flat-source exports under the RF session's
+`data/` directory use these names:
 
 | Responses | Filename example |
 | --- | --- |
@@ -568,7 +573,10 @@ is an explicit notebook step. Figures and exports use opaque white backgrounds
 and dark labels.
 
 `--comparison-output-dir` with `--unit-prefix` explicitly generates the native
-projection and comparison CSVs after detection. Add `--overwrite-comparison`
+projection and comparison CSVs after detection. For organized maps, the shared
+comparison directory includes the stimulus and luminance in the source stem.
+Regular ON also writes the `rf_excitatory_…` and `rf_inhibitory_…` filenames
+read by the paired notebooks. Add `--overwrite-comparison`
 when replacing existing CSVs; ordinary comparison readers never regenerate
 missing inputs.
 

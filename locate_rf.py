@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
 
 import matplotlib
 
+from RF.paths import is_organized_rf_source, rf_comparison_names, rf_projection_path
 from RF.rflocate.workflow import analyze_rf_file
 from RF.tc_generation import generate_rf_comparison, generate_rf_tc
+from Utils.tc_preparation import check_tc_outputs
 
 
 def main() -> None:
@@ -37,7 +40,7 @@ def main() -> None:
     parser.add_argument("--no-wrap-x", action="store_true")
     parser.add_argument("--unit-prefix", help="Comparison unit identity, e.g. mouse:date:probe")
     parser.add_argument("--comparison-output-dir", type=Path,
-                        help="Write comparison CSVs here and native projections in its parent directory")
+                        help="Write comparison CSVs here. Organized sources keep native projections beside the RF map.")
     parser.add_argument("--overwrite-comparison", action="store_true",
                         help="Replace existing comparison CSVs when generating them")
     parser.add_argument("--all-rf-rows", action="store_true",
@@ -67,6 +70,23 @@ def main() -> None:
     if args.rf_type != "both":
         analyses = {args.rf_type: analyses}
     rf_only = not args.all_rf_rows
+    organized_csvs = {}
+    if args.comparison_output_dir is not None and is_organized_rf_source(args.source):
+        projections = set()
+        comparisons = []
+        for rf_type in analyses:
+            projection = rf_projection_path(args.source, rf_only=rf_only, rf_type=rf_type)
+            qualified, alias = rf_comparison_names(args.source, args.probe, rf_type=rf_type, rf_only=rf_only)
+            comparison = args.comparison_output_dir / qualified
+            on_alias = args.comparison_output_dir / alias if alias else None
+            organized_csvs[rf_type] = (projection, comparison, on_alias)
+            projections.add(projection)
+            comparisons.append(comparison)
+            if on_alias:
+                comparisons.append(on_alias)
+        detected_files = [path for result in analyses.values() for path in result["output_paths"].values()]
+        check_tc_outputs([*projections, *comparisons], inputs=[args.source, *detected_files],
+                         overwrite=args.overwrite_comparison)
     generated_projections = set()
     if not args.no_plots:
         matplotlib.use("Agg")
@@ -83,12 +103,16 @@ def main() -> None:
         for name, path in result["output_paths"].items():
             print(f"{name}: {path}")
         if args.comparison_output_dir is not None:
-            rf_suffix = "_rfonly" if rf_only else ""
-            projection_name = f"{args.source.stem}_Probe{args.probe}"
-            if rf_only and rf_type == "inhibitory":
-                projection_name += "_inhibitory"
-            projection_path = args.comparison_output_dir.parent / f"{projection_name}_1d{rf_suffix}.csv"
-            comparison_path = args.comparison_output_dir / f"rf_{rf_type}_x_2d{rf_suffix}_Probe{args.probe}.csv"
+            if organized_csvs:
+                projection_path, comparison_path, on_alias = organized_csvs[rf_type]
+            else:
+                on_alias = None
+                rf_suffix = "_rfonly" if rf_only else ""
+                projection_name = f"{args.source.stem}_Probe{args.probe}"
+                if rf_only and rf_type == "inhibitory":
+                    projection_name += "_inhibitory"
+                projection_path = args.comparison_output_dir.parent / f"{projection_name}_1d{rf_suffix}.csv"
+                comparison_path = args.comparison_output_dir / f"rf_{rf_type}_x_2d{rf_suffix}_Probe{args.probe}.csv"
             if projection_path in generated_projections:
                 generate_rf_tc(
                     projection_path, comparison_path,
@@ -104,6 +128,9 @@ def main() -> None:
                 )
                 generated_projections.add(projection_path)
             print(f"Comparison CSV: {comparison_path}")
+            if on_alias:
+                shutil.copyfile(comparison_path, on_alias)
+                print(f"Comparison CSV: {on_alias}")
         if not args.no_plots:
             counts = rf_population_counts(analyses_by_probe, rf_type=rf_type)
             # Each MATLAB invocation contains one probe, not a pooled session.

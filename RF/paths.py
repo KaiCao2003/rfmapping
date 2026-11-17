@@ -68,6 +68,16 @@ def legacy_rf_source_stem(source):
     return stem
 
 
+def rf_comparison_names(source, probe, *, rf_type, rf_only=True):
+    """Return the source-qualified filename and the shared filename owned by regular ON."""
+    source = Path(source).absolute()
+    stem = legacy_rf_source_stem(source)
+    selection = '_rfonly' if rf_only else ''
+    suffix = f'{rf_type}_x_2d{selection}_Probe{probe}.csv'
+    regular_on = 'rfmapping' in source.parts and re.fullmatch(r'regular_unitsSpikeCounts_\d{6}_\d+', stem)
+    return f'{stem}_{suffix}', f'rf_{suffix}' if regular_on else None
+
+
 def rf_source_path(session, probe, *, kind='regular', root_kind='rfmapping',
                    time_folder='-100_400_1ms'):
     session = Path(session)
