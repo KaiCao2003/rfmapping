@@ -516,7 +516,7 @@ def _notebook_namespace(base_dir, **options):
         save_rf_analysis=save_rf_analysis, save_rf_unit_lists=save_rf_unit_lists,
         base_dir=base_dir, probes=("A",), is_rotation=False, date=260630, sessionID=3,
         rf_sigmas={"excitatory": (1.8, 1.0), "inhibitory": (-1.0, -0.75)},
-        reference_2d="global",
+        reference_2d="global", surround_decay=0.0,
         rf_time_range=(0.0, 0.2), max_zero_bins=2, drop_bins=2, wrap_x=True,
         drop_bins_2d={"excitatory": 2, "inhibitory": 2},
     ) | options
@@ -552,6 +552,7 @@ def test_workflow_matches_notebook_detections_with_same_settings(tmp_path):
         rf_sigmas=namespace["rf_sigmas"], time_range_s=namespace["rf_time_range"],
         max_zero_bins=namespace["max_zero_bins"], drop_bins=namespace["drop_bins"],
         drop_bins_2d=namespace["drop_bins_2d"],
+        surround_decay=namespace["surround_decay"],
         wrap_x=namespace["wrap_x"], reference_2d=namespace["reference_2d"],
     )
     for label, expected in namespace["rf_analyses_by_probe"]["A"].items():

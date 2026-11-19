@@ -148,7 +148,7 @@ def test_bottom_row_manifest_version_and_save_load_do_not_reuse_old_baseline(tmp
     assert result.manifest["parameters"]["reference"] == "bottom_row"
     assert result.manifest["detector_algorithm"] == "bottom-two-rows-mean-sd-v1"
     assert dict(result.manifest["baseline"]) == {
-        "row_indices": (1, 2), "y_positions": tuple(source.y_positions[-2:]),
+        "row_indices": [1, 2], "y_positions": source.y_positions[-2:].tolist(),
         "bin_count": 6, "mean_scope": "bottom_two_rows", "sd_scope": "bottom_two_rows", "sd_ddof": 0,
     }
     aligned, _, _, manifest, key = _prepare_rf_output(
