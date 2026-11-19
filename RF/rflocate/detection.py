@@ -6,7 +6,7 @@ from typing import Any, TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
-from ._detector import _RF_DETECTION_OPTION_DEFAULTS, _label_clusters
+from ._detector import _RF_DETECTION_OPTION_DEFAULTS, _label_sections
 from ._validation import (
     _EDGE_ATOL_S,
     _axis_name,
@@ -46,7 +46,7 @@ def _center_only_mask(
         wrap_x: bool,
         show_progress: bool,
 ) -> NDArray[np.uint8]:
-    """Select one response-weighted grid bin per connected final RF sector."""
+    """Select one response-weighted grid bin per final RF section."""
 
     final_mask = np.asarray(result["final_mask"], dtype=bool)
     response_map = np.asarray(result["response_map"], dtype=np.float64)
@@ -83,8 +83,8 @@ def _center_only_mask(
                 response_batch[unit_index] - null_batch[unit_index]
         )
         effect = np.where(np.isfinite(effect), np.maximum(effect, 0.0), 0.0)
-        # Use the detector's four-connectivity and optional horizontal seam.
-        labels, masses = _label_clusters(effect, unit_mask, wrap_x=wrap_x)
+        # Merge only the final, filtered mask. Dropped bins cannot bridge sections.
+        labels, masses = _label_sections(effect, unit_mask, wrap_x=wrap_x)
         for label in range(1, masses.size + 1):
             candidate_flat = np.flatnonzero(labels == label)
             candidate_y, candidate_x = np.unravel_index(
@@ -290,7 +290,8 @@ def _rf_result_manifest(
             if parameters["is_shuffle"]
             else "pooled-spatial-z-v3-zero-filled"
         ),
-        "center_algorithm": "component-response-weighted-medoid-v2",
+        "section_algorithm": "one-bin-gap-chebyshev-v2-after-filter",
+        "center_algorithm": "section-response-weighted-medoid-v3",
         "nonshuffle_filter": "drop-small-components-inclusive-v1",
         "grid_shape": [first.n_y, first.n_x],
         "storage_shape": [len(maps), first.n_y, first.n_x],
@@ -312,14 +313,33 @@ def _rf_result_manifest(
             item.metadata.get("spatialAggregation") for item in maps
         ]
     if parameters["reference"] == "bottom_row":
-        manifest["detector_algorithm"] = "bottom-row-mean-global-sd-v1"
+        manifest["detector_algorithm"] = "bottom-two-rows-mean-sd-v1"
         manifest["baseline"] = {
-            "row_index": first.n_y - 1,
-            "y_position": float(first.y_positions[-1]),
-            "mean_scope": "bottom_row",
-            "sd_scope": "full_map",
+            "row_indices": [first.n_y - 2, first.n_y - 1],
+            "y_positions": first.y_positions[-2:].tolist(),
+            "bin_count": 2 * first.n_x,
+            "mean_scope": "bottom_two_rows",
+            "sd_scope": "bottom_two_rows",
             "sd_ddof": 0,
         }
+    if parameters["surround_decay"]:
+        manifest["surround_algorithm"] = "seed-eight-neighbors-once-v1"
+    preprocessing = first.metadata.get("spatialPreprocessing")
+    if any(item.metadata.get("spatialPreprocessing") != preprocessing for item in maps):
+        raise ValueError("RF detection maps must share spatial preprocessing")
+    if preprocessing is not None:
+        manifest["spatial_preprocessing"] = preprocessing
+        manifest["detector_algorithm"] = "gui-smoothing1-" + manifest["detector_algorithm"]
+        values = np.stack([item.to_2d_array() for item in maps])
+        values = np.nan_to_num(values, nan=0.)
+        baseline = values[:, -2:] if parameters["reference"] == "bottom_row" else values
+        mean, sd = baseline.mean(axis=(1, 2)), baseline.std(axis=(1, 2), ddof=0)
+        sign = 1 if parameters["alternative"] == "greater" else -1
+        manifest.setdefault("baseline", {}).update(
+            response_stage="after_gui_smoothing1", unit_ids=[item.unit_id for item in maps],
+            mean_hz=mean.tolist(), sd_hz=sd.tolist(),
+            threshold_hz=(mean + sign * parameters["cluster_forming_z"] * sd).tolist(),
+        )
     return manifest
 
 
@@ -502,6 +522,9 @@ def _prepare_rf_output(
         options=options,
     )
     parameters["exclude_zero_bins"] = exclude_zero_bins
+    if any("spatialPreprocessing" in item.metadata for item in maps):
+        if run_shuffle or exclude_zero_bins or collapse_axis is not None:
+            raise ValueError("smoothed RF maps require nonshuffle native-grid detection without zero-bin exclusion")
     if parameters["reference"] == "bottom_row":
         if run_shuffle or exclude_zero_bins or collapse_axis is not None:
             raise ValueError("bottom_row requires an uncollapsed 2-D map, is_shuffle=False, and exclude_zero_bins=False")
@@ -645,7 +668,7 @@ def _legacy_rf_2d(
     of the default increased responses. An explicit ``alternative``
     overrides ``rf_type`` for compatibility with existing calls.
     ``is_center=False`` returns the complete mask; ``True`` returns one
-    response-weighted bin for each connected RF sector. A ``.npz``
+    response-weighted bin for each RF section (including one-bin gaps). A ``.npz``
     ``result_path`` persists both views, so switching ``is_center`` later
     does not repeat detection.  ``drop_bins`` is used only by exploratory
     ``is_shuffle=False`` runs and removes connected components whose size
@@ -766,6 +789,7 @@ def detect_rf(
     data, trials: Mapping[str, Any] | None = None, *, drop_bins: int,
     sigma: float = 1.5,
     reference: str = "global",
+    surround_decay: float = 0.0,
     is_shuffle: bool = False,
     show_progress: bool = False,
     **options: Any,
@@ -783,12 +807,25 @@ def detect_rf(
     returned result with ``save_rf``; read saved results with ``load_rf``.
 
     Choose ``drop_bins`` explicitly: zero keeps all threshold-passing bins;
-    a positive cutoff removes connected components of that size or smaller.
-    The cutoff is ignored when shuffling.
+    a positive cutoff removes four-connected components of that size or smaller.
+    Only after filtering, retained regions within one empty bin (including
+    diagonally) form one section with one center. Merging never restores dropped
+    bins or fills gaps. Horizontal distances respect ``wrap_x``; y never wraps.
+    The cutoff is ignored when shuffling; sections then group the final significant mask.
+
+    ``surround_decay`` lowers the absolute SD threshold once for the eight
+    neighbors of original threshold-passing bins, before component filtering.
+    For example, ``sigma=-3, surround_decay=0.5`` admits neighboring bins at
+    or below mean - 2.5 SD. New bins never seed more neighbors, and overlapping
+    neighborhoods do not stack. Horizontal neighbors respect ``wrap_x``;
+    vertical neighbors do not wrap. Use a nonnegative decay smaller than
+    ``abs(sigma)``. Zero disables this option; positive values require a
+    nonshuffle 2-D map. The notebook explicitly defaults to 0.5.
 
     ``reference="bottom_row"`` requires at least two spatial rows. For each
-    unit, its threshold is the mean of the entire last stored row plus
-    ``sigma`` times the population SD of the full 2-D map (``ddof=0``).
+    unit, its threshold is the pooled mean of the last two stored rows plus
+    ``sigma`` times their population SD (``ddof=0``). All columns contribute:
+    60 baseline bins on a 30-column grid. A zero baseline SD gives no detections.
     Both nonshuffle references use the supplied map values, replace NaNs
     with zero, and ignore ``trials``. Constant maps produce no detections.
     This reference does not shuffle or perform a significance test.
@@ -803,6 +840,7 @@ def detect_rf(
         data = asrfmap(values[np.newaxis, :] if values.ndim == 1 else values)
     input_maps = (data,) if isinstance(data, RFMap) else tuple(data)
     sigma = _number(sigma, "sigma")
+    surround_decay = _number(surround_decay, "surround_decay")
     if sigma == 0:
         raise ValueError("sigma must be nonzero")
     if {"cluster_forming_z", "alternative"}.intersection(options):
@@ -810,6 +848,7 @@ def detect_rf(
     options["cluster_forming_z"] = abs(sigma)
     options["alternative"] = "greater" if sigma > 0 else "less"
     options["reference"] = reference
+    options["surround_decay"] = surround_decay
     progress = _bool_value(show_progress, "show_progress")
     aligned, parameters, options, manifest, result_key = _prepare_rf_output(
         maps=input_maps, trials=trials, rf_type="excitatory",

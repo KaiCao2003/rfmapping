@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+from RF.paths import is_organized_rf_source, resolve_rf_source
 
 from .results import (
     RF_RESULT_CACHE_SCHEMA_VERSION,
@@ -68,13 +69,16 @@ def rf_result_path(
 ) -> Path:
     """Return a saved detection path, preserving dimension and polarity."""
 
-    source = Path(source_path)
+    source = resolve_rf_source(source_path)
     if source.suffix.lower() == ".npz":
         raise ValueError("source_path must not already end with '.npz'")
     if dimension not in ("2d", "1d"):
         raise ValueError("dimension must be '2d' or '1d'")
     if rf_type not in ("excitatory", "inhibitory"):
         raise ValueError("rf_type must be 'excitatory' or 'inhibitory'")
+    if is_organized_rf_source(source):
+        polarity = 'inh' if rf_type == 'inhibitory' else 'ext'
+        return source.with_name(f'rf_{dimension}_{polarity}.npz')
     stem = source.stem if source.suffix else source.name
     if rf_type == "inhibitory":
         stem += "_inhibitory"

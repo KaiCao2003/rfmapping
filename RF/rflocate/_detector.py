@@ -28,6 +28,7 @@ _AUTO_MAX_THREADS = 2
 _RF_DETECTION_OPTION_DEFAULTS: dict[str, Any] = {
     "reference": "global",
     "cluster_forming_z": 1.5,
+    "surround_decay": 0.0,
     "alpha": 0.05,
     "n_permutations": 10_000,
     "alternative": "greater",
@@ -233,21 +234,22 @@ def _neighbors(
     return tuple(found)
 
 
-def _union_seam_labels(
+def _union_section_labels(
     labels: NDArray[np.int32],
-    candidate: NDArray[np.bool_],
     number_of_labels: int,
+    *,
+    wrap_x: bool,
 ) -> NDArray[np.int32]:
-    """Return a lookup that merges components touching the horizontal seam."""
+    """Merge regions separated by at most one bin, including diagonally.
 
-    lookup = np.arange(number_of_labels + 1, dtype=np.int32)
-    if candidate.shape[-1] <= 1:
-        return lookup
-    seam = candidate[..., 0] & candidate[..., -1]
-    if not np.any(seam):
-        return lookup
+    Bin centers may differ by at most two in each spatial coordinate
+    (Chebyshev distance <= 2). Only x wraps; leading batch axes stay separate.
+    Labels are joined without adding the intervening bins to the RF mask.
+    """
 
     parents = np.arange(number_of_labels + 1, dtype=np.int32)
+    if number_of_labels <= 1:
+        return parents
 
     def find(label: int) -> int:
         root = label
@@ -259,25 +261,42 @@ def _union_seam_labels(
             label = next_label
         return root
 
-    left_labels = labels[..., 0][seam]
-    right_labels = labels[..., -1][seam]
-    for left, right in zip(left_labels, right_labels, strict=True):
-        left_root = find(int(left))
-        right_root = find(int(right))
-        if left_root != right_root:
-            parents[max(left_root, right_root)] = min(left_root, right_root)
+    n_y, n_x = labels.shape[-2:]
+    for dy in range(min(3, n_y)):
+        # One half of the symmetric neighborhood suffices for undirected links.
+        for dx in (range(1, 3) if dy == 0 else range(-2, 3)):
+            left = labels[..., :n_y - dy, :]
+            right = labels[..., dy:, :]
+            if wrap_x:
+                right = np.roll(right, -dx, axis=-1)
+            elif abs(dx) >= n_x:
+                continue
+            elif dx > 0:
+                left, right = left[..., :-dx], right[..., dx:]
+            elif dx < 0:
+                left, right = left[..., -dx:], right[..., :dx]
+            touching = (left > 0) & (right > 0) & (left != right)
+            if not np.any(touching):
+                continue
+            pairs = np.unique(np.column_stack((left[touching], right[touching])), axis=0)
+            for first, second in pairs:
+                first_root = find(int(first))
+                second_root = find(int(second))
+                if first_root != second_root:
+                    parents[max(first_root, second_root)] = min(first_root, second_root)
 
     for label in range(1, number_of_labels + 1):
-        lookup[label] = find(label)
-    return lookup
+        parents[label] = find(label)
+    return parents
 
 
-def _label_clusters(
+def _label_sections(
     score_map: NDArray[np.float64],
     candidate_mask: NDArray[np.bool_],
     *,
     wrap_x: bool,
 ) -> tuple[NDArray[np.int32], NDArray[np.float64]]:
+    """Group only retained RF bins; never use gap merging for size filtering."""
     labels, number_of_labels = ndimage.label(
         candidate_mask,
         structure=_SPATIAL_STRUCTURE,
@@ -286,6 +305,64 @@ def _label_clusters(
     if number_of_labels == 0:
         return labels, np.empty(0, dtype=np.float64)
 
+    roots = _union_section_labels(labels, int(number_of_labels), wrap_x=wrap_x)
+    rooted_labels = roots[labels]
+    active_roots = np.unique(rooted_labels[candidate_mask])
+    contiguous = np.zeros(number_of_labels + 1, dtype=np.int32)
+    contiguous[active_roots] = np.arange(1, active_roots.size + 1)
+    labels = contiguous[rooted_labels]
+
+    masses = np.bincount(
+        labels.ravel(),
+        weights=np.where(candidate_mask, score_map, 0.0).ravel(),
+        minlength=int(labels.max()) + 1,
+    )[1:]
+    return labels, np.asarray(masses, dtype=np.float64)
+
+
+def _union_seam_labels(
+    labels: NDArray[np.int32],
+    candidate: NDArray[np.bool_],
+    number_of_labels: int,
+) -> NDArray[np.int32]:
+    """Join four-connected components touching the same row across x's seam."""
+    parents = np.arange(number_of_labels + 1, dtype=np.int32)
+    if candidate.shape[-1] <= 1:
+        return parents
+    seam = candidate[..., 0] & candidate[..., -1]
+    if not np.any(seam):
+        return parents
+
+    def find(label: int) -> int:
+        root = label
+        while int(parents[root]) != root:
+            root = int(parents[root])
+        while int(parents[label]) != label:
+            next_label = int(parents[label])
+            parents[label] = root
+            label = next_label
+        return root
+
+    for left, right in zip(labels[..., 0][seam], labels[..., -1][seam], strict=True):
+        left_root, right_root = find(int(left)), find(int(right))
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+    for label in range(1, number_of_labels + 1):
+        parents[label] = find(label)
+    return parents
+
+
+def _label_clusters(
+    score_map: NDArray[np.float64],
+    candidate_mask: NDArray[np.bool_],
+    *,
+    wrap_x: bool,
+) -> tuple[NDArray[np.int32], NDArray[np.float64]]:
+    """Label four-connected candidates for size filtering and permutation tests."""
+    labels, number_of_labels = ndimage.label(candidate_mask, structure=_SPATIAL_STRUCTURE)
+    labels = np.asarray(labels, dtype=np.int32)
+    if number_of_labels == 0:
+        return labels, np.empty(0, dtype=np.float64)
     if wrap_x:
         roots = _union_seam_labels(labels, candidate_mask, int(number_of_labels))
         rooted_labels = roots[labels]
@@ -293,10 +370,8 @@ def _label_clusters(
         contiguous = np.zeros(number_of_labels + 1, dtype=np.int32)
         contiguous[active_roots] = np.arange(1, active_roots.size + 1)
         labels = contiguous[rooted_labels]
-
     masses = np.bincount(
-        labels.ravel(),
-        weights=np.where(candidate_mask, score_map, 0.0).ravel(),
+        labels.ravel(), weights=np.where(candidate_mask, score_map, 0.0).ravel(),
         minlength=int(labels.max()) + 1,
     )[1:]
     return labels, np.asarray(masses, dtype=np.float64)
@@ -468,6 +543,7 @@ def detect_rf(
     drop_bins: int = 1,
     reference: str = _RF_DETECTION_OPTION_DEFAULTS["reference"],
     cluster_forming_z: float = _RF_DETECTION_OPTION_DEFAULTS["cluster_forming_z"],
+    surround_decay: float = _RF_DETECTION_OPTION_DEFAULTS["surround_decay"],
     alpha: float = _RF_DETECTION_OPTION_DEFAULTS["alpha"],
     n_permutations: int = _RF_DETECTION_OPTION_DEFAULTS["n_permutations"],
     alternative: Alternative = _RF_DETECTION_OPTION_DEFAULTS["alternative"],
@@ -502,13 +578,18 @@ def detect_rf(
         is created when ``is_shuffle=False``.
     drop_bins
         In exploratory ``is_shuffle=False`` mode, remove candidate components
-        containing this many bins or fewer. Components use four-connectivity
-        and respect ``wrap_x``. The value is ignored when ``is_shuffle=True``.
+        containing this many bins or fewer, using four-connectivity and
+        optional horizontal wrap. Apply this before merging retained regions
+        across one-bin gaps for centers. Ignored when ``is_shuffle=True``.
     reference
         ``"global"`` uses the existing spatial/permutation null. The
-        nonshuffle ``"bottom_row"`` reference uses the entire last stored
-        row's mean and the full pooled map's population SD (``ddof=0``),
-        separately for each unit. Constant maps produce no detections.
+        nonshuffle ``"bottom_row"`` reference pools the last two stored
+        rows for both the mean and population SD (``ddof=0``), separately
+        for each unit. A zero baseline SD produces no detections.
+    surround_decay
+        Nonshuffle 2-D threshold reduction in SD for the eight neighbors of
+        original threshold-passing bins. Expand once, before component-size
+        filtering; new bins do not seed further expansion. Zero disables it.
 
     Returns
     -------
@@ -549,6 +630,11 @@ def detect_rf(
     threshold = _finite_float(cluster_forming_z, "cluster_forming_z")
     if threshold <= 0:
         raise ValueError("cluster_forming_z must be greater than zero")
+    decay = _finite_float(surround_decay, "surround_decay")
+    if not 0 <= decay < threshold:
+        raise ValueError("surround_decay must be nonnegative and less than the threshold")
+    if decay and (is_shuffle or min(grid_shape) < 2):
+        raise ValueError("surround_decay requires is_shuffle=False and a 2-D spatial grid")
     parsed_alpha = _finite_float(alpha, "alpha")
     if not 0 < parsed_alpha < 1:
         raise ValueError("alpha must be between zero and one")
@@ -645,8 +731,9 @@ def detect_rf(
     )
     if reference == "bottom_row":
         n_x = grid_shape[1]
-        null_mean_flat[:] = response_flat[:, -n_x:].mean(axis=1)[:, None]
-        null_sd_flat[:] = response_flat.std(axis=1, ddof=0)[:, None]
+        baseline = response_flat[:, -2 * n_x:]
+        null_mean_flat[:] = baseline.mean(axis=1)[:, None]
+        null_sd_flat[:] = baseline.std(axis=1, ddof=0)[:, None]
     testable_flat = (
         valid_flat[np.newaxis]
         & np.isfinite(response_flat)
@@ -667,6 +754,17 @@ def detect_rf(
     z_map = z_flat.reshape((n_units, *grid_shape))
     valid_mask = testable_flat.reshape((n_units, *grid_shape))
     candidate_mask = candidate_flat.reshape((n_units, *grid_shape))
+    if decay:
+        # Freeze the original seeds: neither new neighbors nor multiple seeds
+        # lower the threshold again. Only the horizontal axis may wrap.
+        neighbors = ndimage.maximum_filter(
+            candidate_mask, size=(1, 3, 3),
+            mode=("constant", "constant", "wrap" if wrap else "constant"),
+        )
+        candidate_mask |= (
+            neighbors & valid_mask
+            & (score_flat.reshape(candidate_mask.shape) >= threshold - decay)
+        )
     cluster_labels = np.zeros((n_units, *grid_shape), dtype=np.int32)
     cluster_mass_list: list[NDArray[np.float64]] = []
     for unit_index in range(n_units):

@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 from matplotlib import pyplot as plt
-from PIL import Image
 from scipy.ndimage import gaussian_filter
 
 from RF.rflocate import trials as rf_trials
@@ -74,6 +73,7 @@ def _write_bottom_row_source(base_dir):
     means[0, 0, 1:] = 16
     means[1, 0, :3] = 2
     means[2, 0, :3] = 0  # This unit fails pooled-response QC.
+    means[:, -1, 0] = 9
     counts = np.zeros((3, 3, 4, 3), dtype=np.uint32)
     counts[..., 1] = means * 2
     _write_indexed_source(source, counts=counts, unit_ids=unit_ids)
@@ -484,21 +484,14 @@ def test_cli_both_saves_both_rf_types_and_source_specific_plots(tmp_path, custom
             assert summary["parameters"]["rf_type"] == rf_type
             assert summary["parameters"]["cluster_forming_z_2d"] == z_2d
             assert summary["parameters"]["cluster_forming_z_1d"] == z_1d
-            figure_dir = plot_dir / ("inhibitory/rfmap" if rf_type == "inhibitory" else "rfmap")
+            figure_dir = plot_dir / "rfmap" / ("inh" if rf_type == "inhibitory" else "ext")
             expected_exports.update(
-                figure_dir / f"{name}{suffix}"
-                for name in ("ProbeB/rf_summary", "units/B/7")
-                for suffix in (".png", ".svg")
+                figure_dir / name for name in ("population.pdf", "centers.pdf", "unit_7.pdf")
             )
             assert not (figure_dir / "all").exists()
-        assert set(plot_dir.rglob("*.png")) | set(plot_dir.rglob("*.svg")) == expected_exports
+        assert set(plot_dir.rglob("*.pdf")) == expected_exports
         for path in expected_exports:
-            assert path.stat().st_size > 0
-            if path.suffix == ".png":
-                with Image.open(path) as image:
-                    rgba = image.convert("RGBA")
-                    assert rgba.getextrema()[3] == (255, 255)
-                    assert rgba.getpixel((0, 0)) == (255, 255, 255, 255)
+            assert path.read_bytes().startswith(b"%PDF-")
         if custom_plot_dir:
             assert not default_plot_dir.exists()
         assert {path: path.read_bytes() for path in previous_exports} == previous_exports
@@ -733,11 +726,7 @@ def test_unit_preview_uses_selected_rf_and_exports_opaque_white(tmp_path):
     assert fig.get_facecolor() == (1, 1, 1, 1)
     assert all(ax.get_facecolor() == (1, 1, 1, 1) for ax in fig.axes)
     assert all(ax.title.get_color() == "black" for ax in axes.flat)
-    assert output.with_suffix(".svg").is_file()
-    with Image.open(output.with_suffix(".png")) as image:
-        rgba = image.convert("RGBA")
-        assert rgba.getextrema()[3] == (255, 255)
-        assert rgba.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert output.with_suffix(".pdf").read_bytes().startswith(b"%PDF-")
 
 
 def test_population_and_unit_exports_use_all_probes_without_inline_figures(tmp_path):
@@ -760,17 +749,16 @@ def test_population_and_unit_exports_use_all_probes_without_inline_figures(tmp_p
     )
     assert set(figures) == {"ProbeA", "ProbeB", "all", "all_smoothed"}
     for probe, analyses in analyses_by_probe.items():
-        axes = figures[f"Probe{probe}"][1]
-        for column, key in ((0, "mask_2d"), (1, "center_2d")):
-            np.testing.assert_array_equal(axes[0, column].images[0].get_array(), analyses["inhibitory"][key].sum(axis=0))
-    for column, key in ((0, "mask_1d"), (1, "center_1d")):
-        expected = sum(analyses["inhibitory"][key].sum(axis=0) for analyses in analyses_by_probe.values())
-        np.testing.assert_array_equal(figures["all"][1][1, column].lines[0].get_ydata(), expected)
+        for label, key in (("RF", "mask_2d"), ("RF center", "center_2d")):
+            _, axes = figures[f"Probe{probe}"][label]
+            np.testing.assert_array_equal(axes["map"].images[0].get_array(), analyses["inhibitory"][key].sum(axis=0))
+    for label, key in (("RF", "mask_2d"), ("RF center", "center_2d")):
+        _, axes = figures["all"][label]
+        expected = population_counts["all"][key].sum(axis=0)
+        np.testing.assert_array_equal(axes["top"].lines[0].get_ydata(), expected)
     count = export_rf_units(analyses_by_probe, output_dir, rf_type="inhibitory")
     assert count == 2
-    figure_dir = output_dir / "inhibitory/rfmap"
     for probe in ("A", "B"):
-        for suffix in (".png", ".svg"):
-            assert (figure_dir / "units" / probe / f"17{suffix}").is_file()
-    assert (figure_dir / "all/rf_summary.png").is_file()
+        assert (output_dir / f"Probe{probe}/rfmap/inh/unit_17.pdf").is_file()
+    assert (output_dir / "all/rfmap/inh/population.pdf").is_file()
     assert set(plt.get_fignums()) == open_figures

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from RF.paths import is_organized_rf_source, resolve_rf_source, RF_KIND_PATTERN
 
 from ._cache import rf_result_path
 from .models import RFMapList
 from .io import load_rfmap, save_rf
 from .detection import detect_rf
+from .smoothing import smooth_rf_maps
 from .results import RFResult
 from ._validation import _nonnegative_integer
 
@@ -45,7 +48,16 @@ def rf_bin_qc(
 
 def rf_analysis_paths(source_path: str | Path, rf_type: str) -> dict[str, Path]:
     """Keep separate detection, unit-list, and summary files for each polarity."""
-    source_path = Path(source_path)
+    source_path = resolve_rf_source(source_path)
+    if is_organized_rf_source(source_path):
+        polarity = 'inh' if rf_type == 'inhibitory' else 'ext'
+        return {
+            'result_2d': rf_result_path(source_path, rf_type=rf_type),
+            'result_1d': rf_result_path(source_path, dimension='1d', rf_type=rf_type),
+            'units_2d': source_path.with_name(f'unitList_2d_{polarity}.npy'),
+            'units_1d': source_path.with_name(f'unitList_1d_{polarity}.npy'),
+            'summary': source_path.with_name(f'analysis_{polarity}.json'),
+        }
     output_source = source_path
     if rf_type == "inhibitory":
         output_source = source_path.with_name(f"{source_path.stem}_inhibitory{source_path.suffix}")
@@ -108,6 +120,8 @@ def analyze_rf_maps(
     drop_bins: int,
     reference_2d: str,
     drop_bins_2d: dict[str, int] | None = None,
+    surround_decay: float = 0.0,
+    smoothing_2d: bool = False,
     rf_type: str = "excitatory",
     rf_sigmas: dict[str, tuple[float, float]] | None = None,
     time_range_s: tuple[float, float] = (0.0, 0.2),
@@ -132,8 +146,14 @@ def analyze_rf_maps(
     ``drop_bins`` and ``reference_2d`` must be chosen explicitly.
     ``drop_bins_2d`` optionally overrides the 2-D component cutoff by polarity;
     independent 1-D detection continues to use ``drop_bins``.
-    ``reference_2d="bottom_row"`` uses the mean of the last spatial row and the
-    SD of the whole spatial map. Independent 1-D detection is unchanged.
+    ``surround_decay`` lowers the 2-D threshold once around original seed
+    bins; zero disables it. Independent 1-D detection is unchanged.
+    ``smoothing_2d`` applies one exposure-weighted GUI smoothing pass after
+    raw-map QC, before the 2-D baseline and detection. Independent 1-D
+    responses retain the unsmoothed values.
+    ``reference_2d="bottom_row"`` pools the last two spatial rows for both the
+    mean and population SD (60 bins on a 30-column grid). Independent 1-D
+    detection is unchanged.
     Legacy unsigned threshold overrides apply to both detections.
     """
     if rf_type not in ("excitatory", "inhibitory", "both"):
@@ -161,6 +181,8 @@ def analyze_rf_maps(
         summed.source_path,
     )
     response_1d = summed.sum_to_1d(axis="x", missing_as_zero=True)
+    if smoothing_2d:
+        summed = smooth_rf_maps(summed)
     analyses = {}
     for detection_type in rf_types:
         sigma_2d, sigma_1d = rf_sigmas[detection_type]
@@ -179,6 +201,7 @@ def analyze_rf_maps(
         )
         result_2d = detect_rf(
             summed, reference=reference_2d, sigma=sigma_2d,
+            surround_decay=surround_decay,
             drop_bins=resolved_drop_bins_2d, **options,
         )
         mask_2d = result_2d.mask_2d
@@ -217,6 +240,7 @@ def analyze_rf_maps(
             "parameters": {
                 "rf_type": detection_type,
                 "reference_2d": reference_2d,
+                "surround_decay": surround_decay,
                 "time_range_s": list(time_range_s),
                 "max_zero_bins": max_zero_bins,
                 "cluster_forming_z_2d": abs(sigma_2d),
@@ -245,6 +269,11 @@ def analyze_rf_maps(
             "units_with_rf_1d": units_with_rf_1d,
             "output_paths": output_paths,
         }
+        if smoothing_2d:
+            analyses[detection_type]["parameters"].update(
+                smoothing_2d=1,
+                spatial_preprocessing_2d=result_2d.manifest["spatial_preprocessing"],
+            )
     return analyses if rf_type == "both" else analyses[rf_type]
 
 
@@ -255,6 +284,8 @@ def analyze_rf_file(
     drop_bins: int,
     reference_2d: str,
     drop_bins_2d: dict[str, int] | None = None,
+    surround_decay: float = 0.0,
+    smoothing_2d: bool = False,
     rf_type: str = "excitatory",
     rf_sigmas: dict[str, tuple[float, float]] | None = None,
     time_range_s: tuple[float, float] = (0.0, 0.2),
@@ -278,6 +309,8 @@ def analyze_rf_file(
         maps, probe=probe, rf_type=rf_type, rf_sigmas=rf_sigmas,
         reference_2d=reference_2d,
         drop_bins_2d=drop_bins_2d,
+        surround_decay=surround_decay,
+        smoothing_2d=smoothing_2d,
         time_range_s=time_range_s, max_zero_bins=max_zero_bins,
         cluster_forming_z_2d=cluster_forming_z_2d,
         cluster_forming_z_1d=cluster_forming_z_1d,
@@ -309,4 +342,9 @@ def save_rf_unit_lists(
                 for analyses in analyses_by_probe.values()
                 for pair in analyses[rf_type][name]
             ]
-            np.save(output_dir / f"{name}{suffix}.npy", np.asarray(units, dtype=str).reshape(-1, 2))
+            if re.fullmatch(RF_KIND_PATTERN, output_dir.name):
+                polarity = 'inh' if rf_type == 'inhibitory' else 'ext'
+                filename = f'unitList_{dimension}_{polarity}.npy'
+            else:
+                filename = f'{name}{suffix}.npy'
+            np.save(output_dir / filename, np.asarray(units, dtype=str).reshape(-1, 2))

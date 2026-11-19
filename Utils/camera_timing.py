@@ -1,6 +1,7 @@
 """Shared camera timestamps and valid heading time support."""
 
-from pathlib import Path
+import os
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 import pynapple as nap
@@ -84,17 +85,24 @@ def get_exposure_timestamps(
     camera_input_channel: int = 1,
     camera_ttl_threshold: int | float = 14000,
     camera_ttl_active_high: bool = True,
+    use_saved: bool = True,
 ) -> tuple[np.ndarray, float, dict]:
     """Read saved times or ADC pulse midpoints, in seconds relative to ADC origin."""
     data_dir = Path(data_dir)
+    base_path = session_info.get("base_path")
+    if os.name != "nt" and base_path is not None and "\\" in os.fspath(base_path):
+        # Windows exports may predate a split-session rename. Use the raw
+        # recording within the session that owns these cached times and spikes.
+        base_path = data_dir.parent / PureWindowsPath(base_path).name
+        session_info = {**session_info, "base_path": str(base_path)}
     source_path = data_dir / "camera_frame_times.npy"
-    if source_path.is_file():
+    if use_saved and source_path.is_file():
         ADC_time_origin_s = _get_adc_time_origin(session_info)
         exposure_timestamps = np.load(source_path) - ADC_time_origin_s
         timestamp_reference = "saved_camera_frame_times"
     else:
         source_path = data_dir / "sync_data.json"
-        sync_data = read_formatted_json(source_path) if source_path.is_file() else {}
+        sync_data = read_formatted_json(source_path) if use_saved and source_path.is_file() else {}
         if "exposure_sampling_number_list_mid" in sync_data:
             exposure_timestamps = np.asarray(
                 sync_data["exposure_sampling_number_list_mid"], dtype=float
@@ -129,6 +137,8 @@ def get_exposure_timestamps(
         "source_path": str(source_path),
         "timestamp_reference": timestamp_reference,
     }
+    if base_path is not None:
+        ttl_qc["adc_base_path"] = str(base_path)
     if timestamp_reference == "adc_exposure_midpoint":
         ttl_qc.update({
             "camera_input_channel": int(camera_input_channel),
@@ -189,5 +199,3 @@ def make_head_direction_tsd(
         nap.Tsd(t=times, d=angles_deg, time_support=support),
         1.0 / frame_period_s,
     )
-
-

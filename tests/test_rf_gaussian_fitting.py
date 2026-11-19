@@ -94,13 +94,13 @@ def test_component_counts_follow_final_sectors_not_legacy_centers(negative):
     assert fitted["training_rmse_hz"] < .02
 
 
-def test_sectors_use_four_connectivity_and_only_horizontal_wrap():
+def test_sections_group_diagonals_and_wrap_only_horizontally():
     response = _response(np.full(GRID_SHAPE, 6.))
     mask = np.zeros(GRID_SHAPE, dtype=np.uint8)
     mask[2, [0, -1]] = 1
-    mask[4, 7] = mask[5, 8] = 1  # Diagonal contact does not merge sectors.
+    mask[4, 7] = mask[5, 8] = 1
     mask[0, 12] = mask[-1, 12] = 1
-    for wrap_x, expected_count in ((False, 6), (True, 5)):
+    for wrap_x, expected_count in ((False, 5), (True, 4)):
         fitted = fit_rf_gaussians(
             response,
             excitatory=_result(response, mask, "excitatory", wrap_x=wrap_x),
@@ -110,7 +110,7 @@ def test_sectors_use_four_connectivity_and_only_horizontal_wrap():
         assert fitted["component_counts"] == {"excitatory": expected_count, "inhibitory": 0}
         labels = fitted["detection_labels"]["excitatory"]
         assert bool(labels[2, 0] == labels[2, -1]) == wrap_x
-        assert labels[4, 7] != labels[5, 8]
+        assert labels[4, 7] == labels[5, 8]
         assert labels[0, 12] != labels[-1, 12]
 
 

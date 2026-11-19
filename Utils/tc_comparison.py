@@ -20,6 +20,7 @@ from Utils.statistic_utils import rayleigh_test
 def calculate_tc_statistics(
     hd: pd.DataFrame, rf: pd.DataFrame, *, bins: int = 30, is_wrap: bool = True,
     n_permutations: int = 10_000, random_seed: int | None = 1,
+    permutation_groups: pd.Series | None = None,
 ) -> dict[str, Any]:
     """Keep the input TC bin counts; bins controls the statistical histograms."""
     units = hd.index.intersection(rf.index)
@@ -38,6 +39,7 @@ def calculate_tc_statistics(
         direction = compare_direction_angles(
             peaks.reference_peak_deg.to_numpy(), peaks.matched_peak_deg.to_numpy(),
             n_permutations=n_permutations, random_seed=random_seed,
+            permutation_groups=None if permutation_groups is None else permutation_groups.loc[peaks.index].to_numpy(),
         )
     peak_sum_rad = np.deg2rad((peaks.reference_peak_deg + peaks.matched_peak_deg) % 360)
     counts, edges = np.histogram(peak_sum_rad, bins=bins, range=(0, 2 * np.pi))

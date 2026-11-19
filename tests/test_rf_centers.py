@@ -1,4 +1,4 @@
-"""Each final connected RF sector owns its own weighted center."""
+"""Each retained RF section has a response-weighted center."""
 
 from dataclasses import replace
 
@@ -19,31 +19,31 @@ def _centers(mask, effect, *, wrap_x=False, alternative="greater"):
 
 @pytest.mark.parametrize("alternative, sign", [("greater", 1), ("less", -1)])
 def test_each_sector_uses_only_its_own_effect_weights(alternative, sign):
-    mask = [[1, 1, 1, 0, 1, 1, 1]]
-    effect = sign * np.array([[1., 1., 10., 0., 1000., 100., 100.]])
+    mask = [[1, 1, 1, 0, 0, 1, 1, 1]]
+    effect = sign * np.array([[1., 1., 10., 0., 0., 1000., 100., 100.]])
     center = _centers(mask, effect, alternative=alternative)
-    np.testing.assert_array_equal(center, [[0, 0, 1, 0, 1, 0, 0]])
-    effect[:, 4:] *= 100
+    np.testing.assert_array_equal(center, [[0, 0, 1, 0, 0, 1, 0, 0]])
+    effect[:, 5:] *= 100
     np.testing.assert_array_equal(
         _centers(mask, effect, alternative=alternative), center,
     )
 
 
-def test_centers_use_four_connectivity_and_optional_horizontal_seam():
+def test_centers_group_diagonals_and_respect_horizontal_wrap():
     mask = np.array([[1, 0, 0, 0, 1], [0, 1, 0, 0, 0]], dtype=np.uint8)
-    np.testing.assert_array_equal(_centers(mask, mask), mask)
+    np.testing.assert_array_equal(_centers(mask, mask), [[1, 0, 0, 0, 1], [0, 0, 0, 0, 0]])
     np.testing.assert_array_equal(
         _centers(mask, mask, wrap_x=True),
-        [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+        [[1, 0, 0, 0, 0], [0, 0, 0, 0, 0]],
     )
 
 
 def test_zero_weight_sector_uses_equal_weights_independently_and_keeps_empty_units():
-    mask = np.array([[[1, 1, 1, 0, 1]], [[0, 0, 0, 0, 0]]])
-    effect = np.array([[[np.nan, -1., 0., 0., 9.]], [[0., 0., 0., 0., 0.]]])
+    mask = np.array([[[1, 1, 1, 0, 0, 1]], [[0, 0, 0, 0, 0, 0]]])
+    effect = np.array([[[np.nan, -1., 0., 0., 0., 9.]], [[0., 0., 0., 0., 0., 0.]]])
     np.testing.assert_array_equal(
         _centers(mask, effect),
-        [[[0, 1, 0, 0, 1]], [[0, 0, 0, 0, 0]]],
+        [[[0, 1, 0, 0, 0, 1]], [[0, 0, 0, 0, 0, 0]]],
     )
 
 
@@ -61,13 +61,13 @@ def test_direct_1d_detection_has_one_center_per_run(axis, tmp_path):
     save_rf(result, path)
     loaded = load_rf(path)
     np.testing.assert_array_equal(loaded.center_2d, result.center_2d)
-    assert loaded.manifest["center_algorithm"] == "component-response-weighted-medoid-v2"
+    assert loaded.manifest["center_algorithm"] == "section-response-weighted-medoid-v3"
 
 
 def test_projection_preserves_centers_when_sectors_merge(tmp_path):
-    values = np.zeros((3, 12))
+    values = np.zeros((4, 12))
     values[0, 2:5] = [8, 12, 8]
-    values[2, 4:7] = [8, 12, 8]
+    values[3, 4:7] = [8, 12, 8]
     result = detect_rf(asrfmap(values), wrap_x=False, drop_bins=0)
     assert result.center_2d.sum() == 2
     projected = replace(

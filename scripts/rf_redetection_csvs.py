@@ -6,12 +6,13 @@ import re
 
 import numpy as np
 
+from RF.paths import is_organized_rf_source, legacy_rf_source_stem, rf_comparison_names, rf_projection_path
 from RF.rflocate import RFMapList, load_rf, rf_result_path, rf_tc_table, save_rf_tc
 from RF.tc_generation import calculate_rf_tc
 from Utils.direction_comparison import save_tc
 
 
-def stage_existing_csvs(item, counts, result, polarity, stage):
+def stage_existing_csvs(item, counts, result, polarity, stage, *, prepared_targets=()):
     """Refresh only existing CSVs whose values or selection depend on this 2-D RF.
 
     ``1d_rfonly`` retains the saved independent 1-D unit selection, but its
@@ -21,26 +22,35 @@ def stage_existing_csvs(item, counts, result, polarity, stage):
     source = Path(item["path"])
     probe = item["probe"].removeprefix("Probe")
     data_dir = Path(item["session_path"]) / "data"
+    organized = is_organized_rf_source(source)
+    comparison_stem = legacy_rf_source_stem(source)
     suffix = "_inhibitory" if polarity == "inhibitory" else ""
     native = re.compile(
         re.escape(f"{source.stem}_Probe{probe}{suffix}_1d") + r"(?:_([xy]))?_rfonly\.csv"
     )
     selection_pattern = rf"([xy])_(2d|1d|either|all)(_rfonly)?_Probe{re.escape(probe)}\.csv"
-    qualified = re.compile(re.escape(f"{source.stem}_{polarity}_") + selection_pattern)
+    qualified = re.compile(re.escape(f"{comparison_stem}_{polarity}_") + selection_pattern)
     alias = re.compile(re.escape(f"rf_{polarity}_") + selection_pattern)
-    canonical_on = (
-        item["root_kind"] == "rfmapping"
-        and source.stem == f"regular_unitsSpikeCounts_{Path(item['session_path']).name}"
-    )
+    _, on_alias = rf_comparison_names(source, probe, rf_type=polarity)
     jobs = []
     existing = {Path(record["path"]) for record in item["session_rf_csvs_shared_or_source_specific"]}
+    existing.difference_update(prepared_targets)
+    # prepare_source always writes native x. Refresh an existing y beside the same source.
+    if organized:
+        native_y = rf_projection_path(source, axis="y", rf_type=polarity)
+        if native_y.is_file():
+            jobs.append((native_y, "y", "all", True))
     for target in sorted(existing):
-        match = native.fullmatch(target.name)
-        if match:
-            jobs.append((target, match[1] or "x", "all", True))
-            continue
+        if organized:
+            if target.parent != data_dir / "tc_comparison":
+                continue
+        else:
+            match = native.fullmatch(target.name)
+            if match:
+                jobs.append((target, match[1] or "x", "all", True))
+                continue
         match = qualified.fullmatch(target.name)
-        if match is None and canonical_on:
+        if match is None and on_alias:
             match = alias.fullmatch(target.name)
         if match:
             axis, selection, rf_only = match[1], match[2], bool(match[3])

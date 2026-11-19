@@ -15,6 +15,7 @@ import shutil
 
 import numpy as np
 
+from RF.paths import is_organized_rf_source, rf_comparison_names, rf_projection_path
 from RF.rflocate import RFMapList, detect_rf, load_rf, load_rfmap, save_rf, save_rf_tc
 from RF.rflocate.workflow import rf_analysis_paths, rf_bin_qc
 from RF.tc_generation import calculate_rf_projection, calculate_rf_tc
@@ -45,6 +46,7 @@ def protect_files(source, rf_root):
 
 def prepare_source(item, stage, settings):
     source = Path(item["path"])
+    organized = is_organized_rf_source(source)
     probe = item["probe"].removeprefix("Probe")
     counts = load_rfmap(source)
     presentations = item.get("presentation_counts_path")
@@ -113,16 +115,19 @@ def prepare_source(item, stage, settings):
         # Source-specific CSVs cannot collide when ON, OFF and rotation coexist.
         data_dir = Path(item["session_path"]) / "data"
         suffix = "_inhibitory" if polarity == "inhibitory" else ""
-        projection_name = f"{source.stem}_Probe{probe}{suffix}_1d_rfonly.csv"
+        if organized:
+            projection_target = rf_projection_path(source, rf_type=polarity)
+        else:
+            projection_target = data_dir / f"{source.stem}_Probe{probe}{suffix}_1d_rfonly.csv"
         projection = calculate_rf_projection(counts, result, time_range_s=(0., .2), rf_only=True)
         prefix = f"{item['mouse']}:{item['date']}:{probe}"
         comparison = calculate_rf_tc(projection, detected_results=[result], unit_prefix=prefix)
-        native_stage = stage / projection_name
+        native_stage = stage / projection_target.name
         save_rf_tc(projection, native_stage)
-        comparison_name = f"{source.stem}_{polarity}_x_2d_rfonly_Probe{probe}.csv"
+        comparison_name, on_alias = rf_comparison_names(source, probe, rf_type=polarity)
         comparison_stage = stage / comparison_name
         save_tc(comparison, comparison_stage)
-        for staged, destination in ((native_stage, data_dir / projection_name),
+        for staged, destination in ((native_stage, projection_target),
                                     (comparison_stage, data_dir / "tc_comparison" / comparison_name)):
             row["replacements"].append({"staged": str(staged), "target": str(destination)})
         row.setdefault("csv_outputs", {})[polarity] = {
@@ -130,17 +135,20 @@ def prepare_source(item, stage, settings):
             "selected_units": len(comparison), "unit_prefix": prefix,
         }
         # The unsuffixed historical comparison namespace denotes regular ON.
-        if item["root_kind"] == "rfmapping" and item["source_kind"] == "regular" and "vertical_bar" not in source.stem:
-            old_comparison = data_dir / "tc_comparison" / f"rf_{polarity}_x_2d_rfonly_Probe{probe}.csv"
+        if on_alias:
+            old_comparison = data_dir / "tc_comparison" / on_alias
             row["replacements"].append({"staged": str(comparison_stage), "target": str(old_comparison)})
-            full_comparison = data_dir / "tc_comparison" / f"rf_{polarity}_x_2d_Probe{probe}.csv"
-            if full_comparison.exists():
+            full_name, full_alias = rf_comparison_names(source, probe, rf_type=polarity, rf_only=False)
+            full_names = (full_name, full_alias) if organized else (full_alias,)
+            full_targets = [data_dir / "tc_comparison" / name for name in full_names]
+            if any(path.exists() for path in full_targets):
                 full_projection = calculate_rf_projection(counts, result, time_range_s=(0., .2), rf_only=False)
                 full_table = calculate_rf_tc(full_projection, detected_results=[result], unit_prefix=prefix)
-                full_stage = stage / full_comparison.name
+                full_stage = stage / full_targets[0].name
                 save_tc(full_table, full_stage)
-                row["replacements"].append({"staged": str(full_stage), "target": str(full_comparison)})
-        row["replacements"].extend(stage_existing_csvs(item, counts, result, polarity, stage))
+                row["replacements"].extend({"staged": str(full_stage), "target": str(path)} for path in full_targets)
+        prepared = {Path(r["target"]) for r in row["replacements"]} if organized else set()
+        row["replacements"].extend(stage_existing_csvs(item, counts, result, polarity, stage, prepared_targets=prepared))
     row["replacements"] = list({r["target"]: r for r in row["replacements"]}.values())
     row["plot_data"] = str(stage / "plot_data.npz")
     np.savez_compressed(row["plot_data"], **plot_data)
@@ -150,6 +158,13 @@ def prepare_source(item, stage, settings):
 def apply_report(report, report_path):
     if report["errors"] or len(report["sources"]) != report["expected_sources"]:
         raise ValueError("All inventoried sources must prepare successfully before replacement")
+    owners = {}
+    for row in report["sources"]:
+        for replacement in row["replacements"]:
+            target = Path(replacement["target"]).resolve()
+            if target in owners:
+                raise ValueError(f"RF sources {owners[target]} and {row['source_path']} share target {target}; prepare a new report")
+            owners[target] = row["source_path"]
     for path, digest in report["protected_sha256"].items():
         if sha256(path) != digest:
             raise RuntimeError(f"Protected source or 1-D file changed: {path}")
@@ -168,14 +183,19 @@ def apply_report(report, report_path):
 
 
 def save_aggregate_lists(report):
-    """Regular maps own shared aliases; rotation owns them only when alone."""
+    """Pool organized maps across probes within their own stimulus and luminance."""
     groups = {}
     for row in report["sources"]:
-        groups.setdefault(str(Path(row["source_path"]).parent.parent), []).append(row)
+        source = Path(row["source_path"])
+        organized = is_organized_rf_source(source)
+        root = (source.parent.parent.parent / "all" / source.parent.name
+                if organized else source.parent.parent)
+        groups.setdefault((root, organized), []).append(row)
     report["aggregate_lists"] = []
-    for root, rows in groups.items():
-        regular = [row for row in rows if row["source_kind"] == "regular"]
-        rows = regular or rows
+    for (root, organized), rows in groups.items():
+        if not organized:
+            regular = [row for row in rows if row["source_kind"] == "regular"]
+            rows = regular or rows
         if len({row["probe"] for row in rows}) != len(rows):
             raise ValueError(f"Multiple source variants compete for shared unit lists: {root}")
         for polarity in ("excitatory", "inhibitory"):
@@ -184,10 +204,13 @@ def save_aggregate_lists(report):
             for row in rows:
                 values = np.load(row["outputs"][polarity]["units_2d"], allow_pickle=False)
                 combined.extend(values.tolist())
-                target = Path(row["source_path"]).parent / f"units_with_rf{suffix}.npy"
-                np.save(target, values)
-                report["aggregate_lists"].append(str(target))
-            target = Path(root) / f"units_with_rf{suffix}.npy"
+                if not organized:
+                    target = Path(row["source_path"]).parent / f"units_with_rf{suffix}.npy"
+                    np.save(target, values)
+                    report["aggregate_lists"].append(str(target))
+            label = "inh" if polarity == "inhibitory" else "ext"
+            target = root / (f"unitList_2d_{label}.npy" if organized else f"units_with_rf{suffix}.npy")
+            target.parent.mkdir(parents=True, exist_ok=True)
             np.save(target, np.asarray(combined, dtype=str).reshape(-1, 2))
             report["aggregate_lists"].append(str(target))
 

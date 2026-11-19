@@ -26,15 +26,31 @@ regular square-stimulus ON map; OFF and vertical-bar variants follow.
 - The main notebooks remain at the repository root. `rfmap_session_comparison.ipynb`
   preserves the separate two-session RF comparison with its explicit recording paths. `locate_rf.py` also
   stays there because the MATLAB bridge calls its file path.
+- `poster.ipynb` is the poster figure entrypoint. It reads saved recording data
+  and recomputes cohort statistics, EBB quality and free-moving trial exposure;
+  it does not require previous `poster_output/` or `poster_assets/` exports.
+  Editable SVG/white PNG figures and current audit tables go to `poster_output/current/`.
+  See [poster materials](poster_assets/README.md) for the six figure types,
+  paired-cell definitions and centered elevation coordinates.
+- `rf_ebb_tc_comparison_pairs.ipynb` applies the existing TC pair-comparison
+  method to RF and EBB, using HD class 3 without an ADN restriction. It covers
+  all saved distances and three distance bands in five mice with matched saved
+  rectangular EBB inputs. Figures, unique cell-pair tables and source hashes
+  go to `rf_ebb_comparison_output/current/`. Pooled unit permutations stay
+  within recording; no missing recording stage is generated.
+- `rf_ebb_session_review.ipynb` lists all saved EBB sessions with occupancy
+  coverage strictly above 90%, all compatible regular RF pairings and their
+  explicit HD references. It exports five-panel RF/EBB sorting views, four-band
+  pairwise results and per-mouse visual indexes to
+  `rf_ebb_comparison_output/session_review_coverage90/` for manual selection.
 - `scripts/` contains batch entrypoints. Run them from the repository root with
   the remote environment, for example `python -m scripts.hd_rf_fraction` or
   `python -m scripts.generate_pitch_direction_tuning --help`. The other entries
   are `hd_kappa_distribution`, `probe_position`,
   `regenerate_tuning_curves_from_hd`, and `plot_rf_pattern_from_csv`.
-- Git tracks the raw-to-RF workflow, RF detection, and RF/tuning comparisons.
-  Independent EBC/spatial experiments, decoder/video workflows, recording-specific
-  calibration, generated results, and their tests stay on disk under `.gitignore`.
-  They are not included in a fresh clone.
+- Git includes the raw-to-RF workflow, RF/tuning comparisons, and the shared
+  EBB modules used by the spatial and video entrypoints. Recording-specific
+  calibration, generated results, and local experiments stay on disk.
 
 Analysis follows explicit stages: load native data, select units/bins,
 transform for display, calculate statistics, then plot. Pitch/RF selection
@@ -54,7 +70,8 @@ sources, call pure calculations, and save the results. RF generation reads the
 response map and detection once and passes the projection in memory to selection.
 Replacing a saved TC requires `overwrite=True`.
 
-Normal comparison notebooks only read existing files in `data/tc_comparison/`.
+Comparison notebooks read saved CSVs in `data/tc_comparison/`. To combine HD
+angle bins, they also use exposure from the matching `tuning_curves.tc`.
 Readers never generate missing data; a missing file raises `FileNotFoundError`.
 First-time generation is a separate explicit step. `HD.profiles.prep_hd_tc(table)`
 and `RF.profiles.prep_rf_tc(table)` take already loaded tables and apply selection,
@@ -666,6 +683,25 @@ sample offset. Cluster IDs remain unchanged. Outputs are copied to:
 <session directory>/kilosort/ProbeA/kilosort_<session>/
 ```
 
+Phy opens the individual session's `continuous.dat` with `offset = 0` because
+the split spike samples already start at that session's first sample. The
+published split uses a path relative to its `params.py` when the raw session
+copy from section 4.1 is present. The original Kilosort `dat_path` is retained
+as `joint_dat_path` for workflows that compare units across sessions.
+For an existing split that still points to the concatenation, update only its
+`params.py` from the repository root using the matching probe's raw file:
+
+```python
+from pathlib import Path
+from preprocessing.spikeinterface.split_kilosort_by_recording import update_split_phy_params
+
+session_dir = Path("/path/to/260918/260918_2")
+raw_file, = (session_dir / "260918").glob(
+    "Record Node */experiment1/recording1/continuous/OneBox-*.ProbeA/continuous.dat"
+)
+update_split_phy_params(session_dir / "kilosort/ProbeA/kilosort_2", raw_file, relative=True)
+```
+
 The argument `remote_output` can be a local path; its name does not require
 network storage. Destination copies can replace existing files.
 `overwrite_outputs=False` protects the local split directory, not all
@@ -942,10 +978,13 @@ params.rfPythonExecutable = getenv('RFMAP_PYTHON');
 params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
 params.rfTimeRange = [0 0.2];
 params.maxZeroBins = 2;
-params.rfSigma2d = [1.8 -1]; % Signed excitatory/inhibitory thresholds.
+params.rfSigma2d = [4.5 -3]; % Signed excitatory/inhibitory thresholds.
 params.rfSigma1d = [1 -0.75];
-params.rfReference2d = 'global'; % Explicit 2-D baseline: 'global' or 'bottom_row'.
-params.dropBins = 2; % Explicit choice: remove components containing one or two bins.
+params.rfReference2d = 'bottom_row'; % Bottom two rows supply both mean and SD.
+params.rfSmoothing2d = true; % GUI smoothing1 after raw QC, before the 2-D baseline.
+params.rfSurroundDecay = 0;
+params.dropBins = 1; % Independent 1-D component cutoff.
+params.dropBins2d = [2 2]; % Excitatory/inhibitory 2-D component cutoffs.
 params.rfWrapX = true;
 params.rfPlotWorkers = 8;
 
@@ -1138,24 +1177,36 @@ its extension.
 With `params.runRfDetection=true`, MATLAB calls `locate_rf.py` after writing
 each `.rfmap`, before its CSV/PDF exports. The caller passes the probe, response
 window, bin QC limits, 2-D reference, component-size cutoff, signed thresholds for both response directions, and
-plot-worker count explicitly. The 1-D input sums the spatial rows before
+plot-worker count explicitly. It also passes separate 2-D component cutoffs,
+the 2-D smoothing switch, and the surround threshold decay. The 1-D input sums the spatial rows before
 calling the same `detect_rf(data, sigma=..., drop_bins=...)` function used for 2-D maps.
 A Python failure stops that MATLAB run and reports the source file and output.
 
 The analysis workflows require both `reference_2d` and `drop_bins`, with no
 defaults. Choose `reference_2d="global"` for whole-map mean/SD or
-`reference_2d="bottom_row"` for last-row mean with whole-map SD. Choose
+`reference_2d="bottom_row"` for mean and population SD pooled across the bottom two rows. Choose
 `drop_bins=0` to retain every candidate component or `drop_bins=2` to remove
-components containing one or two bins. The examples here explicitly choose
-`"global"` and `2`; the baseline choice does not change the component cutoff.
+components containing one or two bins. The baseline choice does not change
+the component cutoff.
 The two CLIs likewise require `--reference-2d` and `--drop-bins`.
 
-The default analysis uses 0–200 ms mean rates and keeps units with at most
+The MATLAB wrapper now matches the remote `locate_rf.ipynb` settings: 0–200 ms,
+raw zero/missing-bin QC, one exposure-weighted GUI `smoothing1` pass, then a
+bottom-two-row baseline with 2-D thresholds `+4.5 SD` and `-3 SD`. Both 2-D
+polarities remove components of two bins or fewer. Independent 1-D detection
+uses unsmoothed row sums, thresholds `+1 SD` and `-0.75 SD`, and removes
+single-bin components. `--smoothing-2d`, `--drop-bins-2d EXCITATORY INHIBITORY`,
+and `--surround-decay` expose these choices through `locate_rf.py`; smoothing
+is opt-in for other callers. Saved smoothed detections record preprocessing,
+baseline mean/SD, and thresholds. Existing saved results require an explicit
+rerun to change.
+
+The generic analysis defaults use 0–200 ms mean rates and keep units with at most
 two zero or missing bins in total, with at least one finite nonzero response.
 Its no-shuffle detector represents missing responses as zero and includes zero
 responses in the spatial mean/SD. It detects excitatory 2-D/1-D RFs with
-`sigma=(1.8, 1)` and inhibitory 2-D/1-D RFs with `sigma=(-1, -0.75)`, matching
-the current notebook. Each source gets the following files for each direction;
+`sigma=(1.8, 1)` and inhibitory 2-D/1-D RFs with `sigma=(-1, -0.75)` unless
+explicit thresholds are supplied. Each source gets the following files for each direction;
 inhibitory filenames add `_inhibitory` before the dimensional suffix:
 
 | Suffix added to the source stem | Contents |
@@ -1166,13 +1217,11 @@ inhibitory filenames add `_inhibitory` before the dimensional suffix:
 | `_units_with_rf_1d.npy` | `(probe, unit_id)` rows with a 1-D RF |
 | `_analysis.json` | Parameters, bin QC, and selected units |
 
-The same call also exports the notebook's combined 2-D/1-D unit figures and
-a population summary for the current probe as PNG and SVG, without opening
-windows. Figures use opaque white backgrounds and are saved beside the source
-in `<source_stem>_figures/rfmap/`: `units/<probe>/<unit_id>` and
-`Probe<probe>/rf_summary`. Source-specific directories keep ON/OFF, rotation,
-and other maps separate. Both directions are detected by default, with inhibitory figures under
-`<source_stem>_figures/inhibitory/rfmap/`.
+The same call exports opaque white PDFs for the combined 2-D/1-D unit
+figures and the population area and center maps. Each polarity has its own
+`rfmap/ext/` or `rfmap/inh/` directory containing `unit_<unit_id>.pdf`,
+`population.pdf`, and `centers.pdf`. For organized sources these directories
+sit beside the RF file. Flat sources use `<source_stem>_figures/` as the figure root.
 Use `--plot-output-dir` to choose a different figure root or `--no-plots` to
 skip figures. Horizontal unit responses show the actual input to 1-D detection.
 `--all-rf-rows` changes only the comparison CSV projection. Supplied comparison

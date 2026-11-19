@@ -167,6 +167,7 @@ def fisher_lee_statistics(
 
 def compare_direction_angles(
     reference_deg, matched_deg, *, n_permutations=10_000, random_seed=1,
+    permutation_groups=None,
 ):
     """Compare aligned unit directions with circular and Mantel tests.
 
@@ -183,7 +184,26 @@ def compare_direction_angles(
     if not np.all(np.isfinite(reference_deg)) or not np.all(np.isfinite(matched_deg)):
         raise ValueError("direction comparisons require finite peak angles")
 
+    groups = None if permutation_groups is None else np.asarray(permutation_groups)
+    if groups is not None and groups.shape != reference_deg.shape:
+        raise ValueError("Permutation groups must align with the paired units")
+
     def permutation_p(values, statistic, *, batch):
+        if groups is not None:
+            # Shuffle whole unit labels within a recording, preserving both
+            # dependence among cell pairs and each recording's peak distribution.
+            rng = np.random.default_rng(random_seed)
+            observed = statistic(values)
+            exceedances = 0
+            for start in range(0, n_permutations, batch):
+                count = min(batch, n_permutations - start)
+                order = np.broadcast_to(np.arange(len(values)), (count, len(values))).copy()
+                for group in np.unique(groups):
+                    indices = np.flatnonzero(groups == group)
+                    order[:, indices] = rng.permuted(order[:, indices], axis=1)
+                null = statistic(values[order], axis=-1)
+                exceedances += np.count_nonzero(null >= observed - abs(observed) * 1e-14)
+            return float((exceedances + 1) / (n_permutations + 1))
         result = permutation_test(
             (values,), statistic, permutation_type="pairings", vectorized=True,
             n_resamples=n_permutations, alternative="greater",
@@ -202,9 +222,8 @@ def compare_direction_angles(
         centered = np.sin(shuffled - circmean(shuffled, axis=axis, keepdims=True))
         return np.abs(pearsonr(reference_centered, centered, axis=axis).statistic)
 
-    p_circ = permutation_p(
-        matched_rad, circular_statistic, batch=256,
-    )
+    p_circ = (permutation_p(matched_rad, circular_statistic, batch=256)
+              if np.isfinite(rho_circ) else float('nan'))
     residual_vector = np.mean(np.exp(1j * (matched_rad - reference_rad)))
 
     upper_triangle = np.triu_indices(reference_deg.size, k=1)
@@ -212,7 +231,9 @@ def compare_direction_angles(
     reference_ranks = rankdata(reference_distances)
     matched_distances = circular_distance_matrix_deg(matched_deg)
     observed_ranks = rankdata(matched_distances[upper_triangle])
-    mantel_rho = float(np.corrcoef(reference_ranks, observed_ranks)[1, 0])
+    # Constant peak distances have no correlation and no permutation p-value.
+    mantel_rho = (float(np.corrcoef(reference_ranks, observed_ranks)[1, 0])
+                  if np.ptp(reference_ranks) > 0 and np.ptp(observed_ranks) > 0 else float('nan'))
     reference_centered_ranks = reference_ranks - reference_ranks.mean()
     reference_norm = np.linalg.norm(reference_centered_ranks)
     matched_ranks = None
@@ -240,7 +261,7 @@ def compare_direction_angles(
     unit_order = np.arange(reference_deg.size)
     # Bound the temporary permutation-by-pair arrays as the unit count grows.
     batch = max(1, min(256, 1_000_000 // reference_ranks.size))
-    mantel_p = permutation_p(unit_order, mantel_statistic, batch=batch)
+    mantel_p = permutation_p(unit_order, mantel_statistic, batch=batch) if np.isfinite(mantel_rho) else float('nan')
     unit_count = int(reference_deg.size)
     return {
         "same_unit": {

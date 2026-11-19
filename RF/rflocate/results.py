@@ -133,7 +133,9 @@ def _rf_source_path(source_path: str | os.PathLike[str]) -> str:
     source = os.fspath(source_path)
     if source.startswith("<") and source.endswith(">"):
         return source
-    return str(Path(source).resolve())
+    # Reorganizing a recording preserves saved detections and their provenance.
+    from RF.paths import organized_rf_source
+    return str(organized_rf_source(source).resolve())
 
 
 def _rf_result_for_map(

@@ -502,7 +502,7 @@ def concat(*curves, label=None):
     table = pd.concat(aligned, verify_integrity=True)
     table.attrs = curves[0].attrs.copy()
     table.attrs.pop("source", None)
-    for attribute in ("response_units", "response_kind"):
+    for attribute in ("response_units", "response_kind", "hd_occupancy_s"):
         if any(curve.attrs.get(attribute) != curves[0].attrs.get(attribute) for curve in curves[1:]):
             table.attrs.pop(attribute, None)
     if any("unit_info" in curve.attrs for curve in curves):

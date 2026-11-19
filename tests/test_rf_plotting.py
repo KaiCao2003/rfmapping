@@ -27,7 +27,7 @@ def test_rf_unit_plot_uses_supplied_horizontal_response(tmp_path):
     np.testing.assert_array_equal(axes[0, 0].images[0].get_array(), data["response"])
     assert figure.get_facecolor() == (1, 1, 1, 1)
     assert all(axis.get_facecolor() == (1, 1, 1, 1) for axis in figure.axes)
-    assert (tmp_path / "unit.svg").is_file()
+    assert (tmp_path / "unit.pdf").read_bytes().startswith(b"%PDF-")
 
 
 def test_unit_plot_data_sums_whole_rf_rows_without_detection(monkeypatch):
@@ -69,9 +69,10 @@ def test_population_plot_does_not_count_or_smooth(monkeypatch):
     }
     figures = rf_plotting.plot_rf_population({"chosen": counts}, show=False)
     assert set(figures) == {"chosen"}
-    _, axes = figures["chosen"]
-    np.testing.assert_array_equal(axes[0, 0].images[0].get_array(), counts["mask_2d"])
-    np.testing.assert_array_equal(axes[1, 0].lines[0].get_ydata(), counts["mask_1d"])
+    _, axes = figures["chosen"]["RF"]
+    np.testing.assert_array_equal(axes["map"].images[0].get_array(), counts["mask_2d"])
+    np.testing.assert_array_equal(axes["top"].lines[0].get_ydata(), counts["mask_2d"].sum(axis=0))
+    np.testing.assert_array_equal(axes["right"].lines[0].get_xdata(), counts["mask_2d"].sum(axis=1))
 
 
 def test_peak_sum_plot_uses_explicit_counts_and_statistics(monkeypatch):

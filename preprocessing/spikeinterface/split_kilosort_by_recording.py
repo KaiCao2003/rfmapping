@@ -1,8 +1,51 @@
+import ast
+import os
 from pathlib import Path
 import re
 import shutil
+from tempfile import NamedTemporaryFile
 
 import numpy as np
+
+
+def _phy_params(text):
+    fields = {
+        node.targets[0].id: node for node in ast.parse(text).body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+    }
+    joint = fields["joint_dat_path"] if "joint_dat_path" in fields else fields["dat_path"]
+    return fields, ast.literal_eval(joint.value)
+
+
+def joint_sorting_source(params_path: Path):
+    """Read the original Kilosort dat_path (string or list) from a joint or split params.py."""
+    _, joint = _phy_params(Path(params_path).read_text(encoding="utf-8"))
+    return joint
+
+
+def update_split_phy_params(split_dir: Path, session_raw: Path, *, relative: bool = False) -> None:
+    """Point Phy at this split's headerless recording and retain the joint sorting source."""
+    params_path = Path(split_dir) / "params.py"
+    raw_path = Path(session_raw).resolve(strict=True)
+    dat_path = os.path.relpath(raw_path, params_path.parent) if relative else str(raw_path)
+    original = params_path.read_text(encoding="utf-8")
+    fields, joint = _phy_params(original)
+    lines = original.splitlines(keepends=True)
+    replaced = [fields[name] for name in ("dat_path", "offset", "joint_dat_path") if name in fields]
+    for node in sorted(replaced, key=lambda node: node.lineno, reverse=True):
+        del lines[node.lineno - 1:node.end_lineno]
+    updated = "".join(lines).rstrip() + f"\njoint_dat_path = {joint!r}\ndat_path = {[dat_path]!r}\noffset = 0\n"
+    if updated == original:
+        return
+    temporary = NamedTemporaryFile(mode="w", encoding="utf-8", dir=params_path.parent, delete=False)
+    temporary_path = Path(temporary.name)
+    try:
+        with temporary:
+            temporary.write(updated)
+        shutil.copymode(params_path, temporary_path)
+        temporary_path.replace(params_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def split_kilosort_by_recording(data_base_folder: Path, remote_output: Path, date: str, sessions: list[int], probe_list: list[str], *,
@@ -271,13 +314,14 @@ def split_kilosort_by_recording(data_base_folder: Path, remote_output: Path, dat
             )
 
         spike_length_npy_files = discover_spike_length_npy_files(ks_folder, n_spikes)
+        has_phy_params = (ks_folder / "params.py").is_file()
 
         print()
         print("Spike-length .npy files to split")
         for name in sorted(spike_length_npy_files):
             print(f"  {name}")
 
-        for session, sample_range, index_range in zip(sessions, sample_ranges, index_ranges):
+        for session, dat_path, sample_range, index_range in zip(sessions, dat_paths, sample_ranges, index_ranges):
             out_folder = probe_folder / f"kilosort_{session}"
             sample_start, _ = sample_range
             idx_start, idx_end = index_range
@@ -287,6 +331,8 @@ def split_kilosort_by_recording(data_base_folder: Path, remote_output: Path, dat
 
             prepare_output_folder(out_folder)
             copy_metadata_files(ks_folder, out_folder, spike_length_npy_files)
+            if has_phy_params:
+                update_split_phy_params(out_folder, dat_path)
 
             for name in sorted(spike_length_npy_files):
                 print(f"  splitting {name}")
@@ -307,6 +353,10 @@ def split_kilosort_by_recording(data_base_folder: Path, remote_output: Path, dat
             )
             print(f"Copying to remote -> {remote_folder}")
             shutil.copytree(out_folder, remote_folder, dirs_exist_ok=True)
+            # The pipeline publishes the raw session under an extra date directory.
+            remote_raw = remote_output / f"{date}_{session}" / date / dat_path.relative_to(raw_session_folder(session))
+            if has_phy_params and remote_raw.is_file():
+                update_split_phy_params(remote_folder, remote_raw, relative=True)
 
             pipeline_remote_folder = (
                 remote_output

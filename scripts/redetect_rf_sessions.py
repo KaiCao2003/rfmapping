@@ -49,21 +49,20 @@ def output_paths(session, analyses_by_probe, *, plots):
     for rf_type in ("excitatory", "inhibitory"):
         suffix = "_inhibitory" if rf_type == "inhibitory" else ""
         paths.extend(list_dir / f"{name}{suffix}.npy" for name in ("units_with_rf", "units_with_rf_1d"))
-        figure_dir = session / "data/rfmapping" / ("inhibitory/rfmap" if suffix else "rfmap")
+        figure_root = session / "data/rfmapping"
+        polarity_dir = Path("rfmap") / ("inh" if suffix else "ext")
         for probe, analyses in analyses_by_probe.items():
             result = analyses[rf_type]
             paths.extend(result["output_paths"].values())
             paths.extend(comparison_paths(session, result["source_path"], probe, rf_type))
             if plots:
-                paths.extend(
-                    figure_dir / "units" / probe / f"{unit}{extension}"
-                    for unit in result["summed"].unit_ids for extension in (".png", ".svg")
-                )
+                root = figure_root / f"Probe{probe}" if len(probes) > 1 else figure_root
+                paths.extend(root / polarity_dir / f"unit_{unit}.pdf" for unit in result["summed"].unit_ids)
         if plots:
             paths.extend(
-                figure_dir / panel / f"rf_summary{extension}"
+                figure_root / panel / polarity_dir / name
                 for panel in [*(f"Probe{probe}" for probe in probes), "all", "all_smoothed"]
-                for extension in (".png", ".svg")
+                for name in ("population.pdf", "centers.pdf")
             )
     return paths, list_dir
 
@@ -149,7 +148,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sessions", nargs="+", type=Path)
     parser.add_argument("--reference-2d", choices=("global", "bottom_row"), required=True,
-                        help="2-D baseline mean: whole map or last spatial row; both use whole-map SD")
+                        help="2-D baseline mean and SD: whole map or pooled bottom two rows")
     parser.add_argument("--drop-bins", type=int, required=True,
                         help="0 keeps all threshold-passing bins; N removes components of N bins or fewer")
     parser.add_argument("--plot-workers", type=int, default=8)

@@ -9,10 +9,13 @@ function RFmapping
     params.rfPythonScript = '/home/kai/Developer/rfmapping/locate_rf.py';
     params.rfTimeRange = [0 0.2];
     params.maxZeroBins = 2;
-    params.rfSigma2d = [1.8 -1]; % Excitatory and inhibitory signed thresholds.
+    params.rfSigma2d = [4.5 -3]; % Excitatory and inhibitory signed thresholds.
     params.rfSigma1d = [1 -0.75];
-    params.rfReference2d = 'global'; % Choose 'global' or 'bottom_row' explicitly.
-    params.dropBins = 2;
+    params.rfReference2d = 'bottom_row'; % Pool the bottom two rows for mean and SD.
+    params.rfSmoothing2d = true; % GUI smoothing1 after raw QC, before the 2-D baseline.
+    params.rfSurroundDecay = 0;
+    params.dropBins = 1; % Independent 1-D component cutoff.
+    params.dropBins2d = [2 2]; % Excitatory and inhibitory 2-D component cutoffs.
     params.rfWrapX = true;
     params.rfPlotWorkers = 8;
     
