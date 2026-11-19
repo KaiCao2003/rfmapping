@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import least_squares
 
-from ._detector import _label_clusters
+from ._detector import _label_sections
 from ._validation import _EDGE_ATOL_S, _bool_value
 from .models import RFMap
 from .results import RFResult, _rf_result_for_map
@@ -67,9 +67,9 @@ def fit_rf_gaussians(
     """Fit one signed Gaussian per connected region of each supplied RF mask.
 
     ``response`` is one uncollapsed, regular 2-D grid of mean firing rates in
-    Hz with one response-window bin. Regions use the detector's four-neighbor
-    connectivity and optional horizontal seam. Saved center markers do not
-    determine component counts. The function neither detects nor loads/saves.
+    Hz with one response-window bin. Regions use the detector's one-bin-gap
+    grouping (including diagonals) and optional horizontal seam. Saved center
+    markers do not determine component counts. The function neither detects nor loads/saves.
 
     All components and the free offset are jointly fitted to finite measured
     bins by unweighted least squares. Missing bins remain NaN in continuous
@@ -108,7 +108,7 @@ def fit_rf_gaussians(
     masks, labels, counts, descriptors, seeds = {}, {}, {}, [], []
     for polarity, result, sign in (("excitatory", excitatory, 1), ("inhibitory", inhibitory, -1)):
         mask = _detection_mask(result, response, polarity, wrap_x)
-        labeled, masses = _label_clusters(np.ones(values.shape), mask, wrap_x=wrap_x)
+        labeled, masses = _label_sections(np.ones(values.shape), mask, wrap_x=wrap_x)
         masks[polarity], labels[polarity], counts[polarity] = mask, labeled, len(masses)
         for label in range(1, len(masses) + 1):
             seed = _component_seed(values, labeled == label, x_grid, y_grid, baseline, sign, period, wrap_x)

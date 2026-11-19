@@ -136,29 +136,26 @@ for SESSION_ID in "${FREE_MOVING_SESSIONS[@]}"; do
         continue
     fi
 
-    mkdir -p "$SESSION_DIR/data/config" "$SESSION_DIR/data/motive_analysis"
+    mkdir -p "$SESSION_DIR/data/config"
     MOTIVE_CONFIG="$SESSION_DIR/data/config/motive_analysis.yaml"
-    MOTIVE_OUTPUT_DIR="$SESSION_DIR/data/motive_analysis"
+    MOTIVE_OUTPUT_DIR="$SESSION_DIR/data"
     MOTIVE_LOG="$SESSION_DIR/data/config/motive_analysis.log"
     sed \
         -e "s|^  path: .*|  path: \"$CSV_PATH\"|" \
         -e "s|^  rigid_body: .*|  rigid_body: hp4|" \
         -e "s|^  base_dir: .*|  base_dir: \"$MOTIVE_OUTPUT_DIR\"|" \
+        -e "s|^  timestamped_run: .*|  timestamped_run: false|" \
         -e "s|^  is_quaternion: .*|  is_quaternion: $MOTIVE_IS_QUATERNION|" \
         "$MOTIVE_ANALYSIS_DIR/config/analysis.yaml" > "$MOTIVE_CONFIG"
 
     ANALYSIS_CONFIG="$MOTIVE_CONFIG" \
         "$MOTIVE_PYTHON" "$MOTIVE_ANALYSIS_DIR/scripts/run_analysis.py" > "$MOTIVE_LOG" 2>&1
     cat "$MOTIVE_LOG"
-    MOTIVE_RUN_DIR="$(sed -n 's/^Analysis completed. Results: //p' "$MOTIVE_LOG" | tail -n 1)"
-    if [[ -z "$MOTIVE_RUN_DIR" || ! -f "$MOTIVE_RUN_DIR/processed/head_direction.json" || ! -f "$MOTIVE_RUN_DIR/processed/filtered.csv" ]]; then
+    # Downstream tuning/spatial stages read these files from the same data directory.
+    if [[ ! -f "$MOTIVE_OUTPUT_DIR/processed/head_direction.json" || ! -f "$MOTIVE_OUTPUT_DIR/processed/filtered.csv" ]]; then
         echo "Motive analysis did not produce processed/head_direction.json and filtered.csv for $SESSION_DIR" >&2
         exit 1
     fi
-    mkdir -p "$SESSION_DIR/data/processed"
-    cp "$MOTIVE_RUN_DIR/processed/head_direction.json" "$MOTIVE_RUN_DIR/processed/filtered.csv" \
-        "$SESSION_DIR/data/processed/"
-
     cd "$RFMAPPING_DIR"
     "$RFMAPPING_PYTHON" -m scripts.run_tuning_curves \
         "$RECORDING_BASE" \

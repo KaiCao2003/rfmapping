@@ -65,7 +65,8 @@ def test_prep_hd_tc_only_transforms_the_supplied_table(monkeypatch):
     table = pd.DataFrame([[1., 3., 2., 4.], [0., 0., 0., 0.]],
                          index=["m22:261008:A:7", "m22:261008:A:9"],
                          columns=[45., 135., -135., -45.])
-    table.attrs = {"response_units": "Hz", "label": "HD"}
+    table.attrs = {"response_units": "Hz", "label": "HD",
+                   "hd_occupancy_s": dict.fromkeys(table.columns, 1.)}
     original = table.copy(deep=True)
     monkeypatch.setattr(Path, "open", no_io)
     monkeypatch.setattr(hd, "tc_loader", no_io)
@@ -74,7 +75,8 @@ def test_prep_hd_tc_only_transforms_the_supplied_table(monkeypatch):
 
     np.testing.assert_array_equal(actual, [[2 / 3, 1.], [0., 0.]])
     np.testing.assert_array_equal(actual.columns, [90., -90.])
-    assert actual.attrs == {"response_units": "normalized", "label": "HD"}
+    assert actual.attrs == {"response_units": "normalized", "label": "HD",
+                            "hd_occupancy_s": {90.: 2., -90.: 2.}}
     pd.testing.assert_frame_equal(table, original)
 
 

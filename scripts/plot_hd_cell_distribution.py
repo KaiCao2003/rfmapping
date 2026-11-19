@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 
-def plot_hd_cell_distribution(session, probes):
+def plot_hd_cell_distribution(session, probes, *, output_path=None):
     session = Path(session)
     data = session / "data"
     plt.rcParams.update({
@@ -56,7 +56,8 @@ def plot_hd_cell_distribution(session, probes):
             ax.spines[side].set_color("#acb5bd")
         ax.tick_params(labelsize=9)
 
-    output = data / "tuning_curves" / "hd_cell_distribution.png"
+    output = Path(output_path) if output_path is not None else data / "tuning_curves" / "hd_cell_distribution.png"
+    output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=200, facecolor="white", transparent=False)
     plt.close(fig)
     print(f"Saved HD cell distribution: {output}")

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
 
 import matplotlib
 
+from RF.paths import is_organized_rf_source, resolve_rf_source, rf_comparison_names, rf_projection_path
 from RF.rflocate.workflow import analyze_rf_file
 from RF.tc_generation import generate_rf_comparison, generate_rf_tc
+from Utils.tc_preparation import check_tc_outputs
 
 
 def main() -> None:
@@ -16,7 +19,7 @@ def main() -> None:
     parser.add_argument("source", type=Path, help="RF file written by MATLAB")
     parser.add_argument("--probe", required=True)
     parser.add_argument("--reference-2d", choices=("global", "bottom_row"), required=True,
-                        help="2-D baseline mean: whole map or last spatial row; both use whole-map SD")
+                        help="2-D baseline mean and SD: whole map or pooled bottom two rows (60 bins on a 30-column grid)")
     parser.add_argument("--rf-type", choices=("excitatory", "inhibitory", "both"), default="both",
                         help="Use 'both' to save excitatory and inhibitory results together")
     parser.add_argument("--time-range", nargs=2, type=float, default=(0.0, 0.2), metavar=("START", "STOP"))
@@ -33,18 +36,25 @@ def main() -> None:
                         help="Legacy unsigned threshold override for both response directions")
     parser.add_argument("--drop-bins", type=int, required=True,
                         help="Choose explicitly: 0 keeps all threshold-passing bins; N removes components of N bins or fewer")
+    parser.add_argument("--drop-bins-2d", nargs=2, type=int,
+                        metavar=("EXCITATORY", "INHIBITORY"),
+                        help="Separate 2-D component cutoffs; --drop-bins still controls independent 1-D detection")
+    parser.add_argument("--smoothing-2d", action="store_true",
+                        help="Apply GUI smoothing1 after raw QC, before the 2-D baseline and detection")
+    parser.add_argument("--surround-decay", type=float, default=0.0,
+                        help="Lower the 2-D seed-neighbor threshold once by this many SD (default: 0)")
     parser.add_argument("--collapse-from-2d", action="store_true")
     parser.add_argument("--no-wrap-x", action="store_true")
     parser.add_argument("--unit-prefix", help="Comparison unit identity, e.g. mouse:date:probe")
     parser.add_argument("--comparison-output-dir", type=Path,
-                        help="Write comparison CSVs here and native projections in its parent directory")
+                        help="Write comparison CSVs here. Organized sources keep native projections beside the RF map.")
     parser.add_argument("--overwrite-comparison", action="store_true",
                         help="Replace existing comparison CSVs when generating them")
     parser.add_argument("--all-rf-rows", action="store_true",
                         help="Sum all spatial rows in comparison CSVs instead of only detected RF rows")
     parser.add_argument("--plot-output-dir", type=Path,
-                        help="Figure directory (default: <source_stem>_figures beside the RF file)")
-    parser.add_argument("--no-plots", action="store_true", help="Skip PNG/SVG figure exports")
+                        help="Figure root (default: the organized source directory or <source_stem>_figures)")
+    parser.add_argument("--no-plots", action="store_true", help="Skip PDF figure exports")
     parser.add_argument("--plot-workers", type=int, default=8,
                         help="Parallel unit-figure processes (default: 8; 1 for serial export)")
     args = parser.parse_args()
@@ -52,6 +62,8 @@ def main() -> None:
         parser.error("--plot-workers must be at least 1")
     if (args.unit_prefix is None) != (args.comparison_output_dir is None):
         parser.error("--unit-prefix and --comparison-output-dir must be supplied together")
+    args.source = resolve_rf_source(args.source)
+    organized = is_organized_rf_source(args.source)
     analyses = analyze_rf_file(
         args.source, probe=args.probe, rf_type=args.rf_type, time_range_s=tuple(args.time_range),
         reference_2d=args.reference_2d,
@@ -62,17 +74,40 @@ def main() -> None:
         },
         cluster_forming_z_2d=args.cluster_forming_z_2d,
         cluster_forming_z_1d=args.cluster_forming_z_1d, drop_bins=args.drop_bins,
+        drop_bins_2d=(None if args.drop_bins_2d is None else dict(
+            zip(("excitatory", "inhibitory"), args.drop_bins_2d, strict=True)
+        )),
+        smoothing_2d=args.smoothing_2d, surround_decay=args.surround_decay,
         wrap_x=not args.no_wrap_x, collapse_from_2d=args.collapse_from_2d,
     )
     if args.rf_type != "both":
         analyses = {args.rf_type: analyses}
     rf_only = not args.all_rf_rows
+    organized_csvs = {}
+    if args.comparison_output_dir is not None and organized:
+        projections = set()
+        comparisons = []
+        for rf_type in analyses:
+            projection = rf_projection_path(args.source, rf_only=rf_only, rf_type=rf_type)
+            qualified, alias = rf_comparison_names(args.source, args.probe, rf_type=rf_type, rf_only=rf_only)
+            comparison = args.comparison_output_dir / qualified
+            on_alias = args.comparison_output_dir / alias if alias else None
+            organized_csvs[rf_type] = (projection, comparison, on_alias)
+            projections.add(projection)
+            comparisons.append(comparison)
+            if on_alias:
+                comparisons.append(on_alias)
+        detected_files = [path for result in analyses.values() for path in result["output_paths"].values()]
+        check_tc_outputs([*projections, *comparisons], inputs=[args.source, *detected_files],
+                         overwrite=args.overwrite_comparison)
     generated_projections = set()
     if not args.no_plots:
         matplotlib.use("Agg")
         from RF.rflocate.plotting import export_rf_units, plot_rf_population, rf_population_counts
 
-        plot_output_dir = args.plot_output_dir or args.source.with_name(f"{args.source.stem}_figures")
+        plot_output_dir = args.plot_output_dir or (
+            args.source.parent if organized else args.source.with_name(f"{args.source.stem}_figures")
+        )
         analyses_by_probe = {args.probe: analyses}
     for rf_type, result in analyses.items():
         qc = result["bin_qc"]
@@ -83,12 +118,16 @@ def main() -> None:
         for name, path in result["output_paths"].items():
             print(f"{name}: {path}")
         if args.comparison_output_dir is not None:
-            rf_suffix = "_rfonly" if rf_only else ""
-            projection_name = f"{args.source.stem}_Probe{args.probe}"
-            if rf_only and rf_type == "inhibitory":
-                projection_name += "_inhibitory"
-            projection_path = args.comparison_output_dir.parent / f"{projection_name}_1d{rf_suffix}.csv"
-            comparison_path = args.comparison_output_dir / f"rf_{rf_type}_x_2d{rf_suffix}_Probe{args.probe}.csv"
+            if organized_csvs:
+                projection_path, comparison_path, on_alias = organized_csvs[rf_type]
+            else:
+                on_alias = None
+                rf_suffix = "_rfonly" if rf_only else ""
+                projection_name = f"{args.source.stem}_Probe{args.probe}"
+                if rf_only and rf_type == "inhibitory":
+                    projection_name += "_inhibitory"
+                projection_path = args.comparison_output_dir.parent / f"{projection_name}_1d{rf_suffix}.csv"
+                comparison_path = args.comparison_output_dir / f"rf_{rf_type}_x_2d{rf_suffix}_Probe{args.probe}.csv"
             if projection_path in generated_projections:
                 generate_rf_tc(
                     projection_path, comparison_path,
@@ -104,6 +143,9 @@ def main() -> None:
                 )
                 generated_projections.add(projection_path)
             print(f"Comparison CSV: {comparison_path}")
+            if on_alias:
+                shutil.copyfile(comparison_path, on_alias)
+                print(f"Comparison CSV: {on_alias}")
         if not args.no_plots:
             counts = rf_population_counts(analyses_by_probe, rf_type=rf_type)
             # Each MATLAB invocation contains one probe, not a pooled session.
@@ -115,7 +157,7 @@ def main() -> None:
                 analyses_by_probe, plot_output_dir, rf_type=rf_type,
                 workers=args.plot_workers,
             )
-            print(f"{rf_type} figures: {plot_output_dir} ({exported_units} units; PNG/SVG)")
+            print(f"{rf_type} figures: {plot_output_dir} ({exported_units} units; PDF)")
 
 
 if __name__ == "__main__":

@@ -86,11 +86,11 @@ def resolve_presentation_counts(raw, source_path, x_positions, y_positions):
     positions_x = np.asarray([trial["Square_PositionX"] for trial in trials], dtype=float)
     positions_y = np.asarray([trial["Square_PositionY"] for trial in trials], dtype=float)
     luminance = np.asarray([trial["Square_Luminance"] for trial in trials], dtype=float)
-    selected_luminance = raw.get("lum", 0.5 if stem.endswith("_gray") else
-                                 0.0 if stem.endswith("_off") else 1.0)
+    selected_luminance = raw.get("lum", 0.5 if stem.endswith("_gray") or 'rfmapping_gray' in source_path.parts else
+                                 0.0 if stem.endswith("_off") or 'rfmapping_off' in source_path.parts else 1.0)
     selected = luminance == selected_luminance
 
-    is_bar = raw.get("isVerticalBar", "vertical_bar_pooled" in stem)
+    is_bar = raw.get("isVerticalBar", "vertical_bar_pooled" in stem or stem.startswith('bar_'))
     is_moving = raw.get("isBackgroundMoving", stem.startswith("egocentric_"))
     is_rotation = raw.get("isRotation", stem.startswith("rotation_"))
     is_allocentric = raw.get("isAllocentricPixelBins", stem.startswith("allocentric_pixelbins_"))

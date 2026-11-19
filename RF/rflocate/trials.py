@@ -29,7 +29,7 @@ __all__ = ["load_regular_rf_trials"]
 
 _SESSION_NAME = re.compile(r"^(?P<date>\d{6})_(?P<recording>\d+)$")
 _REGULAR_RF_SOURCE_NAME = re.compile(
-    r"^regular_unitsSpikeCounts_.+\.(?:json|rfmap)$"
+    r"^regular_(?:unitsSpikeCounts_.+|\d{6}_\d+)\.(?:json|rfmap)$"
 )
 
 

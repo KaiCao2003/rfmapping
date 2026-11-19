@@ -50,9 +50,18 @@ def cached_curves(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True)
         save_tc(pd.DataFrame(values, index=ids, columns=angles), path)
         originals[path] = path.read_bytes()
+        if session == 1:
+            source = path.parent.parent / "tuning_curves/ProbeA/tuning_curves.tc"
+            source.parent.mkdir(parents=True)
+            source.write_text(json.dumps({
+                "unit_id": [7, 11, 23, 31], "unit_data": {"hd_class": [3] * 4},
+                "angle_bin_edges_deg": np.linspace(0, 360, 31).tolist(),
+                "occupancy_time_s": [1.] * 30, "spike_counts": values.tolist(),
+            }))
+            originals[source] = source.read_bytes()
 
     def unexpected_source_read(*args, **kwargs):
-        pytest.fail("Cached curves must be rebinned without reading the original sources")
+        pytest.fail("Cached RF curves must be rebinned without reading the original RF sources")
 
     for name in ("load_rfmap", "load_rf", "load_rf_tc"):
         monkeypatch.setattr(tc_generation, name, unexpected_source_read)
@@ -102,12 +111,12 @@ def test_first_hd_generation_is_explicit_and_comparison_keeps_saved_30_bins(tmp_
     saved = tc_loader(output)
     original_cache = output.read_bytes()
     expected30 = counts.reshape(1, 30, 6).sum(axis=2) / occupancy.reshape(30, 6).sum(axis=1)
-    expected15 = expected30[:, ::2] + expected30[:, 1::2]
+    expected15 = counts.reshape(1, 15, 12).sum(axis=2) / occupancy.reshape(15, 12).sum(axis=1)
 
     assert saved.shape == (1, 30)
     assert saved.index.tolist() == ["m14:260609:A:23"]
     np.testing.assert_array_equal(saved, expected30)
-    np.testing.assert_array_equal(hd15, expected15 / expected15.max(axis=1, keepdims=True))
+    np.testing.assert_allclose(hd15, expected15 / expected15.max(axis=1, keepdims=True), rtol=1e-14)
 
     hd30 = prep_hd_tc(load_hd_comparison("m14", tmp_path, "A", "260609", 1), bins=30)
     np.testing.assert_array_equal(hd30, expected30 / expected30.max(axis=1, keepdims=True))

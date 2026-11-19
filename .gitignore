@@ -46,6 +46,9 @@ preprocessing/pipeline/config_result.yaml
 
 # Generated outputs and scratch work (kept on disk)
 /tmp/
+/poster_output/
+/rf_ebb_comparison_output/
+/slides_v2_output/
 /docs/angle_audit_20260916/
 /research/
 
@@ -59,10 +62,7 @@ preprocessing/pipeline/config_result.yaml
 /tmp.ipynb
 
 # Optional video workflows and recording-specific calibration
-/EBB/ebc_camera.py
-/EBB/ebc_replay.py
 /EBB/ebc_screen.py
-/EBB/ebc_video.py
 /Utils/hd_rf_video_data.py
 /Utils/hd_rf_video_decode.py
 /config/cylinder.calib
@@ -98,12 +98,6 @@ preprocessing/pipeline/config_result.yaml
 # Independent EBC/spatial research and legacy notebook (kept on disk)
 /Utils/bearing.py
 /Utils/motive_pose.py
-/EBB/ebc_analysis.py
-/EBB/ebc_geometry.py
-/EBB/ebc_overlay.py
-/EBB/ebc_pose.py
-/EBB/ebc_workflow.py
-/EBB/spatial_cell_analysis.py
 /ebc_arena_bounds.ipynb
 /ebc_artifact_controls.ipynb
 /hd_rf_ebc_comparison.ipynb

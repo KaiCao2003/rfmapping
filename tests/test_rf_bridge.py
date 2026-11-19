@@ -27,13 +27,19 @@ def test_cli_signed_thresholds_refresh_both_comparison_tables(tmp_path):
          "--sigma-2d", "1.2", "-0.8", "--sigma-1d", "0.9", "-0.5",
          "--comparison-output-dir", str(comparison_dir), "--unit-prefix", "m22:261008:B",
          "--overwrite-comparison", "--no-plots", "--drop-bins", "2",
-         "--reference-2d", "global"],
+         "--reference-2d", "bottom_row", "--smoothing-2d", "--surround-decay", "0.25",
+         "--drop-bins-2d", "1", "3"],
         cwd=tmp_path, check=True, capture_output=True, text=True,
     )
     for kind, expected_sigmas in (("excitatory", (1.2, 0.9)), ("inhibitory", (-0.8, -0.5))):
         suffix = "_inhibitory" if kind == "inhibitory" else ""
         summary = json.loads(source.with_name(f"{source.stem}{suffix}_analysis.json").read_text())
-        assert (summary["parameters"]["sigma_2d"], summary["parameters"]["sigma_1d"]) == expected_sigmas
+        parameters = summary["parameters"]
+        assert (parameters["sigma_2d"], parameters["sigma_1d"]) == expected_sigmas
+        assert parameters["smoothing_2d"] == 1
+        assert parameters["surround_decay"] == 0.25
+        assert parameters["drop_bins_2d"] == (3 if kind == "inhibitory" else 1)
+        assert parameters["drop_bins_1d"] == 2
         assert "stale" not in (comparison_dir / f"rf_{kind}_x_2d_rfonly_ProbeB.csv").read_text()
         assert "stale" not in (comparison_dir.parent / f"{source.stem}_ProbeB{suffix}_1d_rfonly.csv").read_text()
         for dimension in ("", "_1d"):

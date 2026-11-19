@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 import numpy as np
+from RF.paths import resolve_rf_source
 from Utils.json_tools import read_formatted_json
 from .models import RFMapList, _make_rf_map
 from ._validation import (
@@ -60,7 +61,7 @@ def load_rf_maps(path: str | Path) -> RFMapList:
     NaN, not a measured zero.
     """
 
-    source_path = Path(path)
+    source_path = resolve_rf_source(path)
     raw = _read_rf_source(source_path)
     if not isinstance(raw, dict):
         raise ValueError("RF mapping JSON must contain an object at the top level")

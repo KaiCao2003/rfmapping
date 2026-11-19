@@ -144,6 +144,12 @@ Full-circle source grids use periodic interpolation.
 `HD.profiles.load_hd_tc()` reads original HD `.tc` JSON without calculation.
 `hd_profiles(data)` explicitly rebins already loaded counts and occupancy into
 rates. It preserves saved `unit_data.hd_class`, regardless of rebinning or optional smoothing.
+`load_hd_comparison()` reads the HD rate CSV and attaches per-angle exposure from
+the session's saved `tuning_curves.tc` when its grid and unit rates match.
+`prep_hd_tc()` uses those seconds to pool spikes and exposure before dividing
+each row by its maximum. A standalone rate CSV supports normalization on its
+saved grid. Coarsening requires the matching exposure. Rebin each recording
+before pooling recordings with different exposure profiles.
 `hd_pick` selects these saved classes; class metadata is not stored in comparison
 CSVs. Decoder, pitch, and retinotopography consumers also reuse saved classes.
 

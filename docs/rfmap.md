@@ -91,10 +91,10 @@ fit = fit_rf_gaussians(
 continuous_hz = fit["fitted_response_hz"]
 ```
 
-Each connected region in the supplied excitatory mask contributes one positive
-Gaussian; each inhibitory region contributes one negative Gaussian. Connectivity
-is four-neighbor with the explicitly requested horizontal wrap. Saved center
-markers do not set the count. A polarity with no regions adds no components.
+Each section in the supplied excitatory mask contributes one positive Gaussian.
+Each inhibitory section contributes one negative Gaussian. Regions separated
+by at most one bin, including diagonally, form one section. Horizontal wrap
+follows the supplied setting. The mask determines the component count.
 
 The model is `offset + sum(positive Gaussians) - sum(negative Gaussians)`.
 Axis-aligned Gaussian amplitudes, centers, horizontal/vertical widths, and a
@@ -210,14 +210,19 @@ profile = x_rf.sum(0.0, 0.2).to_1d_array(axis="x")
 The RF comparison notebooks use `rf_only: bool = True`. Set it to `False` to
 use all rows. Generate a missing CSV through an explicit generation step;
 readers never create it automatically. `locate_rf.ipynb` prepares its current response curves explicitly and
-writes them in its save step. The two
-`tc_comparison_pairs` notebooks read only prepared HD/RF CSVs with `load_tc`.
+writes them in its save step. The two `tc_comparison_pairs` notebooks read
+the prepared HD/RF CSVs. Combining HD angle bins uses the matching
+session's saved exposure.
 `scripts/export_comparison_tcs.py` writes one explicitly requested comparison
 CSV from an HD `.tc` or an already prepared native RF CSV. The paired notebooks
 use these outputs under `data/tc_comparison/`; see
 [comparison preparation](hd_rf_ebc_comparison.md).
 
-Files live directly under the RF session's `data/` directory:
+For an organized source such as `ProbeA/regular/regular_260630_3.rfmap`,
+native projections live beside the source in `tc_x_all.csv`,
+`tc_x_rfonly_ext.csv`, and `tc_x_rfonly_inh.csv`. ON and OFF therefore
+keep separate projections. Flat-source exports under the RF session's
+`data/` directory use these names:
 
 | Responses | Filename example |
 | --- | --- |
@@ -312,17 +317,18 @@ single `RFMap`. `for_unit()` selects by recorded ID and returns `(y, x)`;
 `project(axis="x")` returns `(unit, 1, x)` and `project(axis="y")` returns
 `(unit, y, 1)`. Projection is deterministic and cannot invoke detection.
 
-An empty mask has no centers. New detections select exactly one center bin per
-connected RF sector, using the detector's four-connectivity and `wrap_x` option.
+New detections select one center bin per retained RF section. Four-connectivity
+determines which components survive size filtering. Retained bins up to two
+steps apart on each spatial axis then join into sections without filling gaps.
+Only the horizontal axis wraps when `wrap_x=True`.
 Projection preserves these selected bins; centers that land in the same
 projected bin merge. `manifest`, `cache_key`, and `schema_version` describe the
 persisted analysis and its identity. Existing dictionary-style access remains
 supported for compatibility; new code uses attributes.
 
-The center algorithm is `component-response-weighted-medoid-v2`. Its result
-identity differs from the previous one-center-per-unit algorithm. Loading a
-saved result preserves its original centers and never silently migrates a
-historical analysis. Explicitly compute and save a new result to replace it.
+The center algorithm is `section-response-weighted-medoid-v3`. Loading a saved
+result preserves its original centers. Explicitly compute and save a new result
+to apply the current algorithm.
 
 ### Source files and detection files
 
@@ -385,10 +391,10 @@ Results prepared with `sum_to_1d()` record the aggregation axis and provenance;
 they cannot substitute for a 2-D result in an RF-restricted response sum. Native
 singleton grids retain their original grid identity.
 
-### Bottom-row mean with global SD
+### Bottom-two-row baseline
 
-Use `reference="bottom_row"` to replace the global mean with the mean of the
-last spatial array row, while retaining the SD of the whole 2-D response map:
+Use `reference="bottom_row"` to calculate the mean and population SD from the
+last two spatial array rows:
 
 ```python
 counts = load_rfmap(source)
@@ -397,14 +403,14 @@ rf = detect_rf(response, reference="bottom_row", sigma=1.8, drop_bins=2)
 rf_inhibitory = detect_rf(response, reference="bottom_row", sigma=-1.0, drop_bins=2)
 ```
 
-For each unit, the threshold is `mean(response[-1, :]) + sigma * SD(response)`.
-The population SD (`ddof=0`) is identical to the global reference's SD. The
-baseline row is selected by array order (`-1`), not by the minimum Y coordinate.
+For each unit, set `baseline = response[-2:, :]`. The threshold is
+`baseline.mean() + sigma * baseline.std(ddof=0)`. Array order determines the
+baseline rows.
 Each unit has one threshold shared across all its columns. With the default
 `exclude_zero_bins=False`, both references replace missing values with zero
 and include zero responses in the mean and SD. Positive sigma selects values
 at or above the threshold; negative sigma
-selects values at or below it. Constant maps produce no detections.
+selects values at or below it. A zero baseline SD produces an empty mask.
 
 The bottom-row reference requires an uncollapsed 2-D map with at least two
 spatial rows but no repeat responses. It cannot be combined with shuffling or
@@ -450,8 +456,9 @@ semantics. Do not disable pooled validation to bypass mismatched inputs.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `reference` | `"global"` | Whole-map mean or `"bottom_row"` last-row mean; both use whole-map population SD |
+| `reference` | `"global"` | Mean and population SD from the whole map or, for `"bottom_row"`, the last two spatial rows |
 | `sigma` | `1.5` | Signed threshold in baseline SD units; positive selects increased responses, negative selects decreased responses |
+| `surround_decay` | `0.0` | Nonshuffle 2-D only. Reduce the threshold in SD units once for neighbors of the original candidates |
 | `is_shuffle` | `False` | Explicitly enable cluster-permutation testing |
 | `drop_bins` | Required; no default | No-shuffle only: remove components of this size or smaller; `0` keeps every candidate component |
 | `exclude_zero_bins` | `False` | No-shuffle only: exclude zero responses from spatial mean, SD, and candidate selection |
@@ -544,12 +551,11 @@ computed; otherwise 1-D detection is independent. Pass `rf_sigmas={"excitatory":
 (1.8, 1.0), "inhibitory": (-1.0, -0.75)}` to configure the same signed pairs as
 the notebook.
 
-Choose `reference_2d="bottom_row"` in `analyze_rf_maps()` or `analyze_rf_file()` to
-use the last-row mean with the whole-map SD for each unit. No raw trial loading
-is needed for this reference. Legacy count files still need their matching
-session when presentation counts must be reconstructed during Hz conversion.
-Independent 1-D detection keeps the global reference; `collapse_from_2d=True`
-projects the selected 2-D result.
+Choose `reference_2d="bottom_row"` in `analyze_rf_maps()` or `analyze_rf_file()`
+to pool the last two rows for each unit's baseline. Set `smoothing_2d=True`
+to apply one exposure-weighted spatial smoothing pass after raw QC. Independent
+1-D detection sums the unsmoothed responses and uses the global reference.
+`collapse_from_2d=True` projects the resulting 2-D mask and centers.
 
 `locate_rf.ipynb` shows loading, Hz conversion, QC, 2-D detection, explicit
 spatial summation, 1-D detection, previews, and saving as separate steps. Its
@@ -560,7 +566,7 @@ same prepared 2-D response maps.
 `--rf-type inhibitory` to select one. Both this CLI and
 `scripts.redetect_rf_sessions` require `--reference-2d` and `--drop-bins`, with
 no defaults. Choose `--reference-2d global` for whole-map mean/SD or
-`--reference-2d bottom_row` for last-row mean with whole-map SD. For example,
+`--reference-2d bottom_row` for the bottom-two-row baseline. For example,
 `--reference-2d global --drop-bins 2` removes one- and two-bin components using
 the global reference. The baseline choice does
 not set this cutoff. Plot functions consume prepared data. Population smoothing
@@ -568,7 +574,10 @@ is an explicit notebook step. Figures and exports use opaque white backgrounds
 and dark labels.
 
 `--comparison-output-dir` with `--unit-prefix` explicitly generates the native
-projection and comparison CSVs after detection. Add `--overwrite-comparison`
+projection and comparison CSVs after detection. For organized maps, the shared
+comparison directory includes the stimulus and luminance in the source stem.
+Regular ON also writes the `rf_excitatory_…` and `rf_inhibitory_…` filenames
+read by the paired notebooks. Add `--overwrite-comparison`
 when replacing existing CSVs; ordinary comparison readers never regenerate
 missing inputs.
 
@@ -599,13 +608,17 @@ params.runRfDetection = true;
 params.rfPythonExecutable = getenv('RFMAP_PYTHON');
 params.rfPythonScript = fullfile(getenv('RFMAP_CODE_DIR'), 'locate_rf.py');
 params.rfReference2d = 'global'; % Explicit choice; 'bottom_row' is also supported.
-params.dropBins = 2; % Explicit choice: remove one- and two-bin components.
+params.rfSmoothing2d = false;
+params.rfSurroundDecay = 0;
+params.dropBins = 2; % Independent 1-D component cutoff.
+params.dropBins2d = [2 2]; % Excitatory and inhibitory 2-D cutoffs.
 ```
 
 `runRfDetection=false` in MATLAB generates sources without detection. With it
 true, executable, script path, window, thresholds, 2-D reference, component-size
-cutoff, QC, wrapping, and 1-D mode
-come from the MATLAB parameters. The detector window must align with source
+cutoff, smoothing, surround decay, QC, wrapping, and 1-D mode
+come from the MATLAB parameters. Single-row vertical-bar maps use the global
+reference with spatial smoothing and surround decay disabled. The detector window must align with source
 time edges. Python runs synchronously; failures raise
 `RFmapping:PythonDetectionFailed`. The caller uses POSIX shell quoting on
 Linux/macOS; native Windows MATLAB callers should set `runRfDetection=false`

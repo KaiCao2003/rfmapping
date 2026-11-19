@@ -1,4 +1,4 @@
-"""Bottom-row reference changes the mean while retaining the full-map SD."""
+"""Pool the last two spatial rows for the baseline mean and SD."""
 
 from dataclasses import replace
 
@@ -12,10 +12,10 @@ from RF.rflocate.detection import _prepare_rf_output, _rf_result_key_arrays
 
 
 @pytest.mark.parametrize("sigma", [0.5, 1.5, -0.5, -1.5])
-def test_bottom_row_uses_entire_last_rows_mean_and_full_maps_population_sd(sigma):
+def test_bottom_row_uses_pooled_mean_and_population_sd(sigma):
     values = np.array([[0, 2, 20], [6, 6, 6], [4, 6, 8]], dtype=float)
-    baseline = values[-1].mean()
-    sd = values.std(ddof=0)
+    baseline = values[-2:].mean()
+    sd = values[-2:].std(ddof=0)
     threshold = baseline + sigma * sd
     expected = values >= threshold if sigma > 0 else values <= threshold
     result = detect_rf(values, reference="bottom_row", sigma=sigma,
@@ -48,7 +48,7 @@ def test_bottom_row_includes_exact_thresholds(sigma, expected):
 def test_nan_bins_are_zero_filled_and_zero_bins_remain_in_both_statistics(sigma):
     values = np.array([[np.nan, 4, 8], [0, np.nan, 6], [4, 4, np.nan]])
     pooled = np.nan_to_num(values)
-    threshold = pooled[-1].mean() + sigma * pooled.std(ddof=0)
+    threshold = pooled[-2:].mean() + sigma * pooled[-2:].std(ddof=0)
     expected = pooled >= threshold if sigma > 0 else pooled <= threshold
     result = detect_rf(values, reference="bottom_row", sigma=sigma,
                        drop_bins=0, wrap_x=False)
@@ -98,7 +98,7 @@ def test_batch_preserves_unit_order_and_uses_each_units_map_values(sigma):
         assert batch.unit_ids.tolist() == [47, 7]
         for row, source in enumerate(inputs):
             pooled = source.to_2d_array()
-            threshold = pooled[-1].mean() + sigma * pooled.std(ddof=0)
+            threshold = pooled[-2:].mean() + sigma * pooled[-2:].std(ddof=0)
             expected = pooled >= threshold if sigma > 0 else pooled <= threshold
             single = detect_rf(source, **options)
             np.testing.assert_array_equal(batch.mask_2d[row], expected)
@@ -110,20 +110,20 @@ def test_batch_preserves_unit_order_and_uses_each_units_map_values(sigma):
 
 @pytest.mark.parametrize("sign", [1, -1])
 def test_centers_weight_response_relative_to_bottom_rows_shared_mean(sign):
-    values = np.vstack([20 + sign * np.array([1, 2, 13]), [20, 20, 20]])
-    result = detect_rf(values, reference="bottom_row", sigma=sign * .1,
+    values = np.vstack([20 + sign * np.array([2, 3, 13]), [19, 20, 21], [20, 20, 20]])
+    result = detect_rf(values, reference="bottom_row", sigma=sign * 2,
                        drop_bins=0, wrap_x=False)
-    np.testing.assert_array_equal(result.mask_2d, [[[1, 1, 1], [0, 0, 0]]])
-    np.testing.assert_array_equal(result.center_2d, [[[0, 0, 1], [0, 0, 0]]])
+    np.testing.assert_array_equal(result.mask_2d, [[[1, 1, 1], [0, 0, 0], [0, 0, 0]]])
+    np.testing.assert_array_equal(result.center_2d, [[[0, 0, 1], [0, 0, 0], [0, 0, 0]]])
 
 
 @pytest.mark.parametrize("sign", [1, -1])
 def test_bottom_row_retains_wrapped_component_size_filter(sign):
-    values = np.vstack([5 + sign * np.array([3, 0, 0, 3]), [5, 5, 5, 5]])
-    options = dict(reference="bottom_row", sigma=sign * 2, drop_bins=1)
+    values = np.vstack([5 + sign * np.array([3, 0, 0, 3]), [4, 5, 5, 6], [5, 5, 5, 5]])
+    options = dict(reference="bottom_row", sigma=sign * 3, drop_bins=1)
     wrapped = detect_rf(values, wrap_x=True, **options)
     separate = detect_rf(values, wrap_x=False, **options)
-    np.testing.assert_array_equal(wrapped.mask_2d, [[[1, 0, 0, 1], [0, 0, 0, 0]]])
+    np.testing.assert_array_equal(wrapped.mask_2d, [[[1, 0, 0, 1], [0, 0, 0, 0], [0, 0, 0, 0]]])
     assert wrapped.center_2d.sum() == 1
     assert not separate.mask_2d.any()
 
@@ -142,21 +142,21 @@ def test_bottom_row_drop_zero_retains_small_components_and_drop_two_removes_them
     assert unfiltered.cache_key != filtered.cache_key
 
 
-def test_bottom_row_manifest_version_and_save_load_do_not_reuse_trial_algorithm(tmp_path):
+def test_bottom_row_manifest_version_and_save_load_do_not_reuse_old_baseline(tmp_path):
     source = asrfmap([[0, 2, 20], [6, 6, 6], [4, 6, 8]])
     result = detect_rf(source, reference="bottom_row", sigma=1, drop_bins=0)
     assert result.manifest["parameters"]["reference"] == "bottom_row"
-    assert result.manifest["detector_algorithm"] == "bottom-row-mean-global-sd-v1"
+    assert result.manifest["detector_algorithm"] == "bottom-two-rows-mean-sd-v1"
     assert dict(result.manifest["baseline"]) == {
-        "row_index": 2, "y_position": float(source.y_positions[-1]),
-        "mean_scope": "bottom_row", "sd_scope": "full_map", "sd_ddof": 0,
+        "row_indices": [1, 2], "y_positions": source.y_positions[-2:].tolist(),
+        "bin_count": 6, "mean_scope": "bottom_two_rows", "sd_scope": "bottom_two_rows", "sd_ddof": 0,
     }
     aligned, _, _, manifest, key = _prepare_rf_output(
         maps=[source], trials=None, rf_type="excitatory", is_shuffle=False,
         drop_bins=0, options={"reference": "bottom_row", "cluster_forming_z": 1.0},
     )
     assert result.cache_key == key
-    old_manifest = dict(manifest, detector_algorithm="bottom-row-trial-z-v1")
+    old_manifest = dict(manifest, detector_algorithm="bottom-row-mean-global-sd-v1")
     old_key = build_rf_result_cache_key(arrays=_rf_result_key_arrays(aligned), manifest=old_manifest)
     assert result.cache_key != old_key
     assert result.cache_key != detect_rf(source, sigma=1, drop_bins=0).cache_key

@@ -79,21 +79,27 @@ def select_rf_profiles(profiles, *detected_results):
     return table
 
 
-def load_rf_centers(source, *, probe="A", detected_rf_path=None):
-    """Read every saved center, optionally from an explicitly selected sidecar.
+def rf_centers(result, *, x_positions, y_positions, probe="A"):
+    """Convert loaded 2-D centers to native degree coordinates without file I/O.
 
     Multi-sector RFs repeat their (probe, unit_id), including centers sharing x.
     """
+    x_positions, y_positions = np.asarray(x_positions), np.asarray(y_positions)
+    if result.center_2d.shape[1:] != (len(y_positions), len(x_positions)):
+        raise ValueError("RF center shape must match the supplied coordinate grid")
+    rows, y, x = np.nonzero(result.center_2d)
+    index = pd.MultiIndex.from_arrays(
+        [[probe] * len(rows), result.unit_ids[rows]], names=["probe", "unit_id"],
+    )
+    return pd.DataFrame({"rf_x_deg": x_positions[x], "rf_y_deg": y_positions[y]}, index=index)
+
+
+def load_rf_centers(source, *, probe="A", detected_rf_path=None):
+    """Read every saved center from the default or explicitly selected sidecar."""
     source = Path(source)
     result = load_detected_rf(rf_result_path(source) if detected_rf_path is None else detected_rf_path)
-    centers = result.center_2d
-    unit_ids = result.unit_ids
-    maps = load_rfmap(source)
-    rows, y, x = np.nonzero(centers)
-    index = pd.MultiIndex.from_arrays(
-        [[probe] * len(rows), unit_ids[rows]], names=["probe", "unit_id"],
-    )
-    return pd.DataFrame({"rf_x_deg": maps[0].x_positions[x], "rf_y_deg": maps[0].y_positions[y]}, index=index)
+    grid = load_rfmap(source)[0]
+    return rf_centers(result, x_positions=grid.x_positions, y_positions=grid.y_positions, probe=probe)
 
 
 def load_rf(path, *, mouse, date, probe="A", label="RF", axis="x", range: list[int] | None = None):
@@ -115,5 +121,3 @@ def load_rf_comparison(mouseid, base_dir, probe, date, sessionID, *,
 def prep_rf_tc(table, *, bins=30, max_zero_bins=2):
     """Select native zero bins, then rebin and normalize an already loaded table."""
     return normalize_tc(rebin_profiles(rf_pick(table, max_zero_bins=max_zero_bins), bins=bins))
-
-
